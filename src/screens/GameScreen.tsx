@@ -1,0 +1,5613 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useApp, getRomData, useBlobImage } from '../store';
+import { dispatch, streamBus, type StreamPacket } from '../useGame';
+import { CELL, cellAtPoint, cellCenter, drawBoard, drawRubgOverlay, fitView, mapSize, plateMetrics, plateNumAt, plateRectOf, smoothPxPerFrame, jumpFrameFactor, DEF_MOVE_SPEED, clampMoveSpeed } from '../render';
+import { patrolPos } from '../patrol';
+import { cellRectOf, cellTaskOf, fmtClock, spentInfo } from '../engine';
+import { effectLabel } from './TaskEditor';
+import { cardArt, cartridgeArt } from '../assets';
+import SegaBox, { type SegaApi } from '../SegaBox';
+import { isFloatT, opOk, readAt } from '../memcode';
+import KeyBinder from '../KeyBinder';
+import {
+  loadEmuPrefs, PREFS_EVENT, codeToEjsKey, listGamepads,
+  PAD_ACTIONS, SEGA_ACTIONS,
+  NES_TO_RETRO, SEGA_TO_RETRO,
+  FAMILY_ACTIONS, FAMILY_KEYS_FIELD, FAMILY_KEY_KIND, FAMILY_RETRO, FAMILY_HINT,
+  padFamilyOf, consoleLabel, consoleAspect,
+} from '../input';
+import { saveSessionSnapshot } from './Lobby';
+import QuizOverlay from './QuizOverlay';
+import { AnimPreview, EmuVolumeChip, Field, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin, CoinRow } from '../ui';
+import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBossCatchMode, isSoloMode, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName } from '../types';
+import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem } from '../types';
+import Randomizer from './Randomizer';
+import TradeWindow from './TradeWindow';
+import { nodeShowsQuests, nodeShowsShop } from '../dialogHubs';
+import { idbGet } from '../db';
+import { sfx } from '../sound';
+import { startLoop, stopLoop, syncLoops, stopGroup, killGroup, stopOneShot, playOneShot } from '../loopsnd';
+
+/* единичные векторы направлений фишки — для расчёта хода чужой фишки со СКОРОСТЬЮ КАРТЫ */
+const DIRV: Record<TokenDir, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+
+/* НЕВИДИМЫЕ СТЕНЫ (JOURNEY): точка (центр фишки) внутри прямоугольника стены?
+   Стены в игре НЕ рисуются — фишка просто не проходит сквозь них, скользя по краю. */
+/* v0.55: у стены может быть key (ДВЕРЬ цвета) — с ключом того же цвета она открыта */
+const inWall = (m: GameMap, x: number, y: number, removed?: string[], keys?: string[]): boolean =>
+  (m.walls ?? []).some((w) => {
+    if (w.id && removed?.includes(w.id)) return false; // снята квестом
+    if (w.key && keys?.includes(w.key)) return false; // дверь открыта ключом
+    return x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h;
+  });
+
+/* v0.57: КОРОБКА ФИШКИ — нельзя войти ВНУТРЬ стены. Раньше проверялся только ЦЕНТР фишки:
+   она визуально «утопала» в стене, пока центр не касался её края (пройти насквозь было
+   нельзя, а внутрь — можно). Теперь блокируется пересечение стены с коробкой вокруг
+   центра: радиус считается от размера спрайта фишки (34px → ~14px, 64px → ~27px),
+   скольжение по стене сохранено (оси X и Y проверяются отдельно). */
+const inWallBox = (m: GameMap, x: number, y: number, r: number, removed?: string[], keys?: string[]): boolean =>
+  (m.walls ?? []).some((w) => {
+    if (w.id && removed?.includes(w.id)) return false; // снята квестом
+    if (w.key && keys?.includes(w.key)) return false; // дверь открыта ключом
+    return x + r > w.x && x - r < w.x + w.w && y + r > w.y && y - r < w.y + w.h;
+  });
+
+const colRadiusOf = (p: PlayerState, toks: TokenDef[]): number => {
+  const tok = p.tokenKey ? toks.find((t) => t.id === p.tokenKey) : null;
+  const size = tok ? (tok.size ?? (tok.anim ? 64 : 34)) : (p.tokenSize ?? 34);
+  return Math.max(8, Math.min(30, Math.round(size * 0.42)));
+};
+
+/* QUEST: выполнена ли цель квеста/концовки У ИГРОКА (клиентская копия движка — для UI) */
+const questGoalDoneFor = (sess: GameSession, p: PlayerState, g: QuestGoal | undefined): boolean => {
+  if (!g || g.kind === 'none') return false;
+  switch (g.kind) {
+    case 'boss': return !!g.bossId && (sess.qBossDown?.[p.id] ?? []).includes(g.bossId);
+    case 'bosses': return (sess.qBossDown?.[p.id] ?? []).length >= Math.max(1, Math.floor(g.count ?? 1));
+    case 'tasks': return (sess.qDone?.[p.id] ?? []).length >= Math.max(1, Math.floor(g.count ?? 1));
+    case 'coins': return (p.coinsLeft ?? 0) >= Math.max(1, Math.floor(g.count ?? 1));
+    case 'hp': return (p.hp ?? RUBG_HP_MAX) >= Math.max(1, Math.floor(g.count ?? 1));
+    case 'time': return p.secLeft >= Math.max(60, Math.floor(g.count ?? 60));
+    case 'tries': return p.triesLeft >= Math.max(1, Math.floor(g.count ?? 1));
+    case 'deliver': {
+      const n = Math.max(1, Math.floor(g.count ?? 1));
+      if (g.res === 'time') return p.secLeft >= n;
+      if (g.res === 'tries') return p.triesLeft >= n;
+      if (g.res === 'hp') return (p.hp ?? RUBG_HP_MAX) >= n;
+      return (p.coinsLeft ?? 0) >= n;
+    }
+    default: return false;
+  }
+};
+
+/* v0.51: скидка игрока у этого NPC (сданные квесты → сумма процентов, потолок 90) — для бейджа кнопки «Торговать» */
+const discBadge = (npc: PlacedNpc, flags: Record<string, boolean>): number => {
+  let d = 0;
+  for (const x of npc.discounts ?? []) if (x.questId && flags[`quest:${x.questId}`]) d += Math.max(0, Math.floor(x.pct));
+  return Math.min(90, d);
+};
+
+export default function GameScreen() {
+  const st = useApp();
+  const { session: s, sessionMap: map, selfId: me, options, room } = st;
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // единый API эмулятора EmulatorJS (и NES, и SEGA)
+  const ejsApiRef = useRef<SegaApi | null>(null);
+
+  const [viewMode, setViewMode] = useState<'follow' | 'world'>('follow');
+  const [peekMap, setPeekMap] = useState(false);
+  const [worldZoom, setWorldZoom] = useState(1);
+  const worldPanRef = useRef({ x: 0, y: 0 });
+  const dragRef = useRef<{ sx: number; sy: number; px: number; py: number } | null>(null);
+  const mysteryRef = useRef<Set<number> | undefined>(undefined);
+  // осмотр карты своим ходом ДО броска: смещение и зум камеры в режиме слежения
+  const lookPanRef = useRef({ x: 0, y: 0 });
+  const lookZoomRef = useRef(1);
+  const lookDragRef = useRef<{ sx: number; sy: number; px: number; py: number } | null>(null);
+  /* РЕЖИМ КОМНАТ (АЙЗЕК): roomNumRef — номер текущей плитки-комнаты наблюдаемого (для rAF:
+     маска темноты и зажим камеры), roomNumUi — его копия для HUD-бейджа; roomFlashTs — метка
+     смены комнаты (ключ вспышки затемнения); portalTpAt — момент последнего прыжка через
+     портал (его звук УЖЕ играет портал — при смене комнаты через портал звук не дублируем);
+     roomMapRef — защита от ложной вспышки при смене карты (первая комната не считается сменой). */
+  const roomNumRef = useRef<number | null>(null);
+  const prevRoomRef = useRef<number | null>(null);
+  const roomMapRef = useRef<GameMap | null>(null);
+  const portalTpAtRef = useRef(0);
+  /* ТУМАН ИССЛЕДОВАНИЯ (карта мира в режиме комнат): номера ОТКРЫТЫХ (посещённых) плиток.
+     visitedPlatesRef — источник для маски карты мира (rAF, без ре-рендеров); visitedCnt —
+     копия размера для HUD-бейджа «открыто k». Живут до перезапуска партии/смены карты. */
+  const visitedPlatesRef = useRef<Set<number>>(new Set());
+  const [visitedCnt, setVisitedCnt] = useState(0);
+  const [roomNumUi, setRoomNumUi] = useState<number | null>(null);
+  const [roomFlashTs, setRoomFlashTs] = useState(0);
+  const [isFs, setIsFs] = useState(false);
+  const emuWrapRef = useRef<HTMLDivElement>(null);
+  const prevPeekRef = useRef(false);
+  const [shake, setShake] = useState<{ holding: boolean; a: number; b: number }>({ holding: false, a: 1, b: 1 });
+  /* «rolling» — кубики крутятся после отпускания кнопки, пока не придёт АВТОРИТЕТНЫЙ
+     результат от хоста. Так у всех игроков кубики «останавливаются» одновременно и
+     показывают одни и те же числа — никаких расхождений из-за пинга. */
+  const [rolling, setRolling] = useState(false);
+  const lastRollRef = useRef(0);
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const [invOpen, setInvOpen] = useState(false);
+  const [aimItemId, setAimItemId] = useState<string | null>(null); // RUBG: выбранное оружие для атаки
+  // осмотр ячейки на карте (клик по ней) — доступен всем, включая зрителей
+  const [inspectIdx, setInspectIdx] = useState<number | null>(null);
+  // увеличенная трансляция поверх карты (зритель переключается на трансляцию целиком)
+  const [streamBig, setStreamBig] = useState(false);
+  const inspectDownRef = useRef<{ x: number; y: number } | null>(null);
+
+  /* ---------- жеребьёвка: тряска кубика и автозапуск ---------- */
+  const [roShake, setRoShake] = useState(false);
+  const [roFace, setRoFace] = useState(6);
+  const roShakeIntRef = useRef(0);
+  const roStartRef = useRef(0);
+  /* roWaiting — отпустили кнопку, но официальное значение ещё не пришло от хоста.
+     Пока ждём, кубик продолжает вращаться (не «замирает» на дефолтной шестёрке). */
+  const [roWaiting, setRoWaiting] = useState(false);
+  const startRoShake = () => {
+    if (roShake || roWaiting) return;
+    roStartRef.current = Date.now();
+    setRoShake(true);
+    roShakeIntRef.current = window.setInterval(() => {
+      const f = 1 + Math.floor(Math.random() * 6);
+      setRoFace(f);
+      /* транслируем перемешивание соперникам — они видят, как трясётся кубик */
+      room?.send('shake', { from: me, a: f, b: f });
+      sfx.dice();
+    }, 75);
+  };
+  const endRoShake = () => {
+    if (!roShake) return;
+    const holdMs = Date.now() - roStartRef.current;
+    setRoShake(false);
+    setRoWaiting(true); // кубик докрутится, пока не придёт значение
+    sfx.drop();
+    dispatch({ t: 'roll', id: me, holdMs });
+  };
+  /* официальное значение пришло — останавливаем докрутку на нём */
+  useEffect(() => {
+    if (!roWaiting) return;
+    if (s?.rollOffValues?.[me] !== undefined) {
+      clearInterval(roShakeIntRef.current);
+      setRoWaiting(false);
+    }
+  }, [roWaiting, s?.rollOffValues, me]);
+  /* страховка: если значение так и не пришло — не крутим вечно */
+  useEffect(() => {
+    if (!roWaiting) return;
+    const t = setTimeout(() => { clearInterval(roShakeIntRef.current); setRoWaiting(false); }, 6000);
+    return () => clearTimeout(t);
+  }, [roWaiting]);
+  /* зрители видят тряску кубика жеребьёвки из сетевых сообщений shake.
+     Запоминаем последний кадр, чтобы в паузах не «мигала» дефолтная шестёрка. */
+  const roRoller = s?.phase === 'rollOff' ? s.players[s.rollOffIdx] : undefined;
+  const roRemoteShake = !!st.diceShake && !!roRoller && st.diceShake.from === roRoller.id && st.diceShake.from !== me && Date.now() - st.diceShake.ts < 700;
+
+  const [romBuf, setRomBuf] = useState<ArrayBuffer | null>(null);
+  const [saveState, setSaveState] = useState<unknown>(null);
+  const [emuKey, setEmuKey] = useState(0);
+  const [stream, setStream] = useState<StreamPacket | null>(null);
+  const [tick, setTick] = useState(0); // тик таймера: перерисовка + двигает nearNpc (патрули)
+  const [tplOpen, setTplOpen] = useState(false);
+
+  const viewRef = useRef({ x: 0, y: 0, zoom: 1 });
+  const dispRef = useRef<Record<string, { x: number; y: number }>>({});
+  const prevDispRef = useRef<Record<string, { x: number; y: number }>>({}); // позиция фишки в прошлом кадре — для направления анимации
+  const hopRef = useRef<Record<string, { queue: number[]; last: number; lastDir?: 'up' | 'down' | 'left' | 'right'; speed?: number }>>({});
+  const arrivedRef = useRef(0);
+  /* игроки, чья фишка СЕЙЧАС идёт со СВОИМ звуком (anim.snd) — вместо «щелчков» шагов */
+  const moveSndRef = useRef<Set<string>>(new Set());
+  const holdStartRef = useRef(0);
+  const shakeIntRef = useRef(0);
+  /* ---------- JOURNEY: прямое управление фишкой ----------
+    journeyKeys — зажатые направления (клавиши и D-pad), journeySelf —
+    локальная позиция СВОЕЙ фишки (мгновенный отклик; хосту — апдейты ~6 раз/с) */
+  const journeyKeys = useRef<Set<TokenDir>>(new Set());
+  /* tp — обновление несёт прыжок через портал; pinside — зоны порталов, внутри которых
+     фишка СЕЙЧАС стоит (вход срабатывает только при переходе снаружи внутрь — без
+     повторного срабатывания, пока не выйдешь); snapCam — камера мгновенно за фишкой */
+  const journeySelf = useRef<{ x: number; y: number; dir?: TokenDir; moving: boolean; dirty: boolean; lastSent: number; tp?: boolean; pinside: Set<string> } | null>(null);
+  const snapCamRef = useRef(false);
+  const rubgLastPhaseRef = useRef<GameSession['phase'] | null>(null); // смена фазы RUBG (для снапа камеры после высадки)
+  /* экранный D-pad: пока открыт мини-экран (карман/взлом) — направления игнорируются,
+     фишка на фоне стоит (ref объявлен ниже, читается в рантайме после монтирования) */
+  const journeyPress = (d: TokenDir, on: boolean) => {
+    if (on && pocketBlockRef.current) return;
+    if (on) journeyKeys.current.add(d); else journeyKeys.current.delete(d);
+  };
+  /* ---------- FX: разовые анимации-спектакль (5-я/6-я фишки, реакции боссов) ----------
+     fxStart — локальный старт клипа (rAF-мс) по id fx С УЧЁТОМ паузы delay;
+     звук и fxDone — по ОДНОМУ разу; fxBreak — разбитие ячейки в момент старта клипов */
+  const fxStartRef = useRef<Map<string, number>>(new Map());
+  const fxDoneSentRef = useRef<Set<string>>(new Set());
+  const fxBreakSentRef = useRef<Set<string>>(new Set());
+  const fxSndRef = useRef<Set<string>>(new Set());
+  const fxSndTimersRef = useRef<number[]>([]); // отложенные звуки fx (старт после паузы)
+  /* ЛОКАЛЬНЫЙ момент появления разбитых ячеек — для короткой анимации осколков
+     (считаем от своего clock: рассинхрон часов хоста не ломает анимацию) */
+  const brokenAtRef = useRef<Record<number, number>>({});
+  /* ---------- JOURNEY: стрелки ДЖОЙСТИКА (геймпад) ---------- */
+  const journeyPadRef = useRef<Set<TokenDir>>(new Set());
+  /* чужие фишки JOURNEY (трансляция): якорь (последняя авторитетная точка), направление,
+     флаг «идёт» и точная скорость карты (px/с). Апдейты (~6/с) лишь ПОДТВЕРЖДАЮТ движение */
+  const journeyRemote = useRef<Record<string, { ax: number; ay: number; vx: number; vy: number; t: number; dir?: TokenDir; mv: boolean }>>({});
+
+  const mePlayer = s?.players.find((p) => p.id === me);
+  const active = s ? s.players[s.turn % s.players.length] : null;
+  const myTurn = !!active && active.id === me;
+  const ch = s?.challenge ?? null;
+  const isJourney = isJourneyLike(map?.mode); // JOURNEY, JOURNEY SOLO и RUBG — одна механика свободного хождения
+  /* v0.55: SKILL CHALLENGE с тумблером «свободное перемещение» ходит как JOURNEY (хост) */
+  const skillWalk = map?.mode === 'skill' && !!map?.skillFree;
+  const walkFree = isJourney || skillWalk;
+  const isSoloJourney = map?.mode === 'journey1p';
+  const isSkill = map?.mode === 'skill';
+  /* БЕЗ КАРТЫ: только СТАРЫЕ карты-челленджи v0.36.0 (возможность создавать убрана).
+     SKILL CHALLENGE снова играется НА КАРТЕ. */
+  const isMapless = !!(map?.mapless);
+  /* ---------- RUBG (Retro Ultimate Battle Ground) — «ретро-PUBG» ---------- */
+  const isRubg = map?.mode === 'rubg';
+  /* РЕЖИМ КОМНАТ (АЙЗЕК) — для HUD и скрытия кнопок обзора: только при разбивке на плитки,
+   не в RUBG (нужны общий план и фаза самолёта) и при БОЛЕЕ чем одной плитке */
+  const roomsOnUi = !!map && !!map.roomMode && !!map.plateSize && map.mode !== 'rubg' && plateMetrics(map).total > 1;
+  const rubg = s?.rubg;
+  const myJob = isRubg && s && rubg ? rubg.jobs?.[me] : undefined;
+  const myRubgTask = s && map && myJob !== undefined ? cellTaskOf(s, map, myJob.cellIdx) : null;
+  const mySteal = isRubg && rubg ? rubg.steals?.[me] : undefined; // воруется У МЕНЯ из кармана
+  const myStealing = isRubg && rubg ? Object.values(rubg.steals ?? {}).find((x) => x.thief === me) : undefined; // я ворую
+  /* ---------- QUEST / QUEST SOLO: индивидуальная игра ---------- */
+  const isQuest = isQuestMode(map?.mode);
+  /* v0.76: ПАТРУЛЬНЫЕ боссы ловят игроков в QUEST и (новое) JOURNEY/JOURNEY SOLO */
+  const bossCatch = isBossCatchMode(map?.mode);
+  /* v0.76: плитки «невидимые соседи» — вспышка перехода работает и вне режима комнат */
+  const tileHiddenUi = !!map?.tileGrid && tilePlayHidden(map.tileGrid);
+  const isQuestSolo = map?.mode === 'quest1p';
+  const myQJob = isQuest && s ? s.qJobs?.[me] : undefined;
+  const myQTask = s && map && myQJob !== undefined ? cellTaskOf(s, map, myQJob.cellIdx) : null;
+  const inStealth = !!mePlayer?.stealth;
+  const coinsActive = map?.startCoins !== undefined; // монеты включены на карте
+  const coinsOnly = coinsActive && !!map?.coinsOnly; // только монеты — время/попытки не предлагаются
+  /* РЕСУРС ПАРТИИ (выбор ОДНОГО в редакторе): hp — «полоска HP» (RUBG и карты с выбором «HP»),
+     coinsOnly — «монеты», иначе — «время и попытки». В HUD показывается только выбранный ресурс.
+     v0.55 QUEST — СМЕСЬ РЕСУРСОВ: показываем И ПОЛОСКУ HP, И МОНЕТЫ (задания бьют по HP,
+     победы дают монеты, монеты нужны для торговли). */
+  const questMixed = isQuest;
+  const hpRes = isRubg || map?.resMode === 'hp' || questMixed;
+  const coinsRes = !hpRes && coinsOnly;
+  const skipCoinsNeed = Math.max(0, Math.floor(map?.skipCoins ?? SKIP_COINS_DEFAULT)); // цена пропуска в бронзе
+  const task = s && map && ch ? cellTaskOf(s, map, ch.cellIdx) : null;
+  /* v0.70 ТОЛЬКО ПО КОДУ: у задания ручные кнопки отключены — победа/поражение решают только коды CodeSearch */
+  const chCodeOnly = !!task?.codeOnly;
+  const qCodeOnly = !!myQTask?.codeOnly;
+  const rCodeOnly = !!myRubgTask?.codeOnly;
+  const activeChaos = task?.chaos ? [task.chaos] : [];
+  // «Реверс крестовины»: смена кнопок запрещена, пока задание с этой пакостью идёт
+  const controlsLocked = task?.chaos === 'invertPad';
+  // «Штраф ×2»: цена пропуска удваивается (10 вместо 5)
+  const skipNeed = SKIP_COST * (task?.chaos === 'skipX2' ? 2 : 1);
+  const invCount = (mePlayer?.inventory?.length ?? 0) + (isQuest ? (mePlayer?.items?.length ?? 0) : 0);
+  const incomingTrades = (s?.trades ?? []).filter((o) => o.to === me && (o.status === 'pending' || o.status === 'countered'));
+  const taskRom = task ? st.roms.find((r) => r.id === task.romId) : undefined;
+  const isSega = !!taskRom && taskRom.ext !== 'nes';
+  // семейство раскладки рома задания (NES/SEGA/SNES/GBA/PCE/Atari)
+  const padFam = padFamilyOf(taskRom?.ext, taskRom?.fileName);
+
+  /* раскладка клавиш для слоя переназначения эмулятора; пересчитывается при
+     сохранении в редакторе «Управление» (событие PREFS_EVENT) */
+  const [prefsTick, setPrefsTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setPrefsTick((x) => x + 1);
+    window.addEventListener(PREFS_EVENT, bump);
+    return () => window.removeEventListener(PREFS_EVENT, bump);
+  }, []);
+  const remapSpec = useMemo(() => {
+    const p = loadEmuPrefs();
+    const spec: { idx: number; key: string }[] = [];
+    if (padFam === 'nes') {
+      for (const a of PAD_ACTIONS) {
+        const idx = NES_TO_RETRO[a];
+        const key = codeToEjsKey(p.keys[a] || '');
+        if (idx !== undefined && key) spec.push({ idx, key });
+      }
+    } else if (padFam === 'sega') {
+      for (const a of SEGA_ACTIONS) {
+        const idx = SEGA_TO_RETRO[a];
+        const key = (p.segaKeys[a] || '').toLowerCase();
+        if (idx !== undefined && key) spec.push({ idx, key });
+      }
+    } else {
+      const keys = p[FAMILY_KEYS_FIELD[padFam]] as Record<string, string>;
+      const isCode = FAMILY_KEY_KIND[padFam] === 'code';
+      for (const a of FAMILY_ACTIONS[padFam]) {
+        const idx = FAMILY_RETRO[padFam][a];
+        const k = keys[a] ?? '';
+        if (idx !== undefined && k) spec.push({ idx, key: isCode ? codeToEjsKey(k) : k.toLowerCase() });
+      }
+    }
+    return spec;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [padFam, emuKey, prefsTick]);
+  const segExt = (taskRom?.fileName.split('.').pop() ?? 'md').toLowerCase();
+  const romName = taskRom?.name ?? 'ROM';
+  const taskImg = useBlobImage(task?.imageId);
+  const cardImg = useBlobImage(s?.pendingCard?.card.imageId);
+  const rTaskImg = useBlobImage(myRubgTask?.imageId); // картинка ЛИЧНОГО задания RUBG
+  const qTaskImg = useBlobImage(myQTask?.imageId); // картинка ЛИЧНОГО задания QUEST
+  const qCardImg = useBlobImage(s?.qCards?.[me]?.imageId); // картинка выпавшей карточки QUEST
+
+  /* ---------- загрузка рома и сохранения под челлендж ----------
+     Гость сначала смотрит in-memory кэш (полученный по сети от хоста), затем свою
+     IndexedDB. Если рома нет нигде — просит хост прислать бинарник (needRom). */
+  const romReadyTick = useApp((x) => x.romReadyTick);
+  const isHost = !!room?.isHost;
+  useEffect(() => {
+    let on = true;
+    setRomBuf(null);
+    setSaveState(null);
+    if (!task) return;
+    void (async () => {
+      const cache = useApp.getState();
+      let buf: ArrayBuffer | null = cache.romCache[task.romId] ?? null;
+      if (!buf) buf = (await getRomData(task.romId)) ?? null;
+      if (!on) return;
+      if (!buf) {
+        if (!isHost) {
+          // рома нет — запрашиваем у хоста; эффект перезапустится по romReadyTick
+          room?.send('needRom', { romId: task.romId, saveId: task.saveId });
+        } else {
+          useApp.getState().toast('Ром не найден в библиотеке — загрузите его в эмуляторе', 'err');
+        }
+        return;
+      }
+      const cache2 = useApp.getState();
+      const sv = task.saveId
+        ? (cache2.saveCache[task.saveId] ?? st.saves.find((x) => x.id === task.saveId)?.state ?? null)
+        : null;
+      if (!on) return;
+      setRomBuf(buf);
+      setSaveState(sv);
+      setEmuKey((k) => k + 1);
+    })();
+    return () => { on = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ch?.cellIdx, s?.challenge?.status === 'choose' ? 0 : 1, romReadyTick, isHost]);
+
+  /* ---------- перезагрузка сохранения (попытка / нарушение) ---------- */
+  const reloadId = ch?.reloadId ?? 0;
+  useEffect(() => {
+    if (reloadId > 0) {
+      // и NES, и SEGA теперь на EmulatorJS: перезапуск ядра с сохранением (или с начала)
+      ejsApiRef.current?.loadSaveReliable((saveState as string | null) ?? null);
+      sfx.alarm();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadId]);
+
+  /* ---------- v0.68 ЗАЧЁТ ПО КОДУ (CodeSearch) — см. эффект ниже, после объявления qArmed/rubgJobArmed ---------- */
+
+  /* ---------- RUBG: загрузка рома ЛИЧНОГО задания (эмулятор у самого игрока) ---------- */
+  const [rRomBuf, setRRomBuf] = useState<ArrayBuffer | null>(null);
+  const [rSaveState, setRSaveState] = useState<unknown>(null);
+  const [rEmuKey, setREmuKey] = useState(0);
+  const rRomDef = myRubgTask ? st.roms.find((r) => r.id === myRubgTask.romId) : undefined;
+  /* v0.60: расширение для ПРОПОРЦИЙ полного экрана: старые SEGA-ромы хранятся как 'sega'
+     (gg/sms/md — всё внутри), поэтому .gg без распознавания получил бы 4:3 вместо родных 160×144 */
+  const rRomExt = rRomDef ? (rRomDef.ext === 'sega' ? (rRomDef.fileName.split('.').pop() ?? 'md').toLowerCase() : rRomDef.ext) : undefined;
+  useEffect(() => {
+    let on = true;
+    setRRomBuf(null); setRSaveState(null);
+    if (!myRubgTask) return;
+    void (async () => {
+      const cache = useApp.getState();
+      let buf: ArrayBuffer | null = cache.romCache[myRubgTask.romId] ?? null;
+      if (!buf) buf = (await getRomData(myRubgTask.romId)) ?? null;
+      if (!on) return;
+      if (!buf) {
+        if (!isHost) room?.send('needRom', { romId: myRubgTask.romId, saveId: myRubgTask.saveId });
+        return;
+      }
+      const sv = myRubgTask.saveId
+        ? (cache.saveCache[myRubgTask.saveId] ?? st.saves.find((x) => x.id === myRubgTask.saveId)?.state ?? null)
+        : null;
+      if (!on) return;
+      setRRomBuf(buf); setRSaveState(sv); setREmuKey((k) => k + 1);
+    })();
+    return () => { on = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myJob?.cellIdx, romReadyTick]);
+
+  /* ---------- QUEST: загрузка рома ЛИЧНОГО задания (эмулятор у самого игрока) ---------- */
+  const [qRomBuf, setQRomBuf] = useState<ArrayBuffer | null>(null);
+  const [qSaveState, setQSaveState] = useState<unknown>(null);
+  const [qEmuKey, setQEmuKey] = useState(0);
+  const qRomDef = myQTask ? st.roms.find((r) => r.id === myQTask.romId) : undefined;
+  /* v0.60: см. rRomExt — реальное расширение для пропорций полного экрана */
+  const qRomExt = qRomDef ? (qRomDef.ext === 'sega' ? (qRomDef.fileName.split('.').pop() ?? 'md').toLowerCase() : qRomDef.ext) : undefined;
+  useEffect(() => {
+    let on = true;
+    setQRomBuf(null); setQSaveState(null);
+    if (!myQTask) return;
+    void (async () => {
+      const cache = useApp.getState();
+      let buf: ArrayBuffer | null = cache.romCache[myQTask.romId] ?? null;
+      if (!buf) buf = (await getRomData(myQTask.romId)) ?? null;
+      if (!on) return;
+      if (!buf) {
+        if (!isHost) room?.send('needRom', { romId: myQTask.romId, saveId: myQTask.saveId });
+        return;
+      }
+      const sv = myQTask.saveId
+        ? (cache.saveCache[myQTask.saveId] ?? st.saves.find((x) => x.id === myQTask.saveId)?.state ?? null)
+        : null;
+      if (!on) return;
+      setQRomBuf(buf); setQSaveState(sv); setQEmuKey((k) => k + 1);
+    })();
+    return () => { on = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myQJob?.cellIdx, romReadyTick]);
+
+  /* ---------- QUEST: «СТАРТ ИГРЫ» — эмулятор на паузе до нажатия; локальные паузы ---------- */
+  const [qArmed, setQArmed] = useState(false);
+  useEffect(() => { setQArmed(false); }, [myQJob?.cellIdx]);
+  const [qPaused, setQPaused] = useState(false);
+  useEffect(() => { setQPaused(false); }, [myQJob?.cellIdx, qArmed]);
+
+  /* ---------- RUBG: «СТАРТ ИГРЫ» в личном задании — эмулятор на паузе до нажатия,
+     чтобы игрок мог подготовиться (прочитать задание, настроить управление).
+     Сброс при входе в новую ячейку задания. ---------- */
+  const [rubgJobArmed, setRubgJobArmed] = useState(false);
+  useEffect(() => { setRubgJobArmed(false); }, [myJob?.cellIdx]);
+  /* ЛОКАЛЬНАЯ пауза эмулятора в задании (кнопка «Пауза», как в других режимах):
+     паузит игру без сброса — вернулся из карты мира / нажал «Продолжить» и играешь дальше */
+  const [rubgPaused, setRubgPaused] = useState(false);
+  useEffect(() => { setRubgPaused(false); }, [myJob?.cellIdx, rubgJobArmed]);
+
+  /* ---------- v0.68 ЗАЧЁТ ПО КОДУ (CodeSearch): пока играем задание с условием —
+     раз в полсекунды читаем память эмулятора. Условие ПОБЕДЫ выполнено → задание
+     зачитывается само: челлендж — как «Выполнено» (голосование как обычно), RUBG/QUEST —
+     личное задание закрыто с пометкой «по коду». УСЛОВИЕ ПОРАЖЕНИЯ (codeFail) приоритетнее:
+     выполнено — задание проваливается само (RUBG/QUEST — как кнопка «Провалено»,
+     челлендж — автоперезапуск задания). Пока эмулятор на паузе/не запущен — молчим. ---------- */
+  const codeFiredRef = useRef('');
+  const codeFailFiredRef = useRef('');
+  const chPlaying = !!ch && ch.status === 'playing' && !!ch.started;
+  const qJobOn = !!myQJob && !!myQTask && qArmed && !qPaused;
+  const rJobOn = myJob !== undefined && !!myRubgTask && rubgJobArmed && !rubgPaused;
+  const chCode = chPlaying && ch ? task?.code ?? undefined : undefined;
+  const qCode = qJobOn && myQJob ? myQTask?.code ?? undefined : undefined;
+  const rCode = rJobOn && myJob ? myRubgTask?.code ?? undefined : undefined;
+  const chCodeF = chPlaying && ch ? task?.codeFail ?? undefined : undefined;
+  const qCodeF = qJobOn && myQJob ? myQTask?.codeFail ?? undefined : undefined;
+  const rCodeF = rJobOn && myJob ? myRubgTask?.codeFail ?? undefined : undefined;
+  const activeCode = chCode ?? qCode ?? rCode;
+  const activeFail = chCodeF ?? qCodeF ?? rCodeF;
+  useEffect(() => {
+    if (!activeCode && !activeFail) return;
+    /* ключ захода не зависит от того, какие условия заданы: при перезапуске задания
+       (reloadId/startedAt меняются) срабатывание сбрасывается — условия проверяются заново */
+    const key = ch
+      ? `c:${ch.cellIdx}:${ch.reloadId}`
+      : myQJob
+        ? `q:${myQJob.cellIdx}:${myQJob.startedAt}`
+        : myJob
+          ? `r:${myJob.cellIdx}:${myJob.startedAt}`
+          : '';
+    if (!key) return;
+    const iv = setInterval(() => {
+      try {
+        const heap = ejsApiRef.current?.getHeap?.() ?? null;
+        if (!heap) return;
+        /* ПОРАЖЕНИЕ проверяем ПЕРВЫМ: если оба условия совпали разом — игрок проиграл */
+        if (activeFail && codeFailFiredRef.current !== key) {
+          const curF = readAt(heap, activeFail.a, activeFail.t);
+          if (curF !== null && opOk(curF, activeFail.op, activeFail.v, isFloatT(activeFail.t))) {
+            codeFailFiredRef.current = key;
+            if (chCodeF && ch) dispatch({ t: 'reloadSave', id: me, byCode: true });
+            else if (qCodeF && myQJob) dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, byCode: true });
+            else if (rCodeF && myJob) dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false, byCode: true });
+            return;
+          }
+        }
+        if (!activeCode) return;
+        const cur = readAt(heap, activeCode.a, activeCode.t);
+        if (cur === null) return;
+        if (opOk(cur, activeCode.op, activeCode.v, isFloatT(activeCode.t)) && codeFiredRef.current !== key) {
+          codeFiredRef.current = key;
+          if (chCode && ch) dispatch({ t: 'declareDone', id: me, byCode: true });
+          else if (qCode && myQJob) dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: true, byCode: true });
+          else if (rCode && myJob) dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: true, byCode: true });
+        }
+      } catch { /* ядро перезапустилось — попробуем на следующем тике */ }
+    }, 500);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCode?.a, activeCode?.t, activeCode?.op, activeCode?.v, activeFail?.a, activeFail?.t, activeFail?.op, activeFail?.v, ch?.cellIdx, ch?.status, ch?.started, ch?.paused, ch?.reloadId, myQJob?.cellIdx, myQJob?.startedAt, qArmed, qPaused, myJob?.cellIdx, myJob?.startedAt, rubgJobArmed, rubgPaused, me]);
+
+  /* ---------- ЗВУК ВЫСТРЕЛОВ: новый выстрел в rubg.shots — все клиенты играют звук
+     (у пистолета/ПП/снайперки разные звуки). Повторы отсекаются по id выстрела ---------- */
+  const seenShotsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const shots = s?.rubg?.shots ?? [];
+    for (const sh of shots) {
+      if (seenShotsRef.current.has(sh.id)) continue;
+      seenShotsRef.current.add(sh.id);
+      if (Date.now() - sh.ts > 1200) continue; // старые (после переподключения) не озвучиваем
+      if (sh.kind === 'sniper') sfx.shotSniper();
+      else if (sh.kind === 'smg') sfx.shotSmg();
+      else sfx.shotPistol();
+    }
+    if (seenShotsRef.current.size > 80) seenShotsRef.current = new Set([...seenShotsRef.current].slice(-40));
+  }, [s?.rubg?.shots]);
+
+  /* ---------- БЛОКИРОВКА ХОДЬБЫ, пока открыт мини-экран (КАРМАН при воровстве /
+     ВЗЛОМ замка): WASD/стрелки ведут мини-игру, а НЕ фишку на фоне — персонаж стоит ---------- */
+  const pocketBlockRef = useRef(false);
+
+  /* ---------- ВЗЛОМ ЯЩИКА: окно мини-игры «замок» (отмычка с пояса) ---------- */
+  const [hackBox, setHackBox] = useState<{ cellIdx: number } | null>(null);
+  const [hackAttempt, setHackAttempt] = useState(0);
+  /* бойки КАЖДОЙ попытки: случайное число случайных бойков уже поднято (0–4, чаще меньше).
+     Фиксации НЕ запоминаются между попытками: сломал отмычку — новая попытка рандомится заново,
+     чтобы нельзя было «докручивать» чужой прогресс и спамить попытками ради удачного расклада */
+  const [hackFixed, setHackFixed] = useState<boolean[]>([]);
+  const [hackBroken, setHackBroken] = useState(false); // отмычка сломана — интерфейс остаётся открытым: «другая отмычка» / «открыть силой» / «прекратить»
+  const [forceArm, setForceArm] = useState(false); // двухшаговое «открыть силой» (провал = ящик закрыт навсегда)
+  useEffect(() => {
+    if (!hackBox) { setForceArm(false); return; }
+    setForceArm(false); setHackBroken(false); setHackAttempt(0); setHackFixed(randomPrePins());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hackBox?.cellIdx]);
+  useEffect(() => { if (!hackBox) setForceArm(false); }, [hackBox]);
+  useEffect(() => {
+    pocketBlockRef.current = !!myStealing || !!hackBox;
+    if (myStealing) journeyKeys.current.clear(); // зажатые до открытия клавиши сбрасываем
+  }, [!!myStealing, !!hackBox]);
+  /* v0.59: БЛОК ХОДЬБЫ ПРИ ВЫПОЛНЕНИИ ЗАДАНИЯ — окно МОЕГО задания на экране (QUEST — личное
+     или боссовое; RUBG — личное) гасит ввод фишки: WASD/крестовина/стик ведут игру в окне
+     задания, а фишка на фоне СТОИТ. Раньше в QUEST/RUBG фишка продолжала ходить (задания
+     личные — sess.challenge не ставится), а залипшие до окна клавиши не отпускались вообще
+     (keyup уходит в iframe эмулятора). */
+  const taskWinRef = useRef(false);
+  useEffect(() => {
+    const open = (myQJob !== undefined && !!myQTask) || myJob !== undefined;
+    taskWinRef.current = open;
+    if (open) journeyKeys.current.clear(); // залипшие до окна клавиши сбрасываем
+  }, [myQJob, !!myQTask, myJob]);
+  /* v0.59: челлендж открылся (JOURNEY/SKILL/classic) — зажатые до него клавиши тоже сбрасываем,
+     чтобы после задания фишка не убегала на старых зажатиях */
+  useEffect(() => {
+    if (s?.challenge) journeyKeys.current.clear();
+  }, [!!s?.challenge]);
+  /* ЯЩИК РЯДОМ: ближайший невскрытый (и не запретный для меня) ячейка-ящик в радиусе 1.5 клетки */
+  const nearBox = useMemo(() => {
+    if (!isRubg || !s || s.phase !== 'playing' || !map || !me) return null;
+    const mp = s.journeyPos?.[me];
+    if (!mp) return null;
+    const looted = s.rubg?.looted ?? [];
+    const banned = s.rubg?.boxBan?.[me] ?? [];
+    let best: { idx: number; d: number } | null = null;
+    map.cells.forEach((c, i) => {
+      if (!c || c.type !== 'loot' || looted.includes(i) || banned.includes(i)) return;
+      const r = cellRectOf(map, i);
+      if (!r) return;
+      const dx = Math.max(r.x - mp.x, 0, mp.x - (r.x + r.w));
+      const dy = Math.max(r.y - mp.y, 0, mp.y - (r.y + r.h));
+      const d = Math.hypot(dx, dy);
+      if (d <= CELL * 1.5 && (!best || d < best.d)) best = { idx: i, d };
+    });
+    return best as { idx: number; d: number } | null;
+  }, [isRubg, s, map, me, s?.journeyPos?.[me ?? '']?.x, s?.journeyPos?.[me ?? '']?.y]);
+  /* ---------- QUEST: NPC в радиусе (звук + диалог) — ближайший к моей фишке ---------- */
+  const myJourneyPos = s?.journeyPos?.[me];
+  const nearNpc = useMemo(() => {
+    if (!isQuest || !s || s.phase !== 'playing' || !map || !mePlayer || !mePlayer.alive || mePlayer.spect) return null;
+    if (!myJourneyPos) return null;
+    /* ПАТРУЛЬ (v0.52): NPC с маршрутом считаем в его ТЕКУЩЕЙ точке (формула от времени партии)
+       — говорить можно с идущим NPC; тик таймера обновляет позицию дважды в секунду */
+    const pBase = s.startedAt || 0;
+    const pNow = Date.now();
+    let best: { npc: PlacedNpc; def: NpcLibEntry } | null = null;
+    let bestD = 0;
+    for (const n of map.npcs ?? []) {
+      const def = (map.npcLib ?? []).find((x) => x.id === n.nid);
+      if (!def || !n.r || n.r <= 0) continue;
+      if (!n.dialog && !(n.quests ?? []).length) continue; // ни диалога, ни квестов — не интерактивен
+      const pp = n.patrol ? patrolPos(n.patrol, pBase, pNow) : null;
+      const d = Math.hypot(myJourneyPos.x - (pp ? pp.x : n.x), myJourneyPos.y - (pp ? pp.y : n.y));
+      if (d > n.r) continue;
+      if (!best || d < bestD) { best = { npc: n, def }; bestD = d; }
+    }
+    return best;
+  }, [isQuest, s, map, mePlayer, myJourneyPos?.x, myJourneyPos?.y, tick]);
+  const [dlgNpcId, setDlgNpcId] = useState<string | null>(null);
+  const [dlgNode, setDlgNode] = useState<string | null>(null);
+  const [tradeNpcId, setTradeNpcId] = useState<string | null>(null); // v0.51: открыто окно торговли с NPC
+  /* v0.58: ОТКАТ ЗАМОРОЗКИ В ДИАЛОГЕ — мир больше НЕ замирает, когда открыт диалог или
+     торговля: NPC и боссы продолжают ходить по точкам, боссы могут поймать игрока и в
+     разговоре (на карте кроме играющего могут быть ДРУГИЕ ИГРОКИ — для них мир обязан
+     жить; три итерации заморозки v0.54–v0.57 отменены решением автора). Живой ref
+     dlgOpenIdRef остался для UX-запретов: зона-катсцена не запускается поверх окна.
+     ЗАМЕР ОСТАЁТСЯ ТОЛЬКО НА КАТ-СЦЕНУ (cutFreezeTsRef) — там это часть кино. */
+  const dlgOpenId = dlgNpcId ?? tradeNpcId;
+  const dlgOpenIdRef = useRef<string | null>(null);
+  dlgOpenIdRef.current = dlgOpenId;
+  /* ---------- v0.56: КАТ-СЦЕНЫ (п.6) ----------
+   Камера летит по точкам (в каждой — задержка wait и зум-множитель), весь мир замер:
+   ВСЕ фишки, NPC и боссы стоят, ходьба/порталы/кубики заблокированы, кино-полосы + «Пропустить».
+   Запуск: ① при старте карты (trigger 'start'), ② первый ЗА СЕССИЮ вход в ЗОНУ-триггер
+   ('zone', интервал следит за своей фишкой), ③ вариант диалога NPC (сигнал s.cutscenePlay).
+   Кат-сцены «старт/зона» помечаются в s.cutsceneDone (часть сейва) — за сессию не повторяются;
+   кат-сцена от NPC играбельна повторно. Состояние держим в ref'ax — rAF-цикл читает живьём. */
+  const [cutActive, setCutActive] = useState(false); // для оверлея/подсказок (живой дубликат ref'а)
+  const cutActiveRef = useRef(false);
+  const cutRef = useRef<{ def: CutsceneDef; i: number; phase: 'to' | 'wait'; t0: number; fromX: number; fromY: number; fromZ: number } | null>(null);
+  const cutQueueRef = useRef<CutsceneDef[]>([]); // кат-сцены старта карты играются ОДНА ЗА другой
+  const cutFreezeTsRef = useRef(0); // момент заморозки мира (все NPC/боссы рисуются в этой точке)
+  const cutPlayedRef = useRef<Set<string>>(new Set()); // локальная защита от повторного запуска за сессию
+  const cutLastNpcTsRef = useRef(Date.now()); // сигналы NPC старше монтирования — просроченные (сейв)
+  const npcPinRef = useRef<{ key: number; map: Record<string, { x: number; y: number }> } | null>(null); // v0.57: жёсткая привязка NPC на время заморозки
+  /* v0.62: ПРОПУСК КАТ-СЦЕНЫ БЕЗ ПОСТОЯННОЙ НАДПИСИ: пока кино идёт, экран чистый;
+     нажали ESC — подсказка «ДЕРЖИТЕ ESC — ПРОПУСК» плавно проявляется, и полоска
+     внутри заполняется, ПОКА клавиша удерживается; додержали ~1 с — кат-сцена
+     пропускается, отпустили раньше — подсказка плавно гаснет (пропуска нет) */
+  const CUT_ESC_HOLD_MS = 1000;
+  const [cutEscHint, setCutEscHint] = useState(false); // подсказка видна (плавная прозрачность)
+  const [cutEscSession, setCutEscSession] = useState(0); // номер нажатия — перезапуск полоски
+  const cutEscSinceRef = useRef<number | null>(null); // момент нажатия ESC (null — не нажата)
+  const cutEscTimerRef = useRef<number | null>(null); // таймер удержания
+  const cutEscRelease = () => {
+    if (cutEscTimerRef.current !== null) { window.clearTimeout(cutEscTimerRef.current); cutEscTimerRef.current = null; }
+    cutEscSinceRef.current = null;
+    setCutEscHint(false);
+  };
+  /* v0.57: ПЛАВНЫЙ УХОД кино-полос — в конце кат-сцены полосы не исчезают мгновенно:
+     оверлей держится ещё ~0.85 с с классом cut-out (растворяющиеся тают, классические
+     уезжают), и только потом убирается. Стиль полос — из общих опций (cutBars). */
+  const [cutBarsOut, setCutBarsOut] = useState(false);
+  const cutBarsTimerRef = useRef<number | null>(null);
+  const cutWasRef = useRef(false);
+  const startCutRef = useRef<(def: CutsceneDef) => void>(() => {});
+  const cutFinishRef = useRef<(markSeen: boolean) => void>(() => {});
+  useEffect(() => {
+    if (cutActive) {
+      cutWasRef.current = true;
+      setCutBarsOut(false);
+      if (cutBarsTimerRef.current !== null) { window.clearTimeout(cutBarsTimerRef.current); cutBarsTimerRef.current = null; }
+      return;
+    }
+    if (!cutWasRef.current) return;
+    cutWasRef.current = false;
+    setCutBarsOut(true);
+    cutBarsTimerRef.current = window.setTimeout(() => { setCutBarsOut(false); cutBarsTimerRef.current = null; }, 850);
+  }, [cutActive]);
+  /* v0.58: ВО ВРЕМЯ КАТ-СЦЕНЫ СКРЫТ ВЕСЬ ИНТЕРФЕЙС (HUD, кубики, окна, карточки — всё):
+     на экране только кино — поле с пролетающей камерой и чёрные полосы.
+     Скрываем через CSS-класс на корне (display:none), а НЕ условным рендером —
+     иначе размонтировались бы эмулятор и окна (сброс состояния). Хвост cutBarsOut
+     (полосы тают) тоже держит интерфейс скрытым — он проявляется сразу после. */
+  const cutUiHidden = cutActive || cutBarsOut;
+  /* v0.56 (п.3): РАЗМЕР ОКНА ЗАДАНИЯ — «−» компактнее / «Стд» стандарт / «＋» крупнее;
+   работает для окон задания QUEST, RUBG и классического челленджа */
+  const [taskWinSize, setTaskWinSize] = useState(0);
+  const taskSizeBtns = (
+    <span className="flex items-center gap-1 shrink-0">
+      {([['−', -1, 'Уменьшить окно задания'], ['Стд', 0, 'Стандартный размер окна'], ['＋', 1, 'Увеличить окно задания']] as [string, number, string][]).map(([lbl, val, ttl]) => (
+        <button
+          key={val}
+          title={ttl}
+          onClick={() => { setTaskWinSize(val); sfx.hover(); }}
+          className={`px-2 h-7 border-2 font-pixel text-[9px] cursor-pointer transition-colors ${taskWinSize === val ? 'border-gold text-gold bg-gold/10' : 'border-edge text-dim hover:text-paper hover:border-edge2'}`}
+        >
+          {lbl}
+        </button>
+      ))}
+    </span>
+  );
+  const taskWinCls = taskWinSize === 1 ? 'max-w-[min(1500px,96vw)]' : taskWinSize === -1 ? 'max-w-xl' : 'max-w-3xl';
+  /* v0.53: скрывать реплики, которые персонаж уже отвечал (настройка ТОЛЬКО НА ТЕКУЩУЮ
+     СЕССИЮ — между партиями больше не запоминается; при загрузке сохранения метки
+     «уже слышали» возвращаются вместе с партией — они часть сейва);
+     revealSeen — временно показать текст текущего узла кнопкой «показать» */
+  const [hideSeen, setHideSeen] = useState<boolean>(true);
+  const [revealSeen, setRevealSeen] = useState(false);
+  useEffect(() => { setRevealSeen(false); }, [dlgNode, dlgNpcId]);
+  const flipHideSeen = () => {
+    setHideSeen((v) => !v);
+    sfx.hover();
+  };
+  const dlgNpc = nearNpc && dlgNpcId === nearNpc.npc.id ? nearNpc : (dlgNpcId ? (() => {
+    const n = (map?.npcs ?? []).find((x) => x.id === dlgNpcId);
+    const def = n ? (map?.npcLib ?? []).find((x) => x.id === n.nid) : undefined;
+    return n && def ? { npc: n, def } : null;
+  })() : null);
+  /* NPC, с которым открыто окно торговли (v0.51) */
+  const tradeNpc = tradeNpcId ? (() => {
+    const n = (map?.npcs ?? []).find((x) => x.id === tradeNpcId);
+    const def = n ? (map?.npcLib ?? []).find((x) => x.id === n.nid) : undefined;
+    return n && def ? { npc: n, def } : null;
+  })() : null;
+  const openDialog = (npcId: string) => {
+    const n = (map?.npcs ?? []).find((x) => x.id === npcId);
+    if (!n?.dialog) { useApp.getState().toast('У этого NPC нет диалога', 'info'); return; }
+    setDlgNpcId(npcId);
+    setDlgNode(n.dialog.root);
+    /* v0.58: живой ref обновляется синхронно (зона-катсцена не стартует поверх окна);
+       заморозки мира при открытии диалога больше НЕТ — NPC и боссы ходят (решение автора) */
+    dlgOpenIdRef.current = npcId;
+    sfx.click();
+  };
+  const closeDialog = () => { setDlgNpcId(null); setDlgNode(null); setTradeNpcId(null); dlgOpenIdRef.current = null; };
+  /* клавиша E — поговорить с NPC в радиусе; ESC — закрыть диалог / пропуск кат-сцены
+     (v0.62: НЕ мгновенно — нажатие плавно показывает подсказку, ПРОДОЛЖИТЕЛЬНОЕ
+     удержание пропускает; см. CUT_ESC_HOLD_MS) */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === 'e' || e.key.toLowerCase() === 'у') {
+        const cur = nearNpc;
+        if (cur && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); openDialog(cur.npc.id); } // v0.56: в кат-сцене разговоров нет
+      }
+      if (e.key === 'Escape' && dlgNpcId) closeDialog();
+      /* v0.56: ESC пропускает кат-сцену (если автор разрешил пропуск);
+         v0.62: только ПРОДОЛЖИТЕЛЬНОЕ удержание — полоска в подсказке */
+      if (e.key === 'Escape' && cutActiveRef.current) {
+        const def = cutRef.current?.def;
+        if (def?.skippable !== false) {
+          e.preventDefault();
+          if (!e.repeat && cutEscSinceRef.current === null) {
+            cutEscSinceRef.current = Date.now();
+            setCutEscSession((x) => x + 1);
+            setCutEscHint(true);
+            cutEscTimerRef.current = window.setTimeout(() => {
+              cutEscRelease();
+              if (cutActiveRef.current) cutFinishRef.current(true); // додержали — пропускаем
+            }, CUT_ESC_HOLD_MS);
+          }
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [nearNpc, dlgNpcId]);
+  /* v0.62: отпустили ESC (или окно потеряло фокус) — отсчёт сбрасывается,
+     подсказка плавно гаснет; при размонтировании таймер подчищается */
+  useEffect(() => {
+    const onKeyUp = (e: KeyboardEvent) => { if (e.key === 'Escape' && cutEscSinceRef.current !== null) cutEscRelease(); };
+    const onBlur = () => { if (cutEscSinceRef.current !== null) cutEscRelease(); };
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+      if (cutEscTimerRef.current !== null) { window.clearTimeout(cutEscTimerRef.current); cutEscTimerRef.current = null; }
+    };
+  }, []);
+
+  /* ---------- v0.56: запуск/завершение кат-сцен + три триггера ----------
+   Взаимная рекурсия старт/финиш — через ref'ы (функции обновляются каждый рендер,
+   rAF-цикл и оверлей вызывают всегда свежие версии). */
+  startCutRef.current = (def: CutsceneDef) => {
+    if (!def || !(def.pts ?? []).length) return;
+    cutEscRelease(); // v0.62: подсказка пропуска всегда начинается с чистого экрана
+    const v = viewRef.current;
+    cutRef.current = { def, i: 0, phase: 'to', t0: Date.now(), fromX: v.x, fromY: v.y, fromZ: v.zoom };
+    cutFreezeTsRef.current = Date.now(); // мир замирает С ЭТОГО кадра (все NPC/боссы/фишки)
+    cutActiveRef.current = true;
+    setCutActive(true);
+    closeDialog(); // если кат-сцену выдал вариант диалога — окно закрывается само
+    try { sfx.portal(); } catch { /* звук не критичен */ }
+  };
+  cutFinishRef.current = (markSeen: boolean) => {
+    const cut = cutRef.current;
+    cutRef.current = null;
+    cutActiveRef.current = false;
+    cutFreezeTsRef.current = 0;
+    setCutActive(false);
+    /* «старт/зона» помечаем виденными (часть сейва) — за сессию не повторяются;
+       кат-сцена от NPC играбельна повторно — не помечаем */
+    if (cut && markSeen && me && cut.def.trigger !== 'npc') {
+      const key = cut.def.trigger === 'start' ? `start:${cut.def.id}` : `${me}:${cut.def.id}`;
+      if (!cutPlayedRef.current.has(key)) {
+        cutPlayedRef.current.add(key);
+        dispatch({ t: 'cutsceneSeen', id: me, key });
+      }
+    }
+    const next = cutQueueRef.current.shift(); // стартовые играются ОДНА ЗА другой
+    if (next) startCutRef.current(next);
+  };
+  /* ① СТАРТ КАРТЫ: кат-сцены с trigger='start' — по одному разу на партию (общий ключ) */
+  const startCutSessionRef = useRef(0);
+  useEffect(() => {
+    if (!s || s.phase !== 'playing' || !map) return;
+    const started = s.startedAt || 0;
+    if (!started || startCutSessionRef.current === started) return;
+    startCutSessionRef.current = started;
+    const list = (map.cutscenes ?? []).filter((c) => c.trigger === 'start' && (c.pts ?? []).length >= 1 && !s.cutsceneDone?.[`start:${c.id}`]);
+    if (!list.length) return;
+    cutQueueRef.current = list.slice(1);
+    startCutRef.current(list[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s?.phase, s?.startedAt, map]);
+  /* ② ЗОНА-триггер: интервал следит за СВОЕЙ фишкой (ходьба или клетка) —
+   ВПЕРВЫЕ за сессию вошёл в зону — кат-сцена (ключ на игрока, часть сейва) */
+  useEffect(() => {
+    const iv = window.setInterval(() => {
+      const cur = useApp.getState();
+      const sess = cur.session;
+      const mp = cur.sessionMap;
+      if (!sess || sess.phase !== 'playing' || !mp || !cur.selfId) return;
+      if (cutActiveRef.current || dlgOpenIdRef.current) return;
+      const cuts = (mp.cutscenes ?? []).filter((c) => c.trigger === 'zone' && c.zone && (c.pts ?? []).length >= 1);
+      if (!cuts.length) return;
+      const self = sess.players.find((x) => x.id === cur.selfId);
+      if (!self || !self.alive || self.spect) return;
+      const jp = sess.journeyPos?.[cur.selfId];
+      const myPos = jp ?? cellCenter(mp, self.pos);
+      for (const c of cuts) {
+        const z = c.zone!;
+        const key = `${cur.selfId}:${c.id}`;
+        if (sess.cutsceneDone?.[key] || cutPlayedRef.current.has(key)) continue;
+        if (myPos.x >= z.x && myPos.x < z.x + z.w && myPos.y >= z.y && myPos.y < z.y + z.h) {
+          cutPlayedRef.current.add(key);
+          startCutRef.current(c);
+          dispatch({ t: 'cutsceneSeen', id: cur.selfId, key });
+          break;
+        }
+      }
+    }, 350);
+    return () => window.clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  /* ③ NPC ПОКАЗАЛ КАТ-СЦЕНУ: сигнал s.cutscenePlay (host пишет при выборе варианта) —
+   играем только СВЕЖИЙ сигнал для себя (ts после монтирования — хвосты сейва не играем) */
+  const cutPlay = s?.cutscenePlay;
+  useEffect(() => {
+    if (!cutPlay || cutPlay.pid !== me) return;
+    if (cutPlay.ts <= cutLastNpcTsRef.current) return;
+    cutLastNpcTsRef.current = cutPlay.ts;
+    const def = (map?.cutscenes ?? []).find((c) => c.id === cutPlay.id);
+    if (def && (def.pts ?? []).length >= 1) startCutRef.current(def);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cutPlay?.ts, cutPlay?.pid, cutPlay?.id, map]);
+
+  const beltLockpick = (mePlayer?.items ?? []).find((x) => x.kind === 'lockpick' && x.belt);
+  const openHack = (cellIdx: number) => {
+    const lp = (useApp.getState().session?.players.find((x) => x.id === me)?.items ?? []).find((x) => x.kind === 'lockpick' && x.belt);
+    if (!lp) { useApp.getState().toast('Нужна отмычка 🔑 на поясе (надень её в инвентаре)', 'err'); return; }
+    setHackBox({ cellIdx });
+  };
+
+  /* ---------- RUBG: локальный тик перерисовки (позиция самолёта, таймер кармана) ---------- */
+  useEffect(() => {
+    if (!isRubg) return;
+    if (s?.phase !== 'rollOff' && !myStealing && !mySteal) return;
+    const t = setInterval(() => setTick((x) => x + 1), 120);
+    return () => clearInterval(t);
+  }, [isRubg, s?.phase, !!myStealing, !!mySteal]);
+
+  /* ---------- трансляция (NES — canvas напрямую, SEGA — снимок кадра из iframe) ---------- */
+  const streaming = options.broadcast && (isQuest
+    ? (isQuestSolo ? isHost && !!myQJob && qArmed && !qPaused : false) // мульти-QUEST: трансляции НЕТ; QUEST SOLO: хост стримит зрителям
+    : myTurn && ch?.status === 'playing');
+  const streamMs = Math.round(1000 / Math.min(30, Math.max(2, options.streamFps || 10)));
+  useEffect(() => {
+    if (!streaming || !room) return;
+    let busy = false;
+    const t = setInterval(async () => {
+      if (busy) return;
+      busy = true;
+      let data: string | null = null;
+      try {
+        // и NES, и SEGA теперь в EmulatorJS (iframe) — кадр берётся одинаково
+        data = (await ejsApiRef.current?.captureFrame()) ?? null;
+      } catch { data = null; }
+      busy = false;
+      if (data) {
+        try { room.send('stream', { from: me, name: mePlayer?.name ?? '?', data, ts: Date.now() } satisfies StreamPacket); } catch { /* noop */ }
+      }
+    }, streamMs);
+    return () => clearInterval(t);
+  }, [streaming, streamMs, room, me, mePlayer?.name]);
+
+  useEffect(() => {
+    return streamBus.on((p) => {
+      if (p.from !== me && options.broadcast) setStream(p);
+    });
+  }, [me, options.broadcast]);
+
+  /* ---------- ЗВУКИ РАДИУСА у анимаций со звуком ----------
+     Триггер — фишка ИГРАЮЩЕГО игрока: вошла в круг (pa.r) — звук играет (фейд-ин),
+     вышла — затихает. Слышит только играющий.
+     v0.58: в QUEST звук слушается СВОЕЙ фишкой У КАЖДОГО игрока (все ходят одновременно):
+     пока задание играет ОДИН игрок, звук NPC/боссов/анимаций продолжает играть у остальных
+     и глушится ТОЛЬКО У ИГРАЮЩЕГО (на время его задания); в классических режимах —
+     как раньше: слушает играющий, у зрителей звук на время задания гаснет. */
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      const cur = useApp.getState();
+      const m = cur.sessionMap;
+      const sess = cur.session;
+      if (!m || !sess || sess.phase !== 'playing') { stopGroup('amb-'); return; }
+      const act = sess.players[sess.turn % sess.players.length];
+      const ch = sess.challenge;
+      const emuRunning = !!ch && ch.started && (ch.status === 'playing' || ch.status === 'voting');
+      const mine = act?.id === cur.selfId;
+      const myTask = emuRunning && mine; // МОЁ задание крутится — гасим звук только у меня
+      /* в QUEST «уши» — СВОЯ фишка (даже когда играет другой); иначе — фишка играющего */
+      const questOwn = isQuestMode(m.mode)
+        ? (sess.journeyPos?.[cur.selfId] ?? dispRef.current[cur.selfId] ?? null)
+        : null;
+      const d = mine ? dispRef.current[cur.selfId] : questOwn;
+      const wanted = new Map<string, string>();
+      if (d && !myTask) {
+        const alib = new Map((m.animLib ?? []).map((a) => [a.id, a]));
+        for (const pa of m.anims ?? []) {
+          const e = alib.get(pa.aid);
+          if (!e?.snd || !pa.r || pa.r <= 0) continue;
+          if (Math.hypot(d.x - pa.x, d.y - pa.y) <= pa.r) wanted.set(pa.id, e.snd);
+        }
+        /* БОССЫ: звук ожидания живого босса — по тому же радиусу; повержённый молчит.
+           ПАТРУЛЬ (v0.52): босс с маршрутом слышен в его ТЕКУЩЕЙ точке */
+        const blib = new Map((m.bossLib ?? []).map((b) => [b.id, b]));
+        const pBaseA = sess.startedAt || 0;
+        const pNowA = Date.now();
+        for (const pb of m.bosses ?? []) {
+          /* v0.53: повержённый молчит — и в классике (bossDown), и для того, кто
+             победил его в QUEST (свой qBossDown у каждого игрока) */
+          if (sess.bossDown?.[pb.id] || (isQuestMode(m.mode) && (sess.qBossDown?.[cur.selfId] ?? []).includes(pb.id))) continue;
+          const def = blib.get(pb.bid);
+          if (!def?.idleSnd || !pb.r || pb.r <= 0) continue;
+          const bpp = pb.patrol ? patrolPos(pb.patrol, pBaseA, pNowA) : null;
+          if (Math.hypot(d.x - (bpp ? bpp.x : pb.x), d.y - (bpp ? bpp.y : pb.y)) <= pb.r) wanted.set('boss-' + pb.id, def.idleSnd);
+        }
+        /* NPC (QUEST): звук ожидания — по СВОЕЙ фишке (все ходят одновременно, у каждого свой радиус);
+           ПАТРУЛЬ: NPC с маршрутом слышен в его текущей точке */
+        const myPosN = sess.journeyPos?.[cur.selfId] ?? (isQuestMode(m.mode) ? d : null);
+        if (myPosN) {
+          for (const n of m.npcs ?? []) {
+            const ndef = (m.npcLib ?? []).find((x) => x.id === n.nid);
+            if (!ndef?.idleSnd || !n.r || n.r <= 0) continue;
+            const npp = n.patrol ? patrolPos(n.patrol, pBaseA, pNowA) : null;
+            if (Math.hypot(myPosN.x - (npp ? npp.x : n.x), myPosN.y - (npp ? npp.y : n.y)) <= n.r) wanted.set('npc-' + n.id, ndef.idleSnd);
+          }
+        }
+      }
+      syncLoops('amb-', wanted);
+    }, 250);
+    return () => { window.clearInterval(t); killGroup('amb-'); killGroup('mv-'); stopOneShot(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* ---------- тик таймера ---------- */
+  useEffect(() => {
+    const t = setInterval(() => setTick((x) => x + 1), 500);
+    return () => clearInterval(t);
+  }, []);
+
+  /* ---------- v0.53: ЗАХВАТ ИГРОКА ПАТРУЛЬНЫМ БОССОМ ----------
+     Клиент проверяет СВОЮ фишку (каждые ~0.4 с): если живой ДЛЯ МЕНЯ ПАТРУЛЬНЫЙ босс
+     подошёл вплотную (радиус босса b.r или 1.5 клетки) — шлём action bossCapture;
+     хост проверяет дистанцию/кулдаун и мгновенно переносит фишку на СТАРТОВУЮ ячейку
+     (там её ждёт задание) + пишет в лог. Стоячие (не патрульные) боссы не хватают. */
+  const captureCdRef = useRef(0);
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      const cur = useApp.getState();
+      const sess = cur.session;
+      const mp = cur.sessionMap;
+      if (!mp || !sess || sess.phase !== 'playing' || !isBossCatchMode(mp.mode)) return;
+      const self = sess.players.find((x) => x.id === cur.selfId);
+      if (!self || !self.alive || self.spect) return;
+      const myPos = sess.journeyPos?.[cur.selfId];
+      if (!myPos) return;
+      const now = Date.now(); // v0.58: босс может поймать и при открытом диалоге — мир не замирает
+      if (now < captureCdRef.current) return;
+      const base = sess.startedAt || 0;
+      for (const b of mp.bosses ?? []) {
+        if (sess.bossDown?.[b.id]) continue;
+        if ((sess.qBossDown?.[cur.selfId] ?? []).includes(b.id)) continue; // мною повержен — не трогает
+        if (!b.patrol || (b.patrol.pts ?? []).length < 2) continue; // не патрулирует — не хватает
+        if ((sess.qBossHoldAt?.[cur.selfId] ?? {})[b.id]) continue; // v0.54: босс уже ждёт/держит игрока — решение за bossHold off
+        const bp = patrolPos(b.patrol, base, now);
+        if (!bp) continue;
+        const capR = b.r && b.r > 0 ? b.r : CELL * 1.5;
+        if (Math.hypot(myPos.x - bp.x, myPos.y - bp.y) <= capR) {
+          captureCdRef.current = now + 2000; // не спамим action'ами — хост сам ставит свой кулдаун 6 с
+          dispatch({ t: 'bossCapture', id: cur.selfId, bossId: b.id });
+          break;
+        }
+      }
+    }, 400);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* v0.53: звуковой сигнал и короткая тряска при захвате (факт захвата — s.qCaptureAt) */
+  const lastCaptureRef = useRef(0);
+  const walkTileRef = useRef<string | null>(null); // v0.76: последняя плитка СВОЕЙ фишки — вспышка свободного перехода
+  const myCaptureTs = bossCatch && s ? s.qCaptureAt?.[me] : undefined;
+  /* v0.54→v0.65: КИНО-ЗАХВАТ — босс ЛОВИТ И НЕСЁТ фишку к своей первой точке патруля:
+     анимация делается в rAF-цикле (bossDragRef) — босс идёт от места поимки к точке 1,
+     а фишка едет РЯДОМ с ним (сбоку по ходу движения), барахтаясь. После прибытия
+     босс остаётся на точке 1 (bossHoldPinRef), через секунду стартует задание. */
+  const bossDragRef = useRef<{ bossId: string; bx0: number; by0: number; dx: number; dy: number; tx: number; ty: number; t0: number; ms: number } | null>(null);
+  const lastCapTsRef = useRef(0);
+  /* v0.65: позиция босса-носильщика для drawBoard (заполняется в rAF каждый кадр несения) */
+  const bossCarryFxRef = useRef<Record<string, { x: number; y: number; phase: number }>>({});
+  /* v0.65: боссы, ДОВОЛОКШИЕ фишку до точки 1 — пока qBossHoldAt держит их (босс «держит»
+     меня), рисуем их на ПЕРВОЙ точке патруля (t=0 цикла = pts[0]); hold снят (проигрыш
+     задания/смерть) — босс снова патрулирует по формуле */
+  const bossHoldPinRef = useRef<Record<string, boolean>>({});
+  /* v0.65: КИНО-ПОЛОСЫ ЗАХВАТА — те же полосы кат-сцены: показываются с момента поимки
+     (управление у босса) и УБИРАЮТСЯ, когда задание открылось (управление вернули);
+     страховка по времени — если задание не начнётся, полосы уйдут сами */
+  const [carryBars, setCarryBars] = useState(false);
+  const [carryBarsOut, setCarryBarsOut] = useState(false);
+  const carryBarsRef = useRef(false);
+  const carryBarsTimerRef = useRef<number | null>(null);
+  const carryBarsMaxRef = useRef(0);
+  /* v0.56: ОТЛОЖЕННЫЙ ЗАПУСК задания босса — фишку ДОТАЩИЛИ (конец bossDragRef) →
+   пауза 1 СЕКУНДА → клиент шлёт bossTaskGo, хост сверяет qTaskAt и открывает задание.
+   Один раз на захват (capTs — метка захвата). */
+  const bossTaskTimerRef = useRef<number | null>(null);
+  const bossTaskForRef = useRef(0);
+  const scheduleBossTaskGo = (capTs: number, delayMs: number) => {
+    if (!capTs || bossTaskForRef.current === capTs) return;
+    bossTaskForRef.current = capTs;
+    if (bossTaskTimerRef.current) window.clearTimeout(bossTaskTimerRef.current);
+    bossTaskTimerRef.current = window.setTimeout(() => {
+      const cur = useApp.getState();
+      if (cur.selfId) dispatch({ t: 'bossTaskGo', id: cur.selfId });
+    }, Math.max(0, delayMs));
+  };
+  /* v0.65: при уходе с экрана гасим таймеры полос захвата */
+  useEffect(() => () => {
+    if (carryBarsTimerRef.current) window.clearTimeout(carryBarsTimerRef.current);
+  }, []);
+  useEffect(() => {
+    if (myCaptureTs && myCaptureTs !== lastCaptureRef.current) {
+      lastCaptureRef.current = myCaptureTs;
+      sfx.alarm();
+    }
+  }, [myCaptureTs]);
+
+  /* v0.58: «БОСС ЖДЁТ КОНЦА РАЗГОВОРА» (bossHold on/off при открытии окна) УДАЛЁН —
+     боссы продолжают ходить по точкам и ловить, даже когда игрок в диалоге/торговле
+     (кроме играющего на карте есть другие игроки — мир не обязан замирать). */
+
+  /* ---------- полный экран эмулятора ---------- */
+  useEffect(() => {
+    const fn = () => setIsFs(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', fn);
+    return () => document.removeEventListener('fullscreenchange', fn);
+  }, []);
+  const toggleFs = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => undefined);
+    } else {
+      emuWrapRef.current?.requestFullscreen().catch(() => useApp.getState().toast('Браузер запретил полный экран', 'err'));
+    }
+  };
+
+  /* ---------- карта мира поверх задания: эмулятор не сбрасывается, а встаёт на паузу ---------- */
+  useEffect(() => {
+    if (peekMap && !prevPeekRef.current) {
+      const cur = useApp.getState();
+      const sess = cur.session;
+      const c = sess?.challenge;
+      const act = sess ? sess.players[sess.turn % sess.players.length] : null;
+      if (c && c.status === 'playing' && c.started && !c.paused && act?.id === cur.selfId) {
+        dispatch({ t: 'togglePause', id: cur.selfId });
+      }
+    }
+    prevPeekRef.current = peekMap;
+  }, [peekMap]);
+
+  /* ---------- сброс полноэкранного режима при смене челленджа ---------- */
+  useEffect(() => {
+    const c = s?.challenge;
+    if (!c || c.status === 'choose') {
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s?.challenge?.cellIdx, s?.challenge?.status]);
+
+  /* ---------- очередь hops при moving ---------- */
+  useEffect(() => {
+    if (s?.moving) {
+      hopRef.current[s.moving.player] = { queue: [...s.moving.path], last: 0 };
+      setViewMode('follow');
+      /* ЗВУК ХОДА ФИШКИ: у фишки с анимацией со звуком — её собственный звук на всё время
+         движения (слышат все, как и «щелчки» шагов); у фишек без звука — шаги как раньше */
+      const cur = useApp.getState();
+      const mp = cur.session?.players.find((x) => x.id === s.moving!.player);
+      const snd = mp?.tokenKey ? (cur.sessionMap?.mapTokens ?? []).find((x) => x.id === mp.tokenKey)?.anim?.snd : undefined;
+      for (const k of [...moveSndRef.current]) {
+        if (k !== s.moving.player) { moveSndRef.current.delete(k); stopLoop(`mv-${k}`, 0.25); }
+      }
+      if (snd) {
+        moveSndRef.current.add(s.moving.player);
+        startLoop(`mv-${s.moving.player}`, snd, { instant: true, spd: 0.3 });
+      }
+    } else {
+      // движение кончилось — гасим все звуки хода
+      for (const k of [...moveSndRef.current]) { moveSndRef.current.delete(k); stopLoop(`mv-${k}`, 0.25); }
+    }
+  }, [s?.moving?.ts]);
+
+  /* ---------- FX: разовые ЗВУКИ победы/поражения ----------
+     5-я/6-я анимации фишки — её winSnd/loseSnd; реакции боссов — winSnd/loseSnd босса.
+     Каждый fx озвучивается ОДИН раз по факту появления в сессии, но С УЧЁТОМ паузы
+     delay: сначала секунда тишины после задания, звук — в момент старта клипов.
+     ОДНОВРЕМЕННОСТЬ: реакции боссов и фишка стартуют в один момент — звуки играют
+     ПАРАЛЛЕЛЬНО (overlap), иначе фишкин звук глушал босский и у босса слышали только idle. */
+  useEffect(() => {
+    const fxList = s?.fxs ?? [];
+    if (!fxList.length) return;
+    const m = useApp.getState().sessionMap;
+    if (!m) return;
+    for (const fx of fxList) {
+      if (fxSndRef.current.has(fx.id)) continue;
+      fxSndRef.current.add(fx.id);
+      let snd: string | undefined;
+      if (fx.kind === 'tokenWin' || fx.kind === 'tokenLose') {
+        const pl = s!.players.find((x) => x.id === fx.player);
+        const tk = pl?.tokenKey ? (m.mapTokens ?? []).find((x) => x.id === pl.tokenKey) : null;
+        snd = fx.kind === 'tokenWin' ? tk?.anim?.winSnd : tk?.anim?.loseSnd;
+      } else {
+        const b = (m.bosses ?? []).find((x) => x.id === fx.bossId);
+        const def = b ? (m.bossLib ?? []).find((x) => x.id === b.bid) : null;
+        snd = fx.kind === 'bossWin' ? def?.winSnd : fx.kind === 'bossDef' ? def?.defSnd : def?.loseSnd;
+      }
+      if (snd) {
+        const delay = Math.max(0, fx.delay ?? 0);
+        if (delay > 0) {
+          const to = window.setTimeout(() => playOneShot(snd!, { overlap: true }), delay);
+          fxSndTimersRef.current.push(to);
+        } else {
+          playOneShot(snd, { overlap: true });
+        }
+      }
+    }
+    if (fxSndRef.current.size > fxList.length) {
+      const ids = new Set(fxList.map((f) => f.id));
+      for (const k of [...fxSndRef.current]) if (!ids.has(k)) fxSndRef.current.delete(k);
+    }
+  }, [s?.fxs]);
+
+  /* отложенные звуки fx: гасим при размонтировании, чтобы не «догоняли» после выхода */
+  useEffect(() => () => {
+    for (const to of fxSndTimersRef.current) clearTimeout(to);
+    fxSndTimersRef.current = [];
+  }, []);
+
+  /* ---------- осмотр карты своим ходом сбрасывается при броске/челлендже ---------- */
+  useEffect(() => {
+    if (s?.moving || s?.challenge || s?.pendingCard || s?.quiz || s?.awaitPost) {
+      lookPanRef.current = { x: 0, y: 0 };
+      lookZoomRef.current = 1;
+    }
+  }, [s?.moving?.ts, s?.challenge, s?.pendingCard, s?.quiz, s?.awaitPost]);
+
+  /* ---------- авто-доезд (страховка хоста) ----------
+     Бюджет движения — по РЕАЛЬНОЙ длине пути: ячейки на карте стоят где угодно в пикселях
+     (свободное размещение), стрелки-переходы и карточки дают перегоны любой длины, а не 64px.
+     Раньше бюджет считался «по одной клетке на запись пути» — на скорости 0.5 кл/с и на любых
+     длинных перегонах он был КОРЧЕ реального хода: страховка обрывала ход на полпути, камера
+     прыгала на следующего игрока, а фишка телепортировалась. Теперь: сумма длин отрезков
+     (подход + перегоны между ячейками) / скорость карты × запас ×2 + 10 с. Каким бы долгим
+     ни был ход — фишка обязана дойти до конца, и это все должны увидеть.
+     Там же страховка спектакля fx: если у виновника зависло/потерялось — хост доводит сам. */
+  useEffect(() => {
+    if (!room?.isHost) return;
+    const t = setInterval(() => {
+      const cur = useApp.getState();
+      const sess = cur.session;
+      if (!sess) return;
+      /* зависший fx-спектакль: пауза+клипы+запас — и хост сам разбивает/завершает */
+      const gfx = (sess.fxs ?? []).find((f) => f.gate);
+      if (gfx) {
+        if (Date.now() - gfx.ts > (gfx.delay ?? 0) + gfx.ms + 4000) {
+          if (gfx.after === 'post' && !sess.broken?.[gfx.cellIdx]) dispatch({ t: 'fxBreak', id: gfx.player });
+          dispatch({ t: 'fxDone', id: gfx.player });
+        }
+        return;
+      }
+      const mv = sess.moving;
+      if (!mv) return;
+      const mp = cur.sessionMap;
+      const cps = clampMoveSpeed(mp?.moveSpeed ?? DEF_MOVE_SPEED); // кл/с из карты
+      let dist = 0;
+      const firstC = mp && mp.cells[mv.path[0]] ? cellCenter(mp, mv.path[0]) : null;
+      if (firstC && mp) {
+        /* подход: обычно ровно клетка (фишка стоит в центре своей ячейки), но берем МАКСИМУМ
+           с фактическим отрисованным положением и стартовой ячейкой — карточки/телепорты
+           дают первый перегон любой длины; завышение безопасно (ход просто не оборвётся) */
+        const moverP = sess.players.find((x) => x.id === mv.player);
+        const dispSt = dispRef.current[mv.player];
+        let approach = CELL;
+        if (dispSt) approach = Math.max(approach, Math.hypot(firstC.x - dispSt.x, firstC.y - dispSt.y));
+        if (moverP) { const c0 = cellCenter(mp, moverP.pos); approach = Math.max(approach, Math.hypot(firstC.x - c0.x, firstC.y - c0.y)); }
+        dist += approach;
+        let prev = firstC;
+        for (let i = 1; i < mv.path.length; i++) {
+          const c = mp.cells[mv.path[i]] ? cellCenter(mp, mv.path[i]) : null;
+          if (c) { dist += Math.hypot(c.x - prev.x, c.y - prev.y); prev = c; }
+        }
+      } else {
+        dist = mv.path.length * CELL;
+      }
+      const walkMs = (dist / (cps * CELL)) * 1000; // время пути при скорости карты, мс
+      const budget = Math.max(8000, walkMs * 2 + 10000); // двойной запас + 10 с
+      if (Date.now() - mv.ts > budget) {
+        dispatch({ t: 'arrived', id: mv.player });
+      }
+    }, 2000);
+    return () => clearInterval(t);
+  }, [room?.isHost]);
+
+  /* ---------- RUBG: РАДИУС АТАКИ для оверлея (реф — рендер-цикл читает без перезапуска) ---------- */
+  const aimRadiusRef = useRef<{ x: number; y: number; r: number } | null>(null);
+  useEffect(() => {
+    const it = aimItemId ? (mePlayer?.items ?? []).find((x) => x.id === aimItemId) : undefined;
+    const meta = it ? RUBG_ITEMS[it.kind] : null;
+    const mp = s?.journeyPos?.[me];
+    aimRadiusRef.current = meta && meta.radius > 0 && mp ? { x: mp.x, y: mp.y, r: meta.radius * CELL } : null;
+  }, [aimItemId, mePlayer?.items, s?.journeyPos?.[me], me]);
+
+  /* ---------- главный цикл отрисовки ---------- */
+  useEffect(() => {
+    let raf = 0;
+    let lastT = 0;
+    const loop = (t: number) => {
+      // dt в «кадрах по 60fps» — анимация не зависит от производительности ПК.
+      // Кап 30 кадров (~0.5 с): скорость фишки верна реальному времени даже при просадке
+      // до 2 FPS — ход не «растягивается», страховка хоста не обрывает его, фишка доходит.
+      const dt = lastT ? Math.min(30, (t - lastT) / 16.7) : 1;
+      lastT = t;
+      const cv = canvasRef.current;
+      const cur = useApp.getState();
+      const m = cur.sessionMap;
+      const sess = cur.session;
+      if (cv && m && sess) {
+        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        const w = cv.clientWidth, h = cv.clientHeight;
+        if (cv.width !== Math.floor(w * dpr) || cv.height !== Math.floor(h * dpr)) {
+          cv.width = Math.floor(w * dpr); cv.height = Math.floor(h * dpr);
+        }
+        const ctx = cv.getContext('2d')!;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        // токены — медленное, «рукотворное» перемещение по ячейкам
+        const act = sess.players[sess.turn % sess.players.length];
+        const smooth = !!m.smoothMove; // плавный ход (без прыжков) задан картой
+        // скорость фишек — ТОЛЬКО из карты (кл/с); менять её можно в редакторе карт,
+        // прямо во время партии скорость не меняется (не было такой функции и не нужно)
+        const cps = clampMoveSpeed(m.moveSpeed ?? DEF_MOVE_SPEED);
+        /* v0.55: SKILL со свободным перемещением ходит как JOURNEY */
+        const journeyMode = isJourneyLike(m.mode) || (m.mode === 'skill' && !!m.skillFree);
+        const mszJ = journeyMode ? mapSize(m) : null;
+        let anyoneMoving = false;
+        const mapToks = m.mapTokens ?? [];
+        /* ---------- FX: локальный старт разовых анимаций (по id) ----------
+           Клипы играются от ЛОКАЛЬНОГО кадра появления fx + пауза delay (секунда
+           тишины после задания); протухшие id чистим.
+           В МОМЕНТ старта клипов у ИГРОКА-виновника шлётся fxBreak (ячейка разлетается
+           осколками); когда клип доиграл (с учётом «послевкусия») — шлём fxDone. */
+        const fxList = sess.fxs ?? [];
+        /* JOURNEY: «свободный режим» — очереди ходов нет, все фишки ходят одновременно.
+           Пока идёт задание/окно карточки/квиз/анимация победы — фишки ВСЕХ стоят:
+           задание в прямом эфире смотрят все (после него снова свободный ход). */
+        const journeyFree = journeyMode && !sess.moving && !sess.challenge && !sess.pendingCard && !sess.quiz && !sess.awaitPost && !fxList.some((f) => f.gate);
+        /* v0.56: КАТ-СЦЕНА — весь мир замер (фишки не двигаются, камера летит по маршруту) */
+        const cutFreeze = cutActiveRef.current;
+        for (const fx of fxList) if (!fxStartRef.current.has(fx.id)) fxStartRef.current.set(fx.id, t + (fx.delay ?? 0));
+        if (fxStartRef.current.size > fxList.length) {
+          const ids = new Set(fxList.map((f) => f.id));
+          for (const k of [...fxStartRef.current.keys()]) if (!ids.has(k)) fxStartRef.current.delete(k);
+        }
+        for (const fx of fxList) {
+          if (!fx.gate || fx.player !== me || fxDoneSentRef.current.has(fx.id)) continue;
+          const st0 = fxStartRef.current.get(fx.id) ?? t;
+          if (fx.after === 'post' && !fxBreakSentRef.current.has(fx.id) && t >= st0) {
+            // пауза прошла — клипы начались: разбиваем ячейку (осколки) синхронно с анимацией
+            fxBreakSentRef.current.add(fx.id);
+            dispatch({ t: 'fxBreak', id: me });
+          }
+          if (t - st0 >= fx.ms) {
+            fxDoneSentRef.current.add(fx.id);
+            dispatch({ t: 'fxDone', id: me });
+          }
+        }
+        /* v0.65: каждый кадр позиции несения собираются заново (заполняются в ветке «меня поймал босс») */
+        bossCarryFxRef.current = {};
+        const tokensAll = sess.players.map((p, pi) => {
+          const center = cellCenter(m, p.pos);
+          let d = dispRef.current[p.id];
+          if (!d) { d = { ...center }; dispRef.current[p.id] = d; }
+          let carriedK = -1; // v0.65: фаза несения боссом (0..1), ставится в ветке моей фишки
+
+          /* ---------- JOURNEY: фишки ходят НАПРЯМУЮ, БЕЗ ОЧЕРЕДИ ХОДОВ ----------
+             НОВЫЙ JOURNEY: ВСЕ игроки двигают свои фишки ОДНОВРЕМЕННО — своя фишка
+             всегда локальная симуляция (мгновенный отклик, апдейты хосту ~6 раз/с).
+             Чужие фишки плавно идут от авторитетной позиции из сети. Пока идёт
+             задание одного из игроков — все фишки стоят, ходит только задание. */
+          if (journeyMode) {
+            const jp = sess.journeyPos?.[p.id];
+            let jdir: TokenDir | undefined;
+            if (p.id === me && p.alive && !p.spect) {
+              let self = journeySelf.current;
+              if (!self) {
+                // при появлении считаем фишку УЖЕ СТОЯЩЕЙ во всех зонах порталов, содержащих точку старта,
+                // чтобы портал под стартом не сработал сразу
+                const sx0 = jp?.x ?? center.x, sy0 = jp?.y ?? center.y;
+                const pin0 = new Set<string>();
+                for (const q of m.portals ?? []) if (sx0 >= q.x && sx0 < q.x + q.w && sy0 >= q.y && sy0 < q.y + q.h) pin0.add(q.id);
+                self = journeySelf.current = { x: sx0, y: sy0, dir: undefined, moving: false, dirty: false, lastSent: 0, pinside: pin0 };
+              }
+              /* АНТИ-ДЕСИНК: авторитетная точка ушла ДАЛЕКО, пока фишка стоит (прыжок из самолёта
+                 в RUBG — точка приземления приходит от хоста ПОСЛЕ локальной инициализации;
+                 восстановление партии). Мгновенный снап к ней. Идущего НЕ трогаем — локальная
+                 симуляция всегда чуть впереди сети. Раньше фишка после прыжка оставалась стоять
+                 на стартовой ячейке, и «Старт игры» происходил не там, где спрыгнул игрок. */
+              /* v0.54→v0.65: КИНО-ЗАХВАТ БОССОМ — новый факт захвата (journeyPos.ts совпал с
+                 qCaptureAt): босс НЕСЁТ фишку от места поимки к ПЕРВОЙ ТОЧКЕ ПАТРУЛЯ —
+                 идёт сам (видно по полю), фишка едет РЯДОМ (сбоку по ходу движения).
+                 + КИНО-ПОЛОСЫ: с момента поимки управление у босса — экран в полосах
+                 кат-сцены, как в кино; полосы уйдут, когда откроется задание. */
+              if (bossCatch && sess.qCaptureAt?.[me] && jp && sess.qCaptureAt[me] === jp.ts && lastCapTsRef.current !== jp.ts && !cutActiveRef.current) {
+                lastCapTsRef.current = jp.ts;
+                const capBossId = sess.qCaptureBoss?.[me];
+                const capBoss = capBossId ? (m.bosses ?? []).find((x) => x.id === capBossId) : null;
+                /* босс в момент поимки ЗАМЕР (qBossHoldAt = ts захвата) — его позиция и есть
+                   стартовый пункт несения; если босса не нашли — работает старое поведение */
+                const capHoldTs = capBossId ? (sess.qBossHoldAt?.[me] ?? {})[capBossId] : undefined;
+                const bStart = capBoss?.patrol ? patrolPos(capBoss.patrol, sess.startedAt || 0, Date.now(), capHoldTs) : null;
+                const distC = Math.hypot(jp.x - self.x, jp.y - self.y);
+                if (capBoss && bStart && distC > 4) {
+                  const spdC = cps * CELL; // px/с — скорость карты
+                  /* фишка ЕДЕТ СБОКУ от босса (перпендикуляр хода движения, отступ от габарита босса) */
+                  const ang = Math.atan2(jp.y - bStart.y, jp.x - bStart.x) + Math.PI / 2;
+                  const off = Math.max(20, capBoss.w * 0.45);
+                  const dragMs = Math.max(700, Math.min(2400, (distC / spdC) * 1000));
+                  bossDragRef.current = { bossId: capBoss.id, bx0: bStart.x, by0: bStart.y, dx: Math.cos(ang) * off, dy: Math.sin(ang) * off, tx: jp.x, ty: jp.y, t0: Date.now(), ms: dragMs };
+                  carryBarsMaxRef.current = Date.now() + dragMs + 4200; // страховка: несение + 1с паузы + запас
+                } else {
+                  /* v0.56: тянуть было НЕКУДА (фишка уже в точке) — задание через 0.7 с
+                     «нулевого оттаскивания» + 1 с задержки (та же математика, что у хоста) */
+                  scheduleBossTaskGo(jp.ts, 1700);
+                  carryBarsMaxRef.current = Date.now() + 4400;
+                }
+                /* v0.65: ПОЛОСЫ ЗАХВАТА — «управление у босса» (уйдут с открытием задания) */
+                if (!carryBarsRef.current) {
+                  carryBarsRef.current = true;
+                  setCarryBars(true);
+                  setCarryBarsOut(false);
+                  if (carryBarsTimerRef.current) { window.clearTimeout(carryBarsTimerRef.current); carryBarsTimerRef.current = null; }
+                }
+              }
+              const bDrag = bossDragRef.current;
+              if (bDrag) {
+                /* v0.65: БОСС НЕСЁТ ФИШКУ: сам босс едет по easeInOutQuad от места поимки
+                   к точке 1 (его позиция уходит в drawBoard через bossCarryFxRef),
+                   фишка — РЯДОМ (сбоку по ходу), ввод игнорируется, анти-телепорт и
+                   порталы не действуют, пока не доехали */
+                const k = Math.max(0, Math.min(1, (Date.now() - bDrag.t0) / bDrag.ms));
+                const ease = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+                const bxN = bDrag.bx0 + (bDrag.tx - bDrag.bx0) * ease;
+                const byN = bDrag.by0 + (bDrag.ty - bDrag.by0) * ease;
+                bossCarryFxRef.current[bDrag.bossId] = { x: bxN, y: byN, phase: k };
+                self.x = bxN + bDrag.dx;
+                self.y = byN + bDrag.dy;
+                self.moving = false;
+                self.dirty = false;
+                carriedK = k; // фаза несения — анимация фишки (барахтается + вспышка)
+                if (k >= 1) {
+                  bossDragRef.current = null;
+                  bossHoldPinRef.current[bDrag.bossId] = true; // босс остаётся на точке 1 (пока «держит»)
+                  delete bossCarryFxRef.current[bDrag.bossId];
+                  carriedK = -1;
+                  self.pinside.clear();
+                  for (const q of m.portals ?? []) if (self.x >= q.x && self.x < q.x + q.w && self.y >= q.y && self.y < q.y + q.h) self.pinside.add(q.id);
+                  /* v0.56: фишка НА МЕСТЕ — через 1 секунду запускается задание босса */
+                  scheduleBossTaskGo(lastCapTsRef.current, 1000);
+                }
+              } else if (jp && !self.moving && !self.dirty) {
+                const snapD = Math.hypot(jp.x - self.x, jp.y - self.y);
+                if (snapD > CELL * 1.5) {
+                  self.x = jp.x;
+                  self.y = jp.y;
+                  self.pinside.clear();
+                  for (const q of m.portals ?? []) if (self.x >= q.x && self.x < q.x + q.w && self.y >= q.y && self.y < q.y + q.h) self.pinside.add(q.id);
+                }
+              }
+              let vx = 0, vy = 0;
+              /* v0.59: ОКНО МОЕГО ЗАДАНИЯ = фишка стоит (QUEST — личное/боссовое, RUBG — личное:
+                 эти задания живут в qJobs/rubg.jobs и раньше не глушили ходьбу; гейт — то же
+                 условие, что открывает окно). JOURNEY/SKILL и классика глушились sess.challenge. */
+              const jqRun = me && sess.qJobs ? sess.qJobs[me] : undefined;
+              const rjRun = me && sess.rubg?.jobs ? sess.rubg.jobs[me] : undefined;
+              const taskWinOpen = (jqRun !== undefined && !!cellTaskOf(sess, m, jqRun.cellIdx)) || (rjRun !== undefined && !!cellTaskOf(sess, m, rjRun.cellIdx));
+              const canWalk = sess.phase === 'playing' && !sess.moving && !sess.challenge && !sess.pendingCard && !sess.quiz && !sess.awaitPost && !fxList.some((f) => f.gate) && !(sess.qCards && me && sess.qCards[me]) && !taskWinOpen && !bossDragRef.current && !cutActiveRef.current; // v0.54: во время оттаскивания боссом ходить нельзя · v0.56: в кат-сцене мир замер · v0.59: при выполнении задания фишка стоит · v0.65: при несении тоже
+              /* v0.65: КИНО-ПОЛОСЫ ЗАХВАТА — УБИРАЮТСЯ, когда открылось задание босса
+                 (управление вернули) или по страховочному таймеру (задание не начнётся) */
+              if (carryBarsRef.current && (taskWinOpen || Date.now() > carryBarsMaxRef.current)) {
+                carryBarsRef.current = false;
+                setCarryBars(false);
+                setCarryBarsOut(true);
+                if (carryBarsTimerRef.current) window.clearTimeout(carryBarsTimerRef.current);
+                carryBarsTimerRef.current = window.setTimeout(() => setCarryBarsOut(false), 850);
+              }
+              if (canWalk) {
+                for (const kd of [...journeyKeys.current, ...journeyPadRef.current]) {
+                  if (kd === 'up') vy -= 1; else if (kd === 'down') vy += 1;
+                  else if (kd === 'left') vx -= 1; else if (kd === 'right') vx += 1;
+                }
+              }
+              const walking = vx !== 0 || vy !== 0;
+              if (walking) {
+                const len = Math.hypot(vx, vy);
+                const spd = cps * CELL * (dt / 60); // px за кадр — скорость из карты
+                // НЕВИДИМЫЕ СТЕНЫ: пробуем ось X и ось Y отдельно — фишка СКОЛЬЗИТ по стене,
+                // а не залипает в ней; центр фишки не заходит внутрь прямоугольника стены
+                let nx = Math.max(8, Math.min((mszJ?.w ?? 2048) - 8, self.x + (vx / len) * spd));
+                let ny = Math.max(8, Math.min((mszJ?.h ?? 2048) - 8, self.y + (vy / len) * spd));
+                // ПЛИТОЧНЫЙ РЕЖИМ КАРТ: фишка НЕ выходит за край СВОЕЙ карты-плитки
+                // (скользит по краю, как по стене); портал переносит НАПРЯМУЮ — без зажима.
+                // v0.76: зажим только у «порталов» (ports-*); «свободный переход» (free-*) ходит через край
+                const tgJ = m.tileGrid;
+                if (tgJ && tilePlayPorts(tgJ)) {
+                  const ct = tileAt(tgJ, self.x, self.y) ?? tileAt(tgJ, nx, ny);
+                  if (ct) {
+                    const tr = tileRectOf(tgJ, ct);
+                    nx = Math.max(tr.x + 8, Math.min(tr.x + tr.w - 8, nx));
+                    ny = Math.max(tr.y + 8, Math.min(tr.y + tr.h - 8, ny));
+                  }
+                }
+                const colR = colRadiusOf(p, mapToks); // v0.57: радиус коробки фишки — от размера её спрайта
+                const removedWalls = sess.wallsRemoved ?? [];
+                const myKeys = (me && sess.qKeys?.[me]) || []; // v0.55: свои ключи — двери своего цвета открыты
+                if (!inWallBox(m, nx, self.y, colR, removedWalls, myKeys)) self.x = nx; // v0.57: коробка — внутрь стены не пройти
+                if (!inWallBox(m, self.x, ny, colR, removedWalls, myKeys)) self.y = ny; // v0.57: скольжение по осям сохранено
+                self.dir = Math.abs(vx) >= Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
+                self.moving = true;
+                self.dirty = true;
+                jdir = self.dir;
+              } else {
+                self.moving = false;
+              }
+              /* ПОРТАЛЫ: фишка ВОШЛА в зону (снаружи внутрь) — мгновенный перенос в точку
+                 перехода (обычно на другой плитке). Повторное срабатывание — только после
+                 выхода из зоны; после переноса зоны, содержащие точку выхода, считаются
+                 «уже внутри» — не телепортируем обратно сразу. */
+              const pzs = m.portals ?? [];
+              if (pzs.length && canWalk) {
+                const inPz = (q: PortalZone) => self.x >= q.x && self.x < q.x + q.w && self.y >= q.y && self.y < q.y + q.h;
+                for (const pz of pzs) {
+                  const inside = inPz(pz);
+                  const was = self.pinside.has(pz.id);
+                  if (inside && !was && pz.tx !== undefined && pz.ty !== undefined) {
+                    self.x = Math.max(8, Math.min((mszJ?.w ?? 2048) - 8, pz.tx));
+                    self.y = Math.max(8, Math.min((mszJ?.h ?? 2048) - 8, pz.ty));
+                    self.tp = true; // хост примет прыжок без анти-телепорта, зрители — снапнутся
+                    self.dirty = true;
+                    snapCamRef.current = true; // камера мгновенно за фишкой
+                    self.pinside.clear();
+                    for (const q of pzs) if (inPz(q)) self.pinside.add(q.id);
+                    sfx.portal();
+                    portalTpAtRef.current = Date.now(); // смена комнаты через портал — БЕЗ доп. звука (уже прозвучал)
+                    break; // один портал за кадр
+                  }
+                  if (inside) self.pinside.add(pz.id);
+                  else self.pinside.delete(pz.id);
+                }
+              }
+              /* v0.76: «НЕВИДИМЫЕ соседи + СВОБОДНЫЙ переход» — переход ходьбой через край
+                 плитки отыгрывается как смена комнаты: вспышка + звук портала (через портал
+                 звук уже прозвучал — не дублируем). */
+              const tgF = m.tileGrid;
+              if (tgF && tilePlayHidden(tgF)) {
+                const ntJ = tileAt(tgF, self.x, self.y);
+                if (ntJ && walkTileRef.current && ntJ.id !== walkTileRef.current && Date.now() - portalTpAtRef.current > 300) {
+                  sfx.portal();
+                  setRoomFlashTs(Date.now());
+                }
+                if (ntJ) walkTileRef.current = ntJ.id;
+              }
+              d.x = self.x; d.y = self.y;
+              if (self.moving) anyoneMoving = true;
+              // сетевые апдейты: в движении ~6 раз/с, на остановке — финальная точка
+              const nowMs = Date.now();
+              if (self.dirty && ((self.moving && nowMs - self.lastSent > 160) || !self.moving)) {
+                self.dirty = false;
+                self.lastSent = nowMs;
+                dispatch({ t: 'journeyMove', id: me, x: Math.round(self.x), y: Math.round(self.y), dir: self.dir, mv: self.moving, tp: self.tp || undefined });
+                self.tp = false;
+              }
+            } else {
+              // ЧУЖАЯ ФИШКА (трансляция): ходит СО СКОРОСТЬЮ КАРТЫ — той же, с какой ходит
+              // сам игрок. Апдейты (~6/с) лишь ПОДТВЕРЖДАЮТ движение: якорь + направление +
+              // флаг «идёт/стоит» (mv). Между апдейтами фишка идёт от якоря по направлению
+              // ровно со скоростью карты — БЕЗ оценки скорости по дельтам (округление до
+              // целого пикселя + джиттер телефона делали её «плавающей» — отсюда
+              // подтормаживание у зрителей) и БЕЗ «тающего» окна экстраполяции (пауза в
+              // апдейтах тормозила фишку). Лизр глушит остаточную погрешность округления.
+              const nowMs = Date.now();
+              let rj = journeyRemote.current[p.id];
+              const tgt0 = jp ?? center;
+              if (!rj) rj = journeyRemote.current[p.id] = { ax: tgt0.x, ay: tgt0.y, vx: 0, vy: 0, t: nowMs, dir: jp?.dir, mv: !!jp?.mv };
+              if (jp && (jp.x !== rj.ax || jp.y !== rj.ay || jp.dir !== rj.dir || !!jp.mv !== rj.mv)) {
+                rj.ax = jp.x; rj.ay = jp.y; rj.dir = jp.dir; rj.mv = !!jp.mv; rj.t = nowMs;
+                if (jp.tp) { d.x = jp.x; d.y = jp.y; portalTpAtRef.current = Date.now(); } // прыжок через портал — у зрителя мгновенный перенос
+                const spd = cps * CELL; // px/с — РОВНО скорость карты, как у самого игрока
+                const dv = rj.dir ? DIRV[rj.dir] : null;
+                rj.vx = rj.mv && dv ? dv[0] * spd : 0;
+                rj.vy = rj.mv && dv ? dv[1] * spd : 0;
+              }
+              // апдейтов нет ~полсекунды (стоп-обновление потерялось) — гасим скорость
+              const fresh = nowMs - rj.t < 500;
+              if (!fresh) { rj.vx = 0; rj.vy = 0; }
+              const age = Math.max(0, (nowMs - rj.t) / 1000);
+              const exX = rj.ax + rj.vx * age, exY = rj.ay + rj.vy * age;
+              if (!cutFreeze) { // v0.56: в кат-сцене фишки ВСЕ стоят
+                d.x += (exX - d.x) * Math.min(1, 0.16 * dt);
+                d.y += (exY - d.y) * Math.min(1, 0.16 * dt);
+              }
+              jdir = fresh && rj.mv ? rj.dir : undefined; // идёт — походка по направлению; стоит — idle
+              if (journeyFree && p.id === act?.id && fresh && rj.mv) anyoneMoving = true;
+            }
+            const tokDefJ = p.tokenKey ? mapToks.find((x) => x.id === p.tokenKey) : null;
+            const tokSizeJ = tokDefJ ? (tokDefJ.size ?? (tokDefJ.anim ? 64 : 34)) : (p.tokenSize ?? 34);
+            // FX: пока играет 5-я/6-я анимация этого игрока — клип идёт ОДИН раз вместо обычной анимации.
+            // Пока длится пауза delay (секунда тишины) — фишка живёт обычной анимацией, клип ещё НЕ начался.
+            const fxA = fxList.find((f) => f.player === p.id && (f.kind === 'tokenWin' || f.kind === 'tokenLose'));
+            const fxASt = fxA ? fxStartRef.current.get(fxA.id) : undefined;
+            const fxAOn = !!fxA && fxASt !== undefined && t >= fxASt; // пауза прошла?
+            const fxAClip: AnimClip | undefined = fxA && fxAOn
+              ? (fxA.kind === 'tokenWin' ? tokDefJ?.anim?.win : tokDefJ?.anim?.lose)
+              : undefined;
+            return {
+              x: d.x, y: d.y, color: PLAYER_COLORS[p.color],
+              active: act?.id === p.id, alive: p.alive, label: p.name,
+              img: p.tokenImg ?? null,
+              anim: tokDefJ?.anim,
+              dir: jdir,
+              mv: jdir !== undefined, // идёт СЕЙЧАС — только у идущей фишки покачивание (на месте фишка стоит ровно)
+              carried: p.id === me && carriedK >= 0 ? carriedK : undefined, // v0.65: меня несёт босс — фишка барахтается
+              phase: pi * 0.53,
+              size: tokSizeJ,
+              override: fxAClip?.frames.length ? fxAClip : undefined,
+              overrideStart: fxAClip?.frames.length ? fxASt : undefined,
+            };
+          }
+
+          const hop = hopRef.current[p.id];
+          let lift = 0; // вертикальный «подскок» фишки при движении (в плавном режиме — нет)
+          let movingNow = false;
+          const mvActive = !!sess.moving && sess.moving.player === p.id;
+          // Хост уже завершил движение (moving null или принадлежит другому ходу)? Очередь
+          // НЕ сбрасываем: фишка САМА доигрывает путь до последней ячейки — все видят,
+          // как она доходит до места назначения, и лишь потом сходится с авторитетной
+          // позицией (она = последняя ячейка пути). Раньше очередь обнулялась мгновенно,
+          // и фишка «прыгала» к концу, не дойдя.
+          if (hop && hop.queue.length && !cutFreeze) { // v0.56: в кат-сцене фишки ВСЕ стоят
+            anyoneMoving = true;
+            movingNow = true;
+            if (smooth) {
+              /* ПЛАВНЫЙ ХОД БЕЗ ОСТАНОВОК: фишка идёт с ПОСТОЯННОЙ скоростью по всему
+                 пути сразу — не тормозит у каждой клетки и не «отсчитывает» их;
+                 излишек шага переносится на следующий отрезок, повороты пути = смена направления.
+                 Скорость — ровно та, что задал автор карты (moveSpeed): считаем её от размера
+                 клетки, а НЕ от расстояния до первой клетки пути — раньше seg0 «плавал»
+                 от хода к ходу (фишка не по центру, лаг, доводка) и ход шёл то быстро, то медленно. */
+              if (hop.speed === undefined) {
+                hop.speed = smoothPxPerFrame(CELL, cps); // px за кадр 60fps — одинаковый на каждом ходу
+              }
+              let remain = hop.speed * dt;
+              while (remain > 0 && hop.queue.length) {
+                const tgt = cellCenter(m, hop.queue[0]);
+                const dx = tgt.x - d.x, dy = tgt.y - d.y;
+                const dist = Math.hypot(dx, dy);
+                if (dist <= remain || dist < 0.5) { // dist < 0.5 — нулевой отрезок (стоим в этой клетке): сразу пройти
+                  d.x = tgt.x; d.y = tgt.y; remain -= dist;
+                  hop.queue.shift();
+                  if (!moveSndRef.current.has(p.id)) sfx.step(); // у фишки свой звук хода — «щелчки» не дублируем
+                  if (hop.queue.length === 0 && sess.moving && sess.moving.player === p.id && p.id === me && arrivedRef.current !== sess.moving.ts) {
+                    arrivedRef.current = sess.moving.ts;
+                    dispatch({ t: 'arrived', id: me });
+                  }
+                } else {
+                  d.x += (dx / dist) * remain;
+                  d.y += (dy / dist) * remain;
+                  remain = 0;
+                }
+              }
+            } else {
+              const nextIdx = hop.queue[0];
+              const tgt = cellCenter(m, nextIdx);
+              const dx = tgt.x - d.x, dy = tgt.y - d.y;
+              const dist = Math.hypot(dx, dy);
+              if (dist < 3) {
+                hop.queue.shift();
+                d.x = tgt.x; d.y = tgt.y;
+                if (!moveSndRef.current.has(p.id)) sfx.step(); // у фишки свой звук хода — «щелчки» не дублируем
+                if (hop.queue.length === 0 && sess.moving && sess.moving.player === p.id && p.id === me && arrivedRef.current !== sess.moving.ts) {
+                  arrivedRef.current = sess.moving.ts;
+                  dispatch({ t: 'arrived', id: me });
+                }
+              } else {
+                const hf = jumpFrameFactor(cps); // 95% клетки за 1/cps сек — скорость из карты
+                d.x += dx * Math.min(1, hf * dt); // плавный шаг, не зависит от FPS
+                d.y += dy * Math.min(1, hf * dt);
+                lift = -Math.abs(Math.sin(t / 110)) * 7; // подскок — только в прыжковом режиме
+              }
+            }
+            // фишка дошла (очередь пуста) — гасим её звук хода, если ещё играет
+            if (moveSndRef.current.has(p.id) && !hop.queue.length) {
+              moveSndRef.current.delete(p.id);
+              stopLoop(`mv-${p.id}`, 0.25);
+            }
+          } else if (!mvActive && !cutFreeze) {
+            // тянем к авторитетной клетке только когда это движение не «висит» в ожидании
+            d.x += (center.x - d.x) * Math.min(1, 0.14 * dt);
+            d.y += (center.y - d.y) * Math.min(1, 0.14 * dt);
+          }
+          // если mvActive, а очередь пуста — стоим на месте (ждём подтверждения хоста),
+          // иначе фишка визуально «отскакивала» назад к старой клетке
+          // НАПРАВЛЕНИЕ для анимации фишки — по фактическому сдвигу за кадр;
+          // между клетками помним последнее направление, на месте — idle
+          const prevD = prevDispRef.current[p.id];
+          let dir: 'up' | 'down' | 'left' | 'right' | undefined;
+          if (movingNow && prevD) {
+            const mdx = d.x - prevD.x, mdy = d.y - prevD.y;
+            if (Math.abs(mdx) + Math.abs(mdy) > 0.4) {
+              dir = Math.abs(mdx) > Math.abs(mdy) ? (mdx > 0 ? 'right' : 'left') : (mdy > 0 ? 'down' : 'up');
+            } else if (hop && hop.lastDir) {
+              dir = hop.lastDir;
+            }
+          }
+          if (dir) { if (hop) hop.lastDir = dir; }
+          prevDispRef.current[p.id] = { x: d.x, y: d.y };
+          const tokDef = p.tokenKey ? mapToks.find((x) => x.id === p.tokenKey) : null;
+          const tokSize = tokDef ? (tokDef.size ?? (tokDef.anim ? 64 : 34)) : (p.tokenSize ?? 34);
+          // FX: 5-я/6-я анимация этого игрока — разовый клип вместо обычной анимации.
+          // Пока длится пауза delay (секунда тишины) — фишка живёт обычной анимацией.
+          const fxB = fxList.find((f) => f.player === p.id && (f.kind === 'tokenWin' || f.kind === 'tokenLose'));
+          const fxBSt = fxB ? fxStartRef.current.get(fxB.id) : undefined;
+          const fxBOn = !!fxB && fxBSt !== undefined && t >= fxBSt; // пауза прошла?
+          const fxBClip: AnimClip | undefined = fxB && fxBOn
+            ? (fxB.kind === 'tokenWin' ? tokDef?.anim?.win : tokDef?.anim?.lose)
+            : undefined;
+          return {
+            x: d.x, y: d.y + lift, color: PLAYER_COLORS[p.color],
+            active: act?.id === p.id, alive: p.alive, label: p.name,
+            img: p.tokenImg ?? null,
+            anim: tokDef?.anim,
+            dir,
+            mv: movingNow, // покачивание в пути; стоя на ячейке, фишка НЕ «плавает»
+            phase: pi * 0.53,
+            size: tokSize,
+            override: fxBClip?.frames.length ? fxBClip : undefined,
+            overrideStart: fxBClip?.frames.length ? fxBSt : undefined,
+          };
+        });
+
+        /* RUBG: чужие фишки в СТЕЛСЕ не рисуются; HP-бары считаются для всех
+           (скрытые оверлей сам не рисует). Своя фишка в стелсе видна только мне. */
+        const tokens = isRubg
+          ? tokensAll.filter((_, i) => sess.players[i].id === me || !(sess.rubg?.stealth ?? []).includes(sess.players[i].id))
+          : tokensAll;
+        const rubgBars = isRubg
+          ? sess.players.map((p, i) => ({
+              x: tokensAll[i].x, y: tokensAll[i].y,
+              hp: p.hp ?? 100,
+              playing: !!(sess.rubg?.jobs ?? {})[p.id],
+              hidden: p.id !== me && (sess.rubg?.stealth ?? []).includes(p.id),
+            }))
+          : [];
+
+        // камера: в режиме мира — общий план (с ручным зумом), иначе — слежение за фишкой
+        /* РЕЖИМ КОМНАТ (АЙЗЕК): работает только при следящей камере; в RUBG не действует
+           (нужны общий план и фаза самолёта), при одной плитке смысла нет.
+           roomsMap — база (карта-плитки + режим комнат): в общем плане/заглядывании маски
+           комнаты нет, но включается ТУМАН ИССЛЕДОВАНИЯ (неоткрытые плитки скрыты). */
+        const roomsMap = !!(m.roomMode && m.plateSize) && m.mode !== 'rubg' && plateMetrics(m).total > 1;
+        const roomsOn = roomsMap && viewMode !== 'world' && !peekMap;
+        let goal;
+        if (viewMode === 'world' || peekMap) {
+          const fv = fitView(m, w, h);
+          goal = { x: fv.x + worldPanRef.current.x, y: fv.y + worldPanRef.current.y, zoom: fv.zoom * worldZoom };
+        } else if (isRubg && sess.phase === 'rollOff' && sess.rubg?.plane) {
+          /* RUBG: ФАЗА САМОЛЁТА — камера следит за ЛЕТАЩИМ САМОЛЁТОМ: видно весь маршрут
+             и куда прыгать (крест-прицел «ПРЫЖОК ЗДЕСЬ» под фюзеляжем). Зум шире слежения
+             за фишкой — видно окрестности точки приземления. */
+          const pl = sess.rubg.plane;
+          const lenP = Math.hypot(pl.x1 - pl.x0, pl.y1 - pl.y0) || 1;
+          const ddP = Math.min(lenP, Math.max(0, ((Date.now() - pl.startAt) / 1000) * pl.speed));
+          const plx = pl.x0 + (pl.x1 - pl.x0) * (ddP / lenP);
+          const ply = pl.y0 + (pl.y1 - pl.y0) * (ddP / lenP);
+          const pz = Math.max(0.55, Math.min(1.5, Math.min(w, h) / (CELL * 10)));
+          goal = { x: plx, y: ply, zoom: pz };
+        } else {
+          /* JOURNEY: в свободном режиме каждый следит за СВОЕЙ фишкой (ходят одновременно);
+             пока идёт задание — камера у всех на игроке задания (трансляция, как всегда) */
+          const followId = journeyMode && journeyFree ? me : act?.id;
+          const followP = followId ? dispRef.current[followId] : undefined;
+          const baseZx = Math.min(2.1, Math.max(0.7, Math.min(w, h) / (CELL * 7.2)));
+          const focus = anyoneMoving ? 1.5 : 1.0; // приближаемся, пока фишку передвигают
+          const zx = Math.min(2.6, baseZx * focus);
+          const msz = mapSize(m);
+          let gx = (followP?.x ?? msz.w / 2) + lookPanRef.current.x;
+          let gy = (followP?.y ?? msz.h / 2) + lookPanRef.current.y;
+          /* ПЛИТОЧНЫЙ РЕЖИМ КАРТ — тип «НЕВИДИМЫЕ соседи»: камера НЕ показывает соседние
+             карты-локации (зажим в прямоугольник плитки, за которой следует наблюдаемый —
+             своя фишка в свободном режиме / игрок задания). Тип «ВИДИМЫЕ соседи» (v0.76) —
+             зажима нет, видно весь мир. */
+          const tgC = m.tileGrid;
+          let gzoom = zx * lookZoomRef.current;
+          if (tgC && followP && tilePlayHidden(tgC)) {
+            /* v0.76: «НЕВИДИМЫЕ соседи» — кадр целиком внутри ТЕКУЩЕЙ карты-плитки;
+               плитка мельче экрана — зум приподнимается, чтобы соседняя плитка не выглянула.
+               «ВИДИМЫЕ соседи» — зажима в плитку нет: соседние карты-локации ВИДНЫ. */
+            const ft = tileAt(tgC, followP.x, followP.y);
+            if (ft) {
+              const fr = tileRectOf(tgC, ft);
+              gzoom = Math.max(gzoom, w / fr.w, h / fr.h);
+              const vw = w / gzoom, vh = h / gzoom;
+              gx = vw >= fr.w ? fr.x + fr.w / 2 : Math.max(fr.x + vw / 2, Math.min(fr.x + fr.w - vw / 2, gx));
+              gy = vh >= fr.h ? fr.y + fr.h / 2 : Math.max(fr.y + vh / 2, Math.min(fr.y + fr.h - vh / 2, gy));
+            }
+          }
+          /* РЕЖИМ КОМНАТ (АЙЗЕК): центр кадра зажат в прямоугольник ТЕКУЩЕЙ ПЛИТКИ —
+             соседние комнаты не видны (за их пределами render.ts рисует темноту);
+             осмотр (lookPan/lookZoom) тоже остаётся внутри комнаты.
+             Смена комнаты — затемнение экрана + звук портала (переход ХОДЬБОЙ через
+             открытый стык; переход ЧЕРЕЗ ПОРТАЛ уже озвучен самим порталом). */
+          if (roomsOn) {
+            if (roomMapRef.current !== m) { roomMapRef.current = m; prevRoomRef.current = null; roomNumRef.current = null; setRoomNumUi(null); visitedPlatesRef.current = new Set(); setVisitedCnt(0); }
+            const pn = followP ? plateNumAt(m, followP.x, followP.y) : null;
+            if (pn) {
+              if (pn !== roomNumRef.current) {
+                if (prevRoomRef.current !== null && pn !== prevRoomRef.current) {
+                  setRoomFlashTs(Date.now());
+                  if (Date.now() - portalTpAtRef.current > 300) sfx.portal();
+                }
+                prevRoomRef.current = pn;
+              }
+              roomNumRef.current = pn;
+              /* ТУМАН ИССЛЕДОВАНИЯ: посещённая комната остаётся ОТКРЫТОЙ на карте мира.
+                 v0.53 СИНХРОНИЗАЦИЯ ОТКРЫТЫХ КОМНАТ: открытие уходит хосту (action
+                 plateSeen → s.openPlates), и комната открывается на карте мира
+                 у ВСЕЙ команды — карту исследуем сообща. */
+              if (!visitedPlatesRef.current.has(pn)) {
+                visitedPlatesRef.current.add(pn);
+                setVisitedCnt(visitedPlatesRef.current.size);
+                dispatch({ t: 'plateSeen', id: me, plate: pn });
+              }
+              setRoomNumUi((u) => (u === pn ? u : pn));
+              const pr = plateRectOf(m, pn);
+              const vw = w / (zx * lookZoomRef.current), vh = h / (zx * lookZoomRef.current);
+              gx = vw >= pr.w ? pr.x + pr.w / 2 : Math.max(pr.x + vw / 2, Math.min(pr.x + pr.w - vw / 2, gx));
+              gy = vh >= pr.h ? pr.y + pr.h / 2 : Math.max(pr.y + vh / 2, Math.min(pr.y + pr.h - vh / 2, gy));
+            }
+          } else {
+            roomNumRef.current = null;
+            prevRoomRef.current = null;
+          }
+          goal = {
+            x: gx,
+            y: gy,
+            zoom: gzoom,
+          };
+        }
+        /* v0.56: КАТ-СЦЕНА — камера летит по маршруту ПОВЕРХ обычной камеры:
+           сегмент 'to' — плавный перелёт (easeInOutQuad) к точке с лерпом зума,
+           сегмент 'wait' — стоим в точке pts[i].wait секунд; точки кончились — финиш */
+        const cutSt = cutRef.current;
+        if (cutSt) {
+          const ptsC = cutSt.def.pts;
+          const nowC = Date.now();
+          const tgtC = ptsC[Math.min(cutSt.i, ptsC.length - 1)];
+          const baseZx0 = Math.min(2.1, Math.max(0.7, Math.min(w, h) / (CELL * 7.2)));
+          const tgtZ = baseZx0 * Math.min(3, Math.max(0.4, tgtC.zoom ?? 1));
+          let cx = cutSt.fromX, cy = cutSt.fromY, cz = cutSt.fromZ;
+          if (cutSt.phase === 'to') {
+            const spd = Math.max(120, cutSt.def.speed ?? 420);
+            const dur = Math.max(350, (Math.hypot(tgtC.x - cutSt.fromX, tgtC.y - cutSt.fromY) / spd) * 1000);
+            const k = Math.min(1, (nowC - cutSt.t0) / dur);
+            const ease = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+            cx = cutSt.fromX + (tgtC.x - cutSt.fromX) * ease;
+            cy = cutSt.fromY + (tgtC.y - cutSt.fromY) * ease;
+            cz = cutSt.fromZ + (tgtZ - cutSt.fromZ) * ease;
+            if (k >= 1) { cutSt.phase = 'wait'; cutSt.t0 = nowC; cutSt.fromX = tgtC.x; cutSt.fromY = tgtC.y; cutSt.fromZ = tgtZ; }
+          } else {
+            cx = tgtC.x; cy = tgtC.y; cz = tgtZ;
+            if (nowC - cutSt.t0 >= Math.max(0, tgtC.wait ?? 1) * 1000) {
+              cutSt.i++;
+              if (cutSt.i >= ptsC.length) {
+                cutFinishRef.current(true);
+              } else {
+                cutSt.phase = 'to'; cutSt.t0 = nowC; cutSt.fromX = tgtC.x; cutSt.fromY = tgtC.y; cutSt.fromZ = tgtZ;
+              }
+            }
+          }
+          if (cutRef.current) goal = { x: cx, y: cy, zoom: cz };
+        }
+
+        const v = viewRef.current;
+        /* RUBG: после завершения ВЫСАДКИ (rollOff → playing) камера МГНОВЕННО переносится
+           к фишке — она стоит в точке приземления; иначе долгое «плытьё» через всю карту */
+        if (isRubg && sess.phase !== rubgLastPhaseRef.current) {
+          if (rubgLastPhaseRef.current === 'rollOff' && sess.phase === 'playing') snapCamRef.current = true;
+          rubgLastPhaseRef.current = sess.phase;
+        }
+        /* пока фишку передвигают — камера держит фокус ПЛОТНЕЕ (жёстче догоняет цель):
+           иначе на быстром ходу фишка уезжала из центра кадра, и слежение «сдвигалось» */
+        const camK = anyoneMoving ? 0.2 : 0.07;
+        v.x += (goal.x - v.x) * camK;
+        v.y += (goal.y - v.y) * camK;
+        v.zoom += (goal.zoom - v.zoom) * camK;
+        /* ПОРТАЛ: прыжок своей фишки — камера переносится мгновенно (не «плывёт» через
+           все плитки); в режиме общего плана камеру не трогаем */
+        if (snapCamRef.current) {
+          if (!(viewMode === 'world' || peekMap)) { v.x = goal.x; v.y = goal.y; }
+          snapCamRef.current = false;
+        }
+
+        const colorById: Record<string, string> = {};
+        sess.players.forEach((p) => { colorById[p.id] = PLAYER_COLORS[p.color]; });
+
+        // FX: разовые реакции боссов — клип играется ОДИН раз от локального старта.
+        // Пока длится пауза delay — босс продолжает IDLE (клип ещё не начался);
+        // клип доиграл — босс ВОЗВРАЩАЕТСЯ к idle (замирает навсегда только побеждённый,
+        // его клип гибели bossDef доигрывает и продолжает статичным последним кадром).
+        const bossFx: Record<string, { frames: string[]; fps: number; start: number }> = {};
+        /* ПАТРУЛЬ (v0.52): момент гибели босса (ts fx bossDef — Date.now() хоста, синхронно) —
+           повержённый патрульный замирает в той точке маршрута, где его настигли */
+        const patrolFreeze: Record<string, number> = {};
+        for (const fx of fxList) {
+          if (fx.kind === 'bossDef' && fx.bossId) patrolFreeze[fx.bossId] = fx.ts;
+          if (fx.kind !== 'bossWin' && fx.kind !== 'bossLose' && fx.kind !== 'bossDef') continue;
+          const b = (m.bosses ?? []).find((x) => x.id === fx.bossId);
+          if (!b) continue;
+          const def = (m.bossLib ?? []).find((x) => x.id === b.bid);
+          if (!def) continue;
+          const clip = fx.kind === 'bossWin' ? def.win : fx.kind === 'bossDef' ? (def.defeated && def.defeated.frames.length ? def.defeated : def.win) : def.lose;
+          const st = fxStartRef.current.get(fx.id);
+          if (!clip.frames.length || st === undefined) continue;
+          if (t < st) continue; // пауза не прошла — босс ещё играет idle
+          const durMs = (clip.frames.length / Math.max(1, Math.min(24, clip.fps || 6))) * 1000;
+          if (t - st >= durMs) continue; // реакция доиграла — обратно к idle
+          bossFx[b.id] = { frames: clip.frames, fps: clip.fps, start: st };
+        }
+        /* v0.53: БОСС БОЛЬШЕ НЕ ПАТРУЛИРУЕТ ПОСЛЕ ПОБЕДЫ. В QUEST у каждого игрока свой
+           прогресс: боссы, повержённые МНОЙ, замирают в точке гибели (момент победы —
+           sess.qBossDownAt, пишется хостом) и показываются мне побеждёнными; у остальных
+           игроков они живы, пока не победят их сами. */
+        const myDownList = isQuest && me ? (sess.qBossDown?.[me] ?? []) : [];
+        const bossDownMerged: Record<string, boolean> = { ...(sess.bossDown ?? {}) };
+        if (myDownList.length) {
+          const myAt = sess.qBossDownAt?.[me] ?? {};
+          for (const bid of myDownList) {
+            bossDownMerged[bid] = true;
+            const ts = myAt[bid];
+            if (ts && patrolFreeze[bid] === undefined) patrolFreeze[bid] = ts;
+          }
+        }
+        /* v0.58: боссы, ДЕРЖАЩИЕ МЕНЯ ПОСЛЕ ЗАХВАТА (после поимки босс прекращает патруль
+           — qBossHoldAt пишется движком при захвате); у остальных игроков — свой тайминг */
+        const myHolds = bossCatch && me ? sess.qBossHoldAt?.[me] : undefined;
+        if (myHolds) {
+          /* v0.65: босс, ДОВОЛОКШИЙ фишку до точки 1 (bossHoldPinRef), рисуется на ПЕРВОЙ
+             точке патруля, пока держит меня (hold ещё жив): t=0 цикла = pts[0];
+             hold снят (проигрыш задания/смерть/победа над боссом) — пин сбрасывается,
+             босс снова патрулирует по формуле (победа замораживает его через bossDown) */
+          for (const hid of Object.keys(bossHoldPinRef.current)) {
+            if (!myHolds || myHolds[hid] === undefined) delete bossHoldPinRef.current[hid];
+          }
+          for (const [hid, hts] of Object.entries(myHolds)) {
+            if (patrolFreeze[hid] !== undefined) continue;
+            patrolFreeze[hid] = bossHoldPinRef.current[hid] ? (sess.startedAt || 0) : hts;
+          }
+        }
+        /* v0.58: МИР ЗАМИРАЕТ ТОЛЬКО В КАТ-СЦЕНЕ (заморозка в диалоге/торговле отменена —
+           кроме играющего на карте могут быть другие игроки): ВСЕ боссы стоят, пока идёт
+           кино (NPC замораживаются ниже, в drawBoard — npcFreeze для всех) */
+        const worldFreezeTs = cutFreezeTsRef.current;
+        if (worldFreezeTs) {
+          for (const bb of (m.bosses ?? [])) if (patrolFreeze[bb.id] === undefined) patrolFreeze[bb.id] = worldFreezeTs;
+        }
+        /* v0.57: ЖЁСТКАЯ ПРИВЯЗКА NPC (пояс и подтяжки): пока мир замер (теперь ТОЛЬКО
+           кат-сцена; заморозка диалога v0.58 отменена), позиции патрулирующих NPC считаются ОДИН РАЗ на
+           момент заморозки и запоминаются — рисование идёт ПО ПРИВЯЗКЕ (npcPin), минуя
+           формулу и npcFreeze. Даже если какая-то ветка отрисовки потеряет npcFreeze,
+           NPC гарантированно стоит на месте, пока идёт кат-сцена. */
+        let npcPin: Record<string, { x: number; y: number }> | undefined;
+        if (worldFreezeTs) {
+          if (npcPinRef.current?.key !== worldFreezeTs) {
+            const pin: Record<string, { x: number; y: number }> = {};
+            for (const n of (m.npcs ?? [])) {
+              if (!n.patrol) continue;
+              const ppn = patrolPos(n.patrol, sess.startedAt || 0, worldFreezeTs);
+              if (ppn) pin[n.id] = ppn;
+            }
+            npcPinRef.current = { key: worldFreezeTs, map: pin };
+          }
+          npcPin = npcPinRef.current.map;
+        }
+
+        // ЛОКАЛЬНЫЕ моменты разбития ячеек — для короткой анимации осколков.
+        // Запоминаем первый кадр, когда ячейка увидена разбитой; убрали — чистим.
+        const brkNow = sess.broken ?? {};
+        for (const k of Object.keys(brkNow)) {
+          const idx = Number(k);
+          if (!brokenAtRef.current[idx]) brokenAtRef.current[idx] = Date.now();
+        }
+        for (const k of Object.keys(brokenAtRef.current)) {
+          if (!brkNow[Number(k)]) delete brokenAtRef.current[Number(k)];
+        }
+
+        const npcDrawList: { npc: PlacedNpc; def: NpcLibEntry; done: boolean }[] = [];
+        for (const n of m.npcs ?? []) {
+          const defN = (m.npcLib ?? []).find((x) => x.id === n.nid);
+          if (defN) {
+            const fl = (me ? sess.qFlags?.[me] : undefined) ?? {};
+            const done = (n.quests ?? []).length > 0 && n.quests!.every((q) => !!fl[`quest:${q.id}`]);
+            npcDrawList.push({ npc: n, def: defN, done });
+          }
+        }
+        drawBoard(ctx, m, {
+          view: v, width: w, height: h,
+          tileById: tileMapRef.current,
+          captured: sess.captured, colorById,
+          npcs: npcDrawList,
+          currentCell: sess.phase === 'playing' && act && !(journeyMode && journeyFree) ? act.pos : null,
+          showNumbers: options.showCellNumbers,
+          tokens, time: t, hoverCell: null,
+          mystery: mysteryRef.current,
+          broken: sess.broken,
+          brokenAt: brokenAtRef.current,
+          bossDown: bossDownMerged,
+          bossFx,
+          bossCarry: bossCarryFxRef.current, // v0.65: босс несёт пойманную фишку (кино-захват)
+          /* РЕЖИМ КОМНАТ: темнота за пределами текущей плитки-комнаты.
+             ТУМАН ИССЛЕДОВАНИЯ: на карте мира (общий план/заглядывание) НЕОТКРЫТЫЕ
+             плитки тоже скрыты темнотой — видны только посещённые комнаты.
+             v0.53: туман ОБЩИЙ для команды (мои плитки + s.openPlates), а ХАБ-плитка
+             видна на карте мира ВСЕГДА (m.hubPlate — туман её не скрывает). */
+          room: roomsOn && roomNumRef.current ? plateRectOf(m, roomNumRef.current) : null,
+          visitedPlates: roomsMap && (viewMode === 'world' || peekMap)
+            ? [...new Set([...visitedPlatesRef.current, ...(sess.openPlates ?? [])])]
+            : null,
+          hubPlate: roomsMap ? (m.hubPlate ?? null) : null,
+          /* v0.55: снятые квестами стены — двери (стены с key) с них не рисуются */
+          wallsRemoved: sess.wallsRemoved,
+          /* ПАТРУЛИРОВАНИЕ (v0.52): боссы и NPC с маршрутом рисуются в текущей точке —
+             позиция считается формулой от синхронного старта партии (без сети) */
+          patrolBase: sess.startedAt || 0,
+          patrolNow: worldFreezeTs || Date.now(), // v0.57: пока идёт кат-сцена — время патруля стоит на момент заморозки (страховка для всех формульных путей)
+          patrolFreeze,
+          /* КАТ-СЦЕНА (v0.58 — заморозка в диалоге отменена): NPC, рядом с которым
+             идёт кино, стоит — как и все остальные (время заморожено на момент старта);
+             v0.55: читаем ЖИВЫЙ ref (state в замыкании rAF-цикла был устаревшим) */
+          npcFreeze: worldFreezeTs
+            ? Object.fromEntries((m.npcs ?? []).map((n) => [n.id, worldFreezeTs]))
+            : undefined,
+          npcPin,
+        });
+
+        /* RUBG: оверлей поверх поля — безопасная зона, самолёт, маркеры игры, радиус атаки,
+           ВСКРЫТЫЕ и ЗАКЛИНИВШИЕ (для меня) ящики и ЛЕТЯЩИЕ ПУЛИ выстрелов */
+        if (isRubg) {
+          const openedBoxes: { x: number; y: number; w: number; h: number }[] = [];
+          const bannedBoxes: { x: number; y: number; w: number; h: number }[] = [];
+          const myBans = sess.rubg?.boxBan?.[me] ?? [];
+          for (const li of sess.rubg?.looted ?? []) {
+            const lc = m.cells[li];
+            if (!lc || lc.type !== 'loot') continue;
+            const lr = cellRectOf(m, li);
+            if (lr) openedBoxes.push(lr);
+          }
+          for (const bi of myBans) {
+            if ((sess.rubg?.looted ?? []).includes(bi)) continue;
+            const bc = m.cells[bi];
+            if (!bc || bc.type !== 'loot') continue;
+            const br = cellRectOf(m, bi);
+            if (br) bannedBoxes.push(br);
+          }
+          const flyShots: { sx: number; sy: number; tx: number; ty: number; kind: string; ts: number }[] = [];
+          for (const sh of sess.rubg?.shots ?? []) {
+            const fp = sess.journeyPos?.[sh.from], tp = sess.journeyPos?.[sh.to];
+            if (!fp || !tp) continue;
+            flyShots.push({ sx: fp.x, sy: fp.y, tx: tp.x, ty: tp.y, kind: sh.kind, ts: sh.ts });
+          }
+          drawRubgOverlay(ctx, {
+            view: v, width: w, height: h, time: t,
+            mapW: m.mw ?? m.cols * CELL, mapH: m.mh ?? m.rows * CELL,
+            zone: sess.rubg?.zone ?? null,
+            plane: sess.rubg?.plane ?? null,
+            bars: rubgBars,
+            aim: aimRadiusRef.current,
+            opened: openedBoxes,
+            banned: bannedBoxes,
+            shots: flyShots,
+          });
+        }
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [viewMode, peekMap, worldZoom, me, options.showCellNumbers]);
+
+  const tileMapRef = useRef(new Map<string, never>());
+  useEffect(() => {
+    tileMapRef.current = new Map(useApp.getState().tiles.map((t) => [t.id, t])) as never;
+  }, [st.tiles]);
+
+  /* ---------- БЕЗ КАРТЫ: автопилот хоста ----------
+     Победа в матче → окно «играть дальше» подтверждается само; все матчи сыграны →
+     после анимаций партия завершается победой (maplessFinish). */
+  const maplessAutoRef = useRef('');
+  const maplessFxGate = !!(s?.fxs ?? []).some((f) => f.gate);
+  useEffect(() => {
+    if (!isMapless || !room?.isHost || !s || !me || s.phase !== 'playing') return;
+    if (s.awaitPost && !maplessFxGate) {
+      dispatch({ t: 'postChoice', id: me, choice: 'continue' });
+      return;
+    }
+    if (s.mapless?.over && !s.challenge && !s.pendingCard && !s.quiz && !s.awaitPost && !maplessFxGate) {
+      const key = `over-${s.mapless.done}`;
+      if (maplessAutoRef.current !== key) {
+        maplessAutoRef.current = key;
+        dispatch({ t: 'maplessFinish', id: me });
+      }
+    }
+  }, [isMapless, room?.isHost, s, me, maplessFxGate]);
+
+  /* ---------- RUBG: тик хоста (~1 с) — фазы зоны, урон, форс-высадка ---------- */
+  useEffect(() => {
+    if (!isRubg || !room?.isHost || !s) return;
+    if (s.phase !== 'playing' && s.phase !== 'rollOff') return;
+    const t = setInterval(() => dispatch({ t: 'rubgTick', id: me }), 1000);
+    return () => clearInterval(t);
+  }, [isRubg, room?.isHost, me, s?.phase, s]);
+
+  /* ---------- RUBG: локальный таймер мини-игры «карман» — время вышло → провал ---------- */
+  useEffect(() => {
+    if (!myStealing || !s) return;
+    const msLeft = myStealing.startedAt + myStealing.dur * 1000 - Date.now();
+    if (msLeft <= 0) {
+      dispatch({ t: 'rubgStealFail', id: me, victimId: myStealing.victim });
+      return;
+    }
+    const t = setTimeout(() => dispatch({ t: 'rubgStealFail', id: me, victimId: myStealing.victim }), msLeft + 150);
+    return () => clearTimeout(t);
+  }, [myStealing?.victim, myStealing?.startedAt, myStealing?.dur, myStealing, me]);
+
+  /* ---------- RUBG: мини-игра «карман» — сетка 10×10, старт от ВЫХОДА 🚪 ----------
+     Отпустил кнопку — таймер и карман: WASD/стрелки/джой/стрелки НА ЭКРАНЕ нащупывай
+     предметы (МЫШЬЮ клетку выбрать НЕЛЬЗЯ), встав на нужный — «ЗАХВАТИТЬ ПРЕДМЕТ»,
+     донеси его до ВЫХОДА — «СВОРОВАТЬ». Мгновенно украсть нельзя: добычу нужно ДОНЕСТИ. */
+  const POCKET_COLS = 10;
+  const POCKET_CELLS = 100; // 10×10 клеток — карман, предметы разбросаны случайно
+  const POCKET_EXIT = 0;    // клетка ВЫХОДА (левый верхний угол) — старт и точка сдачи добычи
+  const [pocketCur, setPocketCur] = useState(0);
+  const [pocketHeld, setPocketHeld] = useState<RubgItem | null>(null); // предмет В РУКЕ (несём к выходу)
+  /* предметы в кармане жертвы: только ОБЩИЙ инвентарь (пояс НЕ воруется) */
+  const pocketItems = (() => {
+    if (!myStealing || !s) return [] as RubgItem[];
+    const v = s.players.find((x) => x.id === myStealing.victim);
+    return (v?.items ?? []).filter((x) => !x.belt);
+  })();
+  /* РАСКЛАДКА кармана: предметы по случайным клеткам (ВЫХОД всегда свободен).
+     Фиксируется на сессию кражи (по victim+startedAt) — не «прыгает» на каждом тике. */
+  const pocketLayout = useMemo(() => {
+    const m0 = new Map<number, RubgItem>();
+    if (!myStealing) return m0;
+    const free: number[] = [];
+    for (let i = 0; i < POCKET_CELLS; i++) if (i !== POCKET_EXIT) free.push(i);
+    for (let i = free.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [free[i], free[j]] = [free[j], free[i]]; }
+    pocketItems.forEach((it, k) => { if (k < free.length) m0.set(free[k], it); });
+    return m0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myStealing?.victim, myStealing?.startedAt]);
+  const pocketCurRef = useRef(0);
+  useEffect(() => { pocketCurRef.current = pocketCur; }, [pocketCur]);
+  const pocketLayoutRef = useRef(pocketLayout);
+  useEffect(() => { pocketLayoutRef.current = pocketLayout; }, [pocketLayout]);
+  const pocketHeldRef = useRef<RubgItem | null>(null);
+  useEffect(() => { pocketHeldRef.current = pocketHeld; }, [pocketHeld]);
+  /* новая сессия кражи: курсор — на ВЫХОДЕ, рука пустая */
+  useEffect(() => {
+    setPocketCur(POCKET_EXIT);
+    setPocketHeld(null);
+  }, [myStealing?.victim, myStealing?.startedAt]);
+  /* контекстное действие: стоишь на предмете — ЗАХВАТИТЬ; с предметом на ВЫХОДЕ — СВОРОВАТЬ */
+  const pocketAct = (victimId: string) => {
+    const held = pocketHeldRef.current;
+    if (held) {
+      if (pocketCurRef.current === POCKET_EXIT) {
+        dispatch({ t: 'rubgStealPick', id: me, victimId, itemId: held.id });
+        setPocketHeld(null);
+      }
+      return;
+    }
+    const it = pocketLayoutRef.current.get(pocketCurRef.current);
+    if (it) setPocketHeld(it); // предмет в руке — теперь донеси его до ВЫХОДА
+  };
+  useEffect(() => {
+    if (!myStealing) return;
+    const onKey = (e: KeyboardEvent) => {
+      const k = e.key.toLowerCase();
+      const last = POCKET_CELLS - 1;
+      if (['arrowup', 'w'].includes(k)) { e.preventDefault(); setPocketCur((c) => Math.max(0, c - POCKET_COLS)); }
+      else if (['arrowdown', 's'].includes(k)) { e.preventDefault(); setPocketCur((c) => Math.min(last, c + POCKET_COLS)); }
+      else if (['arrowleft', 'a'].includes(k)) { e.preventDefault(); setPocketCur((c) => Math.max(0, c - 1)); }
+      else if (['arrowright', 'd'].includes(k)) { e.preventDefault(); setPocketCur((c) => Math.min(POCKET_CELLS - 1, c + 1)); }
+      else if (['enter', ' ', 'e'].includes(k)) {
+        e.preventDefault();
+        pocketAct(myStealing.victim);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [!!myStealing, myStealing?.victim, me]);
+  /* ДЖОЙСТИК в кармане: крестовина/стик двигают РУКУ (край-триггер: одно нажатие — один шаг).
+     Фишка на фоне при этом НЕ двигается (pocketBlockRef отключает ходьбу). */
+  const pocketPadPrev = useRef<Set<TokenDir>>(new Set());
+  useEffect(() => {
+    if (!myStealing) { pocketPadPrev.current.clear(); return; }
+    const iv = window.setInterval(() => {
+      const prefs = loadEmuPrefs();
+      const dirs = new Set<TokenDir>();
+      if (prefs.gamepad !== false) {
+        for (const gp of listGamepads()) {
+          const addBtn = (idx: number | undefined, d: TokenDir) => {
+            if (idx === undefined || idx < 0 || idx > 17) return;
+            if (gp.buttons[idx]?.pressed) dirs.add(d);
+          };
+          addBtn(12, 'up'); addBtn(13, 'down'); addBtn(14, 'left'); addBtn(15, 'right');
+          addBtn(prefs.gpad?.UP, 'up'); addBtn(prefs.gpad?.DOWN, 'down');
+          addBtn(prefs.gpad?.LEFT, 'left'); addBtn(prefs.gpad?.RIGHT, 'right');
+          addBtn(prefs.segaPad?.UP, 'up'); addBtn(prefs.segaPad?.DOWN, 'down');
+          addBtn(prefs.segaPad?.LEFT, 'left'); addBtn(prefs.segaPad?.RIGHT, 'right');
+          const ax = gp.axes[0] ?? 0, ay = gp.axes[1] ?? 0;
+          if (ax < -0.45) dirs.add('left');
+          if (ax > 0.45) dirs.add('right');
+          if (ay < -0.45) dirs.add('up');
+          if (ay > 0.45) dirs.add('down');
+        }
+      }
+      /* край-триггер: только НОВЫЕ направления двигают руку — удержание не «бежит» */
+      const last = POCKET_CELLS - 1;
+      for (const d of dirs) {
+        if (pocketPadPrev.current.has(d)) continue;
+        if (d === 'up') setPocketCur((c) => Math.max(0, c - POCKET_COLS));
+        else if (d === 'down') setPocketCur((c) => Math.min(last, c + POCKET_COLS));
+        else if (d === 'left') setPocketCur((c) => Math.max(0, c - 1));
+        else if (d === 'right') setPocketCur((c) => Math.min(last, c + 1));
+      }
+      pocketPadPrev.current = dirs;
+    }, 66);
+    return () => { clearInterval(iv); pocketPadPrev.current.clear(); };
+  }, [!!myStealing]);
+
+  /* ---------- RUBG: воровство — КЛИК по карте воровства открывает «карман», ----------
+     удержание «НАЧАТЬ ВОРОВСТВО» заряжает время (окантовка-часы), отпускание —
+     запускает таймер и раскрывает предметы в клетках. */
+  const [stealOpen, setStealOpen] = useState(false);      // открыт «карман» (фаза заряда)
+  const [stealVictim, setStealVictim] = useState<string | null>(null);
+  const [stealSent, setStealSent] = useState(false);      // отпустил кнопку — ждём подтверждение хоста
+  const [stealCharging, setStealCharging] = useState(false); // держим кнопку
+  const [stealHoldMs, setStealHoldMs] = useState(0);      // сколько держим (для часов-окантовки)
+  const stealHoldRef = useRef(0);
+  /* ближайший играющий в радиусе кражи */
+  const nearestStealTarget = (): string | null => {
+    const sNow = useApp.getState().session;
+    if (!sNow || !me) return null;
+    const mp = sNow.journeyPos?.[me];
+    if (!mp) return null;
+    const range = RUBG_STEAL_RANGE * CELL;
+    let best: string | null = null; let bestD = range;
+    for (const [pid] of Object.entries(sNow.rubg?.jobs ?? {})) {
+      if (pid === me) continue;
+      const jp = sNow.journeyPos?.[pid];
+      if (!jp) continue;
+      const d2 = Math.hypot(jp.x - mp.x, jp.y - mp.y);
+      if (d2 <= range && d2 < bestD) { bestD = d2; best = pid; }
+    }
+    return best;
+  };
+  const stealOpenFlow = () => {
+    const best = nearestStealTarget();
+    if (!best) {
+      useApp.getState().toast('Подойдите ВПЛОТНУЮ к игроку, который играет задание', 'err');
+      return;
+    }
+    setStealVictim(best);
+    setStealSent(false);
+    setStealHoldMs(0);
+    setStealCharging(false);
+    setStealOpen(true);
+  };
+  const stealHoldOn = () => {
+    if (stealHoldRef.current) return;
+    stealHoldRef.current = Date.now();
+    setStealCharging(true);
+    setStealHoldMs(0);
+  };
+  const stealHoldOff = () => {
+    if (!stealHoldRef.current) return;
+    const holdMs = Date.now() - stealHoldRef.current;
+    stealHoldRef.current = 0;
+    setStealCharging(false);
+    setStealHoldMs(holdMs);
+    if (!stealVictim) return;
+    setStealSent(true);
+    dispatch({ t: 'rubgStealStart', id: me, victimId: stealVictim, holdMs });
+  };
+  /* тик заряда: окантовка-часы наполняется, пока держим кнопку (кап 8 с — как в движке) */
+  useEffect(() => {
+    if (!stealCharging) return;
+    const iv = setInterval(() => setStealHoldMs(stealHoldRef.current ? Date.now() - stealHoldRef.current : 0), 80);
+    return () => clearInterval(iv);
+  }, [stealCharging]);
+  /* отпустили кнопку — три сценария:
+     (а) хост подтвердил старт (myStealing) → воровство идёт; когда ЗАВЕРШИЛОСЬ (запись
+         исчезла: успех — предмет уже у нас, или провал) окно закрывается МОЛЧА; если в
+         инвентаре появился новый предмет — тост «Предмет сворован»;
+     (б) хост НЕ подтвердил (жертва ушла/у неё уже воруют) → через 0.9 с сообщение о провале;
+     РАНЬше после УСПЕШНОЙ кражи вылезало «Кража не началась» — исправлено. */
+  const stealStartedRef = useRef(false);
+  const stealSnapRef = useRef<string[]>([]);
+  useEffect(() => {
+    if (myStealing) {
+      if (!stealStartedRef.current) {
+        stealStartedRef.current = true;
+        stealSnapRef.current = (useApp.getState().session?.players.find((x) => x.id === me)?.items ?? []).map((x) => x.id);
+      }
+      return;
+    }
+    if (!stealSent) return;
+    if (stealStartedRef.current) {
+      stealStartedRef.current = false;
+      setStealOpen(false);
+      setStealSent(false);
+      const nowIds = (useApp.getState().session?.players.find((x) => x.id === me)?.items ?? []).map((x) => x.id);
+      if (nowIds.some((id) => !stealSnapRef.current.includes(id))) {
+        useApp.getState().toast('🤏 Предмет СВОРОВАН — он у тебя в инвентаре или на поясе', 'ok');
+      }
+      return;
+    }
+    const t = setTimeout(() => {
+      setStealOpen(false);
+      setStealSent(false);
+      useApp.getState().toast('Кража не началась — жертва ушла или у неё уже воруют', 'err');
+    }, 900);
+    return () => clearTimeout(t);
+  }, [stealSent, myStealing]);
+  /* кража завершилась (успех/провал) — окно закрывается само */
+  useEffect(() => {
+    if (!myStealing && !stealSent) setStealOpen(false);
+  }, [myStealing, stealSent]);
+
+  /* ---------- RUBG: «во весь экран» для ЛИЧНОГО задания (отдельный враппер эмулятора) ---------- */
+  const rubgEmuWrapRef = useRef<HTMLDivElement>(null);
+  const rubgToggleFs = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => undefined);
+    } else {
+      rubgEmuWrapRef.current?.requestFullscreen().catch(() => useApp.getState().toast('Браузер запретил полный экран', 'err'));
+    }
+  };
+
+  if (!s || !map || !room) {
+    return (
+      <div className="h-full crt-grid-bg flex items-center justify-center">
+        <div className="text-center">
+          <div className="font-pixel text-[10px] text-dim blink-hard mb-4">НЕТ АКТИВНОЙ ПАРТИИ</div>
+          <PxBtn onClick={() => st.setScreen('menu')}>В меню</PxBtn>
+        </div>
+      </div>
+    );
+  }
+
+  const info = ch ? spentInfo(ch, Date.now()) : null;
+  // остаток выбранного ресурса ПРЯМО СЕЙЧАС (с учётом потраченного в этом задании —
+  // хранящиеся secLeft/triesLeft списываются только в конце, поэтому считаем сами)
+  const remainingNow = !ch ? 0
+    : ch.mode === 'time'
+      ? Math.max(0, (mePlayer?.secLeft ?? 0) - (info?.ms ?? 0) / 1000)
+      : Math.max(0, (mePlayer?.triesLeft ?? 0) - (info?.loads ?? 0));
+  // пропуск: обычно после 5 потраченных (при «Штраф ×2» — после 10); при «низком старте» — только на нуле
+  const naturalCanSkip = !!ch && !!info && (ch.lowStart ? remainingNow <= 0 : info.units >= skipNeed);
+  // «Пропустить · 5» (заплатить ровно 5 авансом) доступен, только пока потрачено МЕНЬШЕ 5.
+  // Когда потрачено 5+ — игрок обязан пользоваться кнопкой «Пропустить» (спишет фактическую цену).
+  const instantSkipAllowed = !!ch && !!info && (ch.lowStart ? remainingNow <= 0 : info.units < skipNeed);
+  // перезапуск требует ресурс: на нуле задание непроходимо — остаётся только «Пропустить»
+  // (в HP/монетном режиме перезапуски бесплатны — перезапускать можно всегда)
+  const canReload = !!ch && !!info && (ch.mode === 'hp' || ch.mode === 'coins' ? true : remainingNow > 0);
+  const owner = ch ? s.captured[ch.cellIdx] : undefined;
+  // свой ход, фишка стоит, кубики не брошены — можно осматривать карту перетаскиванием
+  const canLookAround = !!s && !!mePlayer && myTurn && s.phase === 'playing' && !s.moving && !ch && !s.pendingCard && !s.quiz && !s.awaitPost && viewMode === 'follow' && !peekMap;
+
+  // «закрытые» ячейки: не посещены и не захвачены — скрываем тип и картинку (опция)
+  const mystery = useMemo(() => {
+    if (!options.hideUnrevealed || !s || !map) return undefined;
+    const set = new Set<number>();
+    const revealed = Array.isArray(s.revealed) ? s.revealed : [];
+    const captured = s.captured ?? {};
+    map.cells.forEach((_, i) => {
+      if (!revealed.includes(i) && !captured[i]) set.add(i);
+    });
+    return set;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options.hideUnrevealed, s?.revealed, s?.captured, map?.id]);
+  useEffect(() => { mysteryRef.current = mystery; }, [mystery]);
+  const ownerName = owner ? s.players.find((p) => p.id === owner)?.name : undefined;
+  const others = s.players.filter((p) => p.alive && p.id !== active?.id);
+  const aliveCount = s.players.filter((p) => p.alive).length;
+  const votesNeed = aliveCount;
+
+  /* радости-иммунитеты: кнопки бесплатного пропуска в челлендже */
+  const openTradeIds = new Set((s.trades ?? []).filter((o) => o.status === 'pending' || o.status === 'countered').map((o) => o.cardId));
+  const hasJoyCard = (id: string) => !!mePlayer?.inventory?.some((c) => c.id === id) && !openTradeIds.has(id);
+  const immuneBtns = myTurn && !!ch && ch.status !== 'voting' && (
+    <>
+      {hasJoyCard('joy-joker') && (
+        <PxBtn color="teal" className="w-full" onClick={() => { sfx.card(); dispatch({ t: 'immuneSkip', id: me, emu: 'any' }); }}>
+          🎫 Джокер: пропустить бесплатно
+        </PxBtn>
+      )}
+      {isSega && hasJoyCard('joy-immuneSega') && (
+        <PxBtn color="teal" className="w-full" onClick={() => { sfx.card(); dispatch({ t: 'immuneSkip', id: me, emu: 'sega' }); }}>
+          🛡 Иммунитет к SEGA — бесплатно
+        </PxBtn>
+      )}
+      {!isSega && hasJoyCard('joy-immuneNes') && (
+        <PxBtn color="teal" className="w-full" onClick={() => { sfx.card(); dispatch({ t: 'immuneSkip', id: me, emu: 'nes' }); }}>
+          🛡 Иммунитет к NES — бесплатно
+        </PxBtn>
+      )}
+    </>
+  );
+
+  /* holdingRef — надёжный флаг «кнопка нажата» (state мог запаздывать в замыканиях,
+     из-за чего повторное нажатие плодило интервалы и кубики тряслись вечно). */
+  const holdingRef = useRef(false);
+  const fxGateUi = !!(s.fxs ?? []).some((f) => f.gate); // идёт спектакль (анимации победы/поражения)
+  const startHold = () => {
+    if (!myTurn || s.moving || ch || s.pendingCard || s.awaitPost || s.quiz) return;
+    if (fxGateUi) return; // во время анимаций бросать кубики НЕЛЬЗЯ (раньше можно было сорвать спектакль)
+    if (cutActiveRef.current) return; // v0.56: в кат-сцене мир замер — кубики не бросаются
+    if (rolling || holdingRef.current) return; // защита от повторного нажатия/залипания
+    clearInterval(shakeIntRef.current); // глушим возможный «осиротевший» интервал
+    holdingRef.current = true;
+    holdStartRef.current = Date.now();
+    setShake({ holding: true, a: 1, b: 1 });
+    shakeIntRef.current = window.setInterval(() => {
+      const a = 1 + Math.floor(Math.random() * 6);
+      const b = 1 + Math.floor(Math.random() * 6);
+      setShake({ holding: true, a, b });
+      /* транслируем перемешивание соперникам — у всех кубики трясутся синхронно */
+      room?.send('shake', { from: me, a, b });
+      sfx.dice();
+    }, 75);
+  };
+  const endHold = () => {
+    if (!holdingRef.current) return;
+    holdingRef.current = false;
+    clearInterval(shakeIntRef.current);
+    const holdMs = Date.now() - holdStartRef.current;
+    setShake((x) => ({ ...x, holding: false }));
+    setRolling(true); // кубики «катятся», пока хост не вернёт результат
+    sfx.drop();
+    dispatch({ t: 'roll', id: me, holdMs });
+  };
+
+  /* пришёл авторитетный результат броска — останавливаем кубики на числах хоста */
+  const rollId = s?.dice?.roll ?? 0;
+  useEffect(() => {
+    if (rollId && rollId !== lastRollRef.current) {
+      lastRollRef.current = rollId;
+      setRolling(false);
+    }
+  }, [rollId]);
+
+  /* страховка: если хост не ответил и «катание» зависло — сбрасываем, чтобы не висеть вечно */
+  useEffect(() => {
+    if (!rolling) return;
+    const t = setTimeout(() => setRolling(false), 6000);
+    return () => clearTimeout(t);
+  }, [rolling]);
+
+  /* жеребьёвка: старт игры — только когда ВСЕ игроки нажали «Старт игры»
+     (действие rollOffReady, движок запускает партию сам) */
+
+  /* пока кубики катятся — показываем быструю смену граней */
+  useEffect(() => {
+    if (!rolling) return;
+    const iv = window.setInterval(() => {
+      setShake((x) => ({ ...x, a: 1 + Math.floor(Math.random() * 6), b: 1 + Math.floor(Math.random() * 6) }));
+    }, 70);
+    return () => clearInterval(iv);
+  }, [rolling]);
+
+  useEffect(() => {
+    const dn = (e: KeyboardEvent) => { if (e.code === 'Space' && myTurn && !e.repeat) { e.preventDefault(); startHold(); } };
+    const up = (e: KeyboardEvent) => { if (e.code === 'Space') endHold(); };
+    window.addEventListener('keydown', dn);
+    window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', dn); window.removeEventListener('keyup', up); };
+  });
+
+  /* ---------- JOURNEY: стрелки/WASD двигают фишку напрямую (пока мой ход) ----------
+     v0.55: работает и в SKILL CHALLENGE со свободным перемещением (ходит хост) ---------- */
+  useEffect(() => {
+    if (!walkFree) return;
+    const dirOf = (code: string): TokenDir | null => {
+      if (code === 'ArrowUp' || code === 'KeyW') return 'up';
+      if (code === 'ArrowDown' || code === 'KeyS') return 'down';
+      if (code === 'ArrowLeft' || code === 'KeyA') return 'left';
+      if (code === 'ArrowRight' || code === 'KeyD') return 'right';
+      return null;
+    };
+    const dn = (e: KeyboardEvent) => {
+      const d = dirOf(e.code);
+      if (!d || e.repeat) return;
+      /* мини-экран КАРМАНА открыт (воровство) — WASD/стрелки ведут РУКУ, а не фишку:
+         ходьба заблокирована, персонаж на фоне стоит на месте */
+      /* v0.59: окно МОЕГО задания открыто — WASD/стрелки ведут игру в окне, не фишку */
+      if (pocketBlockRef.current || taskWinRef.current) return;
+      e.preventDefault(); // стрелки не крутят страницу — они ведут фишку
+      journeyKeys.current.add(d);
+    };
+    const up = (e: KeyboardEvent) => { const d = dirOf(e.code); if (d) journeyKeys.current.delete(d); };
+    const blur = () => journeyKeys.current.clear();
+    window.addEventListener('keydown', dn);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keydown', dn);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
+      journeyKeys.current.clear();
+    };
+  }, [walkFree]);
+
+  /* ---------- JOURNEY: СТРЕЛКИ ДЖОЙСТИКА (геймпад) двигают фишку ----------
+     Крестовина (кнопки 12..15), ЛЕВЫЙ СТИК и пользовательская раскладка из
+     «Управления» (если направление переназначено на другую кнопку). Опрос
+     ~15 раз/с; направления складываются с клавиатурой и экранным D-pad. */
+  useEffect(() => {
+    if (!walkFree) return;
+    const iv = window.setInterval(() => {
+      const prefs = loadEmuPrefs();
+      const dirs = new Set<TokenDir>();
+      /* мини-экран КАРМАНА открыт — крестовина джойстика ведёт РУКУ (обрабатывается
+         отдельным эффектом), фишка на фоне НЕ двигается */
+      /* v0.59: окно МОЕГО задания открыто — крестовина/стик ведут игру в окне, не фишку */
+      if (!pocketBlockRef.current && !taskWinRef.current && prefs.gamepad !== false) {
+        const pads = listGamepads();
+        const addBtn = (gp: Gamepad, idx: number | undefined, d: TokenDir) => {
+          if (idx === undefined || idx < 0 || idx > 17) return;
+          if (gp.buttons[idx]?.pressed) dirs.add(d);
+        };
+        for (const gp of pads) {
+          addBtn(gp, 12, 'up'); addBtn(gp, 13, 'down'); addBtn(gp, 14, 'left'); addBtn(gp, 15, 'right');
+          addBtn(gp, prefs.gpad?.UP, 'up'); addBtn(gp, prefs.gpad?.DOWN, 'down');
+          addBtn(gp, prefs.gpad?.LEFT, 'left'); addBtn(gp, prefs.gpad?.RIGHT, 'right');
+          addBtn(gp, prefs.segaPad?.UP, 'up'); addBtn(gp, prefs.segaPad?.DOWN, 'down');
+          addBtn(gp, prefs.segaPad?.LEFT, 'left'); addBtn(gp, prefs.segaPad?.RIGHT, 'right');
+          const ax = gp.axes[0] ?? 0, ay = gp.axes[1] ?? 0; // левый стик
+          if (ax < -0.45) dirs.add('left');
+          if (ax > 0.45) dirs.add('right');
+          if (ay < -0.45) dirs.add('up');
+          if (ay > 0.45) dirs.add('down');
+        }
+      }
+      journeyPadRef.current = dirs;
+    }, 66);
+    return () => { clearInterval(iv); journeyPadRef.current.clear(); };
+  }, [walkFree]);
+
+  /* ---------- JOURNEY: авто-передача хода УДАЛЕНА ----------
+     В новом JOURNEY очередь ходов отсутствует: все фишки ходят одновременно,
+     передавать ход никому не нужно. Кто первый пересечёт ячейку задания —
+     у того оно откроется, остальные фишки встанут и будут смотреть. */
+
+  const winner = s.winner ? s.players.find((p) => p.id === s.winner) : null;
+  /* трансляция: показываем последний кадр до 4 секунд, а пока идёт задание —
+     НЕ прячем окно вовсе (кадры пропали — красный квадратик, без затемнений и надписей).
+     Пометка LIVE не нужна: внизу только «ТРАНСЛЯЦИЯ» + квадрат (зелёный — кадры идут, красный — ждём). */
+  const streamAge = stream ? Date.now() - stream.ts : Infinity;
+  const streamLive = !!stream && streamAge < 1200;
+  const chRunning = !!ch && ch.started && (ch.status === 'playing' || ch.status === 'voting');
+  const streamShow = !!stream && (streamAge < 4000 || chRunning);
+
+  /* Грани кубиков. У бросающего — своё перемешивание, затем результат приходит от
+     хоста (с небольшой задержкой, зато игрок влияет на бросок временем удержания).
+     У зрителей — синхронное перемешивание из сети. */
+  const dShake = st.diceShake;
+  const shakeFresh = !!dShake && !!active && dShake.from === active.id && !s.moving && Date.now() - dShake.ts < 700;
+  const dieA = (shake.holding || rolling) && myTurn ? shake.a
+    : !myTurn && shakeFresh ? dShake!.a
+    : s.dice?.a ?? 6;
+  const dieB = (shake.holding || rolling) && myTurn ? shake.b
+    : !myTurn && shakeFresh ? dShake!.b
+    : s.dice?.b ?? 6;
+  const dieRolling = ((rolling || shake.holding) && myTurn) || (!myTurn && shakeFresh);
+  // сколько кубиков показывать: во время перемешивания — предпросмотр (по активным карточкам),
+  // после броска — столько, сколько выпало (1/2/3; при «Кубиках-0» — пустые грани)
+  const diceShown = dieRolling || (shake.holding && myTurn)
+    ? (myTurn ? (mePlayer?.oneDie ? 1 : mePlayer?.dicePlus ? 3 : 2) : 2)
+    : (s.dice?.count ?? 2);
+
+  return (
+    <div className={`h-full crt-grid-bg flex flex-col overflow-hidden ${cutUiHidden ? 'cut-hide-ui' : ''}`}>
+      {/* ---------- HUD ---------- */}
+      <div className="shrink-0 border-b-[3px] border-edge bg-[rgba(7,9,18,0.82)] px-3 py-2 flex items-center gap-2 flex-wrap z-20">
+        <span className="font-pixel text-[9px] text-gold hidden sm:block">RETRO CHALLENGE GENERATOR</span>
+        {/* код комнаты: с включённым «скрывать код» — точки вместо кода; глазик рядом
+            показывает/прячет код, выбор запоминается (общая опция с экраном лобби) */}
+        <span className="hud-chip pixel-corners px-2.5 py-1 font-pixel text-[9px] text-sky" title={options.hideRoomCode ? 'Код скрыт' : 'Код комнаты'}>{options.hideRoomCode ? '••••' : s.code}</span>
+        <button
+          onClick={() => { st.setOptions({ hideRoomCode: !options.hideRoomCode }); sfx.hover(); }}
+          title={options.hideRoomCode ? 'Показать код комнаты' : 'Скрыть код комнаты'}
+          aria-label={options.hideRoomCode ? 'Показать код комнаты' : 'Скрыть код комнаты'}
+          className="text-faint hover:text-gold cursor-pointer transition-colors"
+        >
+          {options.hideRoomCode ? Ic.eye(12) : Ic.eyeOff(12)}
+        </button>
+        {isSkill && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-magma">SKILL CHALLENGE</span>}
+        {map?.mapless && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-[#ff8b3f]">БЕЗ КАРТЫ</span>}
+        {/* RUBG/HP: полоска HP теперь В ЧИПАХ ИГРОКОВ ниже (цвет + ник + бар + проценты — одной индикацией).
+            Отдельный верхний чип с HP убран — раньше HP писался дважды. */}
+        {isRubg && inStealth && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-[#c07aff]">👻 СТЕЛС</span>}
+        {isRubg && rubg?.zone && s.phase === 'playing' && (() => {
+          const z = rubg.zone;
+          const leftMs = Math.max(0, z.phaseEnd - Date.now());
+          return (
+            <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-[#ff8b3f]">
+              ⭕ {z.phase === 'shrink' ? 'СЖИМАЕТСЯ' : `СЖАТИЕ ЧЕРЕЗ ${Math.ceil(leftMs / 1000)}с`} · ВНЕ ЗОНЫ −{z.dps}%/с
+            </span>
+          );
+        })()}
+        {/* БЕЗ КАРТЫ: счётчик матчей вместо счётчика ходов */}
+        {isMapless && s.phase === 'playing' && s.mapless && (
+          <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title={isSkill ? 'Сыграно случайных игр из 25' : 'Сыграно матчей челленджа'}>
+            МАТЧ {Math.min(s.mapless.done + 1, s.mapless.total)}/{s.mapless.total}
+          </span>
+        )}
+        {map?.mode === 'journey' && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-teal">JOURNEY</span>}
+        {isSoloJourney && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky">JOURNEY SOLO</span>}
+        {map?.mode === 'classic1p' && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky" title="RETROPOLIA на одного: победа — пройти ВСЕ задания карты">RETROPOLIA SOLO</span>}
+        {map?.mode === 'quest' && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-teal">QUEST</span>}
+        {isQuestSolo && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky">QUEST SOLO</span>}
+        {isQuest && s?.phase === 'playing' && map && (() => {
+          const total = map.cells.filter((c) => c.type === 'task').length;
+          const done = (s.qDone?.[me] ?? []).length;
+          const ends = map.endings ?? [];
+          return (
+            <span
+              className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold"
+              title={`Выполнено заданий: ${done} из ${total}${ends.length ? `. Концовок на карте: ${ends.length} — ${ends.map((e) => e.name).join(', ')}` : ''}`}
+            >🎯 {done}/{total}{ends.length ? ` · 🎬 ${ends.length}` : ''}</span>
+          );
+        })()}
+        {(() => {
+          /* плиточный режим: номер карты-локации, за которой сейчас камера
+             (в свободном хождении — своя фишка, иначе — игрок текущего хода/задания) */
+          const tg = map?.tileGrid;
+          if (!tg || !tg.tiles.length) return null;
+          const jFree = s.phase === 'playing' && !s.moving && !s.challenge && !s.pendingCard && !s.quiz && !s.awaitPost && !(s.fxs ?? []).some((f) => f.gate);
+          const followId = (walkFree && jFree ? me : active?.id) ?? '';
+          const fp = dispRef.current[followId];
+          const ft = fp ? tileAt(tg, fp.x, fp.y) : null;
+          if (!ft) return null;
+          return <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-teal" title="Плиточный режим: каждая плитка — отдельная карта-локация; видимость соседей и способ перехода — тип игры карт-плиток (задаётся в редакторе)">📍 ЛОКАЦИЯ {tileNumOf(tg, ft.id)}/{tg.tiles.length}</span>;
+        })()}
+        {(() => {
+          /* РЕЖИМ КОМНАТ (АЙЗЕК): номер текущей плитки-комнаты — брат «ЛОКАЦИИ» плиточного режима */
+          if (!roomsOnUi || !map) return null;
+          const pm = plateMetrics(map);
+          return <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky" title="Режим комнат (Айзек): видна только текущая плитка; переходы — открытые стыки (ходьбой) и порталы; на карте мира открыты только посещённые комнаты. v0.53: открытые одной комнатой открываются у всей команды, а ХАБ виден всегда">🧩 ПЛИТКА {roomNumUi ?? '—'}/{pm.total} · открыто {Math.min(new Set([...visitedPlatesRef.current, ...(s?.openPlates ?? [])]).size, pm.total)}</span>;
+        })()}
+        {isSkill && s.phase === 'playing' && !s.mapless && (
+          <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="Лимит ходов хоста в SKILL CHALLENGE">
+            ХОД {Math.min(s.turnNo ?? 1, SKILL_TURNS)}/{SKILL_TURNS}
+          </span>
+        )}
+        <span className={`w-2 h-2 ${st.netInfo.online ? 'bg-teal' : 'bg-gold'}`} />
+        <div className="flex items-center gap-1.5 flex-wrap flex-1">
+          {s.players.map((p, i) => (
+            <div
+              key={p.id}
+              /* в JOURNEY «золотой» подсветки стоящего игрока нет в свободном режиме —
+                 все ходят одновременно; подсветка появляется только у игрока задания */
+              className={`hud-chip pixel-corners px-2.5 py-1.5 flex items-center gap-2 transition-all ${active?.id === p.id && s.phase === 'playing' && !(walkFree && !ch && !s.pendingCard && !s.awaitPost && !s.quiz && !(s.fxs ?? []).some((f) => f.gate)) ? 'border-gold shadow-[0_0_14px_rgba(255,207,63,0.35)]' : ''} ${!p.alive ? 'opacity-40 grayscale' : ''} ${p.spect ? 'opacity-70' : ''}`}
+            >
+              <span className="w-3.5 h-3.5 border border-abyss" style={{ background: PLAYER_COLORS[p.color] }} />
+              <div className="leading-none">
+                <div className="font-display text-[10px] uppercase tracking-wide text-paper flex items-center gap-1">
+                  {p.name}
+                  {p.isHost && <span className="font-pixel text-[6px] text-gold">H</span>}
+                  {p.spect && <span className="font-pixel text-[6px] text-sky" title="Зритель — ходов не получает">👁 ЗРИТЕЛЬ</span>}
+                  {!p.alive && <span className="text-coral">{Ic.skull(10)}</span>}
+                  {/* v0.55: ЦВЕТНЫЕ КЛЮЧИ игрока — двери своего цвета открыты */}
+                  {(s?.qKeys?.[p.id] ?? []).map((k, ki) => (
+                    <span key={`${k}:${ki}`} title={`Ключ ${doorKeyName(k)} — открывает дверь этого цвета`} className="inline-block w-2 h-2 border border-abyss" style={{ background: doorKeyHex(k) }} />
+                  ))}
+                </div>
+                <div className="tick-label text-faint mt-1 flex items-center gap-1.5">
+                  {p.spect ? (
+                    <span className="text-sky">смотрит трансляцию</span>
+                  ) : hpRes ? (
+                    <>
+                      <span className="text-coral flex items-center gap-1" title="Ресурс — полоска HP">
+                        <span className="relative inline-block w-12 h-2 bg-[rgba(7,9,18,0.85)] border border-[#313c72] align-middle shrink-0">
+                          <span className="absolute inset-y-0 left-0 transition-all duration-300" style={{ width: `${Math.max(0, Math.min(100, p.hp ?? 100))}%`, background: (p.hp ?? 100) > 50 ? '#35d46f' : (p.hp ?? 100) > 25 ? '#ffcf3f' : '#ff5d73' }} />
+                        </span>
+                        {Math.round(p.hp ?? 100)}%
+                      </span>
+                      {/* v0.55 QUEST: рядом с HP — монеты (смесь ресурсов) */}
+                      {questMixed && <span className="text-teal"><CoinRow value={p.coinsLeft ?? 0} size={11} /></span>}
+                      <span>№{p.pos + 1}</span>
+                    </>
+                  ) : coinsRes ? (
+                    <>
+                      <span className="text-teal"><CoinRow value={p.coinsLeft ?? 0} size={11} /></span>
+                      <span>№{p.pos + 1}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-sky">{fmtClock(p.secLeft)}</span>
+                      <span className="text-gold">{p.triesLeft} поп.</span>
+                      {coinsActive && <span className="text-teal"><CoinRow value={p.coinsLeft ?? 0} size={11} /></span>}
+                      <span>№{p.pos + 1}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+              {s.phase === 'rollOff' && s.rollOffValues[p.id] !== undefined && (
+                <span className="font-pixel text-[10px] text-teal">{s.rollOffValues[p.id]}</span>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-1.5 ml-auto">
+          {myTurn && streaming && <span className="font-pixel text-[7px] text-coral blink-hard">LIVE</span>}
+          <GhostBtn small onClick={() => { setInvOpen(true); sfx.click(); }}>
+            {Ic.grid(12)} Инвентарь{invCount > 0 ? ` · ${invCount}` : ''}{incomingTrades.length > 0 ? ' 💼' : ''}
+          </GhostBtn>
+          {/* КАРТА МИРА — доступна и в режиме комнат (v0.50.0): неоткрытые плитки скрывает туман исследования */}
+          <GhostBtn small onClick={() => { setPeekMap(false); setWorldZoom(1); worldPanRef.current = { x: 0, y: 0 }; setViewMode((m) => (m === 'world' ? 'follow' : 'world')); }}>
+            {Ic.map(12)} {viewMode === 'world' ? 'К игроку' : 'Карта мира'}
+          </GhostBtn>
+          {room.isHost && (
+            <GhostBtn small onClick={() => void saveSessionSnapshot(`${map.name} · ${new Date().toLocaleDateString('ru-RU')}`)}>
+              {Ic.save(12)} Сохранить
+            </GhostBtn>
+          )}
+          <GhostBtn small onClick={() => { st.leaveRoom(); st.setScreen('menu'); }}>{Ic.home(12)}</GhostBtn>
+        </div>
+      </div>
+
+      {/* ---------- поле ---------- */}
+      {/* cut-board-keep (v0.59): правило «внутри поля остаётся только холст» — ТОЛЬКО для обёртки поля;
+         оверлей кат-сцены (полосы, плашка, «Пропустить») отмечен просто cut-keep и не гасится */}
+      <div className="flex-1 relative min-h-0 cut-keep cut-board-keep">
+        {/* РЕЖИМ КОМНАТ: короткое затемнение при смене комнаты (key = метка времени — анимация перезапускается) */}
+        {(roomsOnUi || tileHiddenUi) && roomFlashTs > 0 && <div key={roomFlashTs} className="room-flash pointer-events-none absolute inset-0 z-10" />}
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full block cut-keep-canvas"
+          style={{ cursor: viewMode === 'world' || peekMap ? (dragRef.current ? 'grabbing' : 'grab') : canLookAround ? (lookDragRef.current ? 'grabbing' : 'grab') : 'default' }}
+          onWheel={(e) => {
+            if (viewMode === 'world' || peekMap) {
+              setWorldZoom((z) => Math.min(4, Math.max(0.3, z * Math.exp(-e.deltaY * 0.0012))));
+            } else if (canLookAround) {
+              lookZoomRef.current = Math.min(2.5, Math.max(0.5, lookZoomRef.current * Math.exp(-e.deltaY * 0.0012)));
+            }
+          }}
+          onPointerDown={(e) => {
+            (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+            inspectDownRef.current = { x: e.clientX, y: e.clientY };
+            if (viewMode === 'world' || peekMap) {
+              dragRef.current = { sx: e.clientX, sy: e.clientY, px: worldPanRef.current.x, py: worldPanRef.current.y };
+            } else if (canLookAround) {
+              lookDragRef.current = { sx: e.clientX, sy: e.clientY, px: lookPanRef.current.x, py: lookPanRef.current.y };
+            }
+          }}
+          onPointerMove={(e) => {
+            const z = viewRef.current.zoom || 1;
+            if (dragRef.current) {
+              worldPanRef.current = {
+                x: dragRef.current.px - (e.clientX - dragRef.current.sx) / z,
+                y: dragRef.current.py - (e.clientY - dragRef.current.sy) / z,
+              };
+            } else if (lookDragRef.current) {
+              lookPanRef.current = {
+                x: lookDragRef.current.px - (e.clientX - lookDragRef.current.sx) / z,
+                y: lookDragRef.current.py - (e.clientY - lookDragRef.current.sy) / z,
+              };
+            }
+          }}
+          onPointerUp={(e) => {
+            // клик без перетаскивания — осмотр ячейки (для всех, включая зрителей)
+            const d = inspectDownRef.current;
+            inspectDownRef.current = null;
+            if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) {
+              const cv = e.currentTarget as HTMLCanvasElement;
+              const r = cv.getBoundingClientRect();
+              const v = viewRef.current;
+              const wx = v.x + (e.clientX - r.left - r.width / 2) / v.zoom;
+              const wy = v.y + (e.clientY - r.top - r.height / 2) / v.zoom;
+              const idx = cellAtPoint(map, wx, wy);
+              setInspectIdx(idx >= 0 ? idx : null);
+              if (idx >= 0) sfx.hover();
+            }
+            dragRef.current = null;
+            lookDragRef.current = null;
+          }}
+        />
+
+        {/* ---------- БЕЗ КАРТЫ: матчи-игры вместо поля ----------
+            Челленджи без карты и SKILL CHALLENGE: экран карты не показывается —
+            вместо него список матчей и рандомайзер «колесо фортуны». Канвас остаётся
+            под панелью (не размонтируется), чтобы рендер-цикл и эффекты жили. */}
+        {isMapless && s.phase === 'playing' && (() => {
+          const hostP = s.players.find((p) => p.isHost);
+          const doneCells = s.skillDone ?? [];
+          const nextIdx = map.cells.findIndex((c, i) => c.type === 'task' && !doneCells.includes(i) && !s.broken?.[i]);
+          /* пул рандомайзера: для безкартового челленджа — вшит в карту; для SKILL —
+             уникальные ромы заданий карты */
+          const pool: { romId: string; title: string }[] = map.mapless?.random
+            ? (map.mapless.pool ?? [])
+            : map.mode === 'skill'
+              ? Array.from(new Map(map.cells.filter((c) => c.type === 'task' && c.task).map((c) => [c.task!.romId, { romId: c.task!.romId, title: c.task!.title }])).values())
+              : [];
+          const nextTask = nextIdx >= 0 ? cellTaskOf(s, map, nextIdx) : null;
+          const busy = !!(s.challenge || s.moving || s.pendingCard || s.quiz || s.awaitPost || maplessFxGate);
+          const ml = s.mapless;
+          return (
+            <div className={`absolute inset-0 z-[15] bg-[rgba(7,9,18,0.97)] overflow-y-auto ${peekMap ? 'hidden' : ''}`}>
+              <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
+                {/* шапка челленджа */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="font-display uppercase text-xl text-[#ff8b3f]">{map.name}</span>
+                  <span className="font-pixel text-[8px] px-1.5 py-0.5 border-2 border-magma/60 text-magma">{isSkill ? 'SKILL CHALLENGE' : 'ЧЕЛЛЕНДЖ БЕЗ КАРТЫ'}</span>
+                  {ml && (
+                    <span className="ml-auto font-display uppercase text-lg text-gold">
+                      {ml.over ? 'ФИНИШ!' : `МАТЧ ${Math.min(ml.done + 1, ml.total)} / ${ml.total}`}
+                    </span>
+                  )}
+                </div>
+                {/* полоса прогресса матчей */}
+                {ml && (
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: ml.total }).map((_, i) => (
+                      <span key={i} className={`h-2 flex-1 min-w-[3px] ${i < ml.done ? 'bg-teal' : i === ml.done && !ml.over ? 'bg-gold pulse-ring' : 'bg-edge'}`} />
+                    ))}
+                  </div>
+                )}
+                {/* ресурсы хоста — только выбранный на карте ресурс */}
+                {hostP && !hostP.spect && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {hpRes ? (
+                      <>
+                        <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[10px] text-coral">❤ HP {Math.round(hostP.hp ?? 100)}%</span>
+                        {questMixed && <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[10px] text-teal"><CoinRow value={hostP.coinsLeft ?? 0} size={12} /></span>}
+                      </>
+                    ) : coinsRes ? (
+                      <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[10px] text-teal"><CoinRow value={hostP.coinsLeft ?? 0} size={12} /></span>
+                    ) : (
+                      <>
+                        <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[10px] text-sky">⏱ {fmtClock(hostP.secLeft)}</span>
+                        <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[10px] text-gold">🎯 {hostP.triesLeft} ПОП.</span>
+                        {coinsActive && <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[10px] text-teal"><CoinRow value={hostP.coinsLeft ?? 0} size={12} /></span>}
+                      </>
+                    )}
+                    {!hostP.alive && <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[10px] text-coral">{hpRes ? 'ПОЛОСКА HP НА НУЛЕ' : 'РЕСУРСЫ ИСЧЕРПАНЫ'}</span>}
+                  </div>
+                )}
+
+                {s.phase === 'playing' && ml && !ml.over && (
+                  busy ? (
+                    <div className="pixel-panel pixel-corners p-6 text-center">
+                      <span className="font-pixel text-[9px] text-dim blink-hard">МАТЧ {(ml.done ?? 0) + 1} ИГРАЕТСЯ — ОКНО ЗАДАНИЯ НА ЭКРАНЕ</span>
+                    </div>
+                  ) : hostP?.id === me && hostP.alive ? (
+                    <div className="pixel-panel pixel-corners p-5 space-y-4">
+                      <div className="font-display uppercase text-sm text-paper">
+                        {map.mapless?.random || isSkill ? 'Крутаните колесо — выпавшая игра станет матчем' : 'Следующий матч по списку'}
+                      </div>
+                      {map.mapless?.random || isSkill ? (
+                        <Randomizer
+                          items={pool}
+                          disabled={busy}
+                          onPicked={(item) => {
+                            if (nextIdx < 0) return;
+                            dispatch({ t: 'maplessSpin', id: me, cellIdx: nextIdx, romId: item.romId, title: item.title });
+                            dispatch({ t: 'maplessOpen', id: me, cellIdx: nextIdx });
+                          }}
+                        />
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="border-[3px] border-edge px-4 py-3">
+                            <div className="tick-label text-gold mb-1">Игра матча №{(ml.done ?? 0) + 1}</div>
+                            <div className="font-display uppercase text-paper text-lg truncate">{nextTask?.title ?? '—'}</div>
+                            {nextTask?.desc && <div className="text-[11px] text-dim mt-1">{nextTask.desc}</div>}
+                          </div>
+                          <PxBtn big color="gold" className="w-full pulse-ring" disabled={!nextTask}
+                            onClick={() => { sfx.start(); if (nextIdx >= 0) dispatch({ t: 'maplessOpen', id: me, cellIdx: nextIdx }); }}>
+                            {Ic.play(16)} Играть матч {(ml.done ?? 0) + 1}
+                          </PxBtn>
+                        </div>
+                      )}
+                      {pool.length === 0 && (map.mapless?.random || isSkill) && (
+                        <p className="text-[11px] text-magma">Пул игр пуст — {isSkill ? 'добавьте на карту задания с ромами' : 'в челлендже не выбрана ни одна игра'}.</p>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="pixel-panel pixel-corners p-6 text-center">
+                      <span className="font-pixel text-[9px] text-dim blink-hard">ХОСТ ГОТОВИТ СЛЕДУЮЩИЙ МАТЧ…</span>
+                    </div>
+                  )
+                )}
+
+                {/* список матчей (безкартовый челлендж по списку) */}
+                {map.mapless && !map.mapless.random && (
+                  <div className="border-2 border-edge divide-y-2 divide-edge max-h-56 overflow-y-auto">
+                    {map.cells.filter((c) => c.type === 'task').map((c) => {
+                      const i = map.cells.indexOf(c);
+                      const played = doneCells.includes(i);
+                      const t = cellTaskOf(s, map, i);
+                      return (
+                        <div key={i} className={`flex items-center gap-2 px-3 py-1.5 text-[11px] ${played ? 'text-faint' : 'text-paper'}`}>
+                          <span className={`font-pixel text-[8px] ${played ? 'text-teal' : 'text-gold'}`}>{played ? '✓' : '·'}</span>
+                          <span className="font-pixel text-[8px] text-faint w-8">№{c.n}</span>
+                          <span className={`truncate ${played ? 'line-through' : ''}`}>{t?.title ?? '—'}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* лог партии */}
+                <div className="space-y-1">
+                  {s.log.slice(0, 8).map((l, i) => (
+                    <div key={`${l}-${i}`} className={`text-[10.5px] leading-tight px-2.5 py-1.5 bg-[rgba(7,9,18,0.8)] border-l-[3px] ${i === 0 ? 'border-gold text-paper' : 'border-edge text-dim'}`}>
+                      {l}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* чей ход */}
+        {s.phase === 'playing' && active && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 hud-chip pixel-corners px-4 py-1.5 flex items-center gap-2">
+            <span className="w-3 h-3" style={{ background: PLAYER_COLORS[active.color] }} />
+            <span className="font-display uppercase text-[12px] tracking-wide" style={{ color: PLAYER_COLORS[active.color] }}>
+              Ход: {active.name}
+            </span>
+            {myTurn && <span className="font-pixel text-[7px] text-gold blink-hard">ВЫ</span>}
+          </div>
+        )}
+        {mePlayer && !mePlayer.alive && s.phase === 'playing' && (
+          <div className="absolute top-14 left-1/2 -translate-x-1/2 hud-chip pixel-corners px-4 py-1.5 border-coral">
+            <span className="font-display uppercase text-[11px] text-coral">Вы выбыли — режим наблюдения</span>
+          </div>
+        )}
+
+        {canLookAround && (
+          <div className="absolute top-14 right-3 hud-chip pixel-corners px-3 py-1.5 pointer-events-none">
+            <span className="tick-label text-sky">Тяните карту мышью · колесо — зум · клик по ячейке — осмотр · до броска</span>
+          </div>
+        )}
+
+        {/* заметное уведомление о пустых ячейках (передышках) */}
+        {s.notice && Date.now() - s.notice.ts < 5000 && (
+          <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 pop-in pointer-events-none">
+            <div className="pixel-corners px-5 py-3 border-[3px] border-magma bg-[rgba(30,16,8,0.92)] shadow-[0_10px_30px_rgba(0,0,0,0.5)] max-w-md">
+              <div className="flex items-start gap-3">
+                <span className="text-magma shrink-0 mt-0.5">{Ic.bolt(18)}</span>
+                <div>
+                  <div className="font-display uppercase text-[12px] tracking-wide text-magma">Передышка</div>
+                  <div className="text-[12px] text-paper leading-snug mt-1">{s.notice.text}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* лог */}
+        <div className="absolute left-3 bottom-3 w-[290px] max-w-[45vw] space-y-1 pointer-events-none">
+          {s.log.slice(0, 6).map((l, i) => (
+            <div key={`${l}-${i}`} className={`text-[10.5px] leading-tight px-2.5 py-1.5 bg-[rgba(7,9,18,0.8)] border-l-[3px] ${i === 0 ? 'border-gold text-paper slide-up' : 'border-edge text-dim'}`}>
+              {l}
+            </div>
+          ))}
+        </div>
+
+        {/* трансляция соперника (миниатюра, видна и поверх инвентаря/торгов).
+            Скрываем, когда трансляция открыта в основном окне задания (ch) — НО если
+            зритель открыл «карту мира» поверх задания (peekMap) или инвентарь (торги),
+            миниатюра остаётся, чтобы трансляция не пропадала. */}
+        {streamShow && !myTurn && (!ch || peekMap || invOpen) && !streamBig && (
+          <div className="fixed right-3 bottom-3 w-[240px] pop-in z-[97]">
+            <div className="hud-chip pixel-corners p-1.5">
+              <div className="flex items-center gap-2 px-1 pb-1">
+                <span className={`w-2 h-2 shrink-0 ${streamLive ? 'bg-teal' : 'bg-coral'}`} title={streamLive ? 'Кадры идут' : 'Ждём кадры'} />
+                <span className="font-pixel text-[7px] text-paper">ТРАНСЛЯЦИЯ · {stream!.name}</span>
+                <button
+                  onClick={() => setStreamBig(true)}
+                  title="Увеличить трансляцию"
+                  className="ml-auto font-pixel text-[9px] text-sky hover:text-paper cursor-pointer"
+                >⤢</button>
+              </div>
+              <img
+                src={stream!.data}
+                alt="Трансляция"
+                onClick={() => setStreamBig(true)}
+                className="w-full border-2 border-edge cursor-zoom-in"
+                style={{ imageRendering: 'auto' }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* увеличенная трансляция: всё внимание — игре соперника */}
+        {streamBig && streamShow && !myTurn && (
+          <div className="fixed inset-0 z-[98] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-[rgba(4,6,14,0.72)]" onClick={() => setStreamBig(false)} />
+            <div className="relative pixel-panel pixel-corners pop-in p-2 w-[600px] max-w-[94vw]">
+              <div className="flex items-center gap-2 px-1 pb-1.5">
+                <span className={`w-2 h-2 shrink-0 ${streamLive ? 'bg-teal' : 'bg-coral'}`} title={streamLive ? 'Кадры идут' : 'Ждём кадры'} />
+                <span className="font-pixel text-[8px] text-paper">ТРАНСЛЯЦИЯ · {stream!.name}</span>
+                <GhostBtn small className="ml-auto" onClick={() => setStreamBig(false)}>{Ic.cross(12)} Свернуть</GhostBtn>
+              </div>
+              <img src={stream!.data} alt="Трансляция" className="w-full border-2 border-edge" />
+              <p className="text-[10px] text-dim text-center mt-1.5">Карта и торги никуда не делись — сверните трансляцию, чтобы вернуться</p>
+            </div>
+          </div>
+        )}
+
+        {/* ---------- кубики (в JOURNEY их нет — фишка ходит напрямую) ---------- */}
+        {s.phase === 'playing' && !walkFree && !ch && !s.pendingCard && !s.awaitPost && !s.quiz && (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
+            <div className="flex gap-3">
+              <DieFace v={dieA} dropping={!!s.dice && !dieRolling && !s.moving} rolling={dieRolling} />
+              {diceShown >= 2 && (
+                <DieFace v={dieB} dropping={!!s.dice && !dieRolling && !s.moving} rolling={dieRolling} delay />
+              )}
+              {diceShown >= 3 && (
+                <DieFace v={s.dice?.c ?? dieB} dropping={!!s.dice && !dieRolling && !s.moving} rolling={dieRolling} delay />
+              )}
+            </div>
+            {myTurn ? (
+              !s.moving ? (
+                rolling ? (
+                  <div className="hud-chip pixel-corners px-4 py-2 font-pixel text-[8px] text-gold blink-hard">КУБИКИ КАТЯТСЯ…</div>
+                ) : fxGateUi ? (
+                  /* спектакль идёт: бросок НЕДОСТУПЕН (раньше можно было нажать и сорвать тайминги) */
+                  <div className="hud-chip pixel-corners px-4 py-2 font-pixel text-[8px] text-dim">🎬 АНИМАЦИЯ ИДЁТ…</div>
+                ) : (
+                  <button
+                    onPointerDown={startHold}
+                    onPointerUp={endHold}
+                    onPointerLeave={() => { if (shake.holding) endHold(); }}
+                    className={`btn-px pixel-corners btn-gold px-7 py-3 text-sm select-none touch-none ${shake.holding ? 'shake-hard' : ''}`}
+                  >
+                    {Ic.dice(16)} {shake.holding ? 'ОТПУСТИТЕ — БРОСОК!' : 'ДЕРЖИТЕ, ЧТОБЫ СМЕШАТЬ'}
+                  </button>
+                )
+              ) : (
+                <div className="hud-chip pixel-corners px-4 py-2 font-pixel text-[8px] text-gold blink-hard">ФИШКА ДВИЖЕТСЯ…</div>
+              )
+            ) : (
+              active && !s.moving && (
+                <div className="hud-chip pixel-corners px-4 py-2 text-[11px] text-dim">
+                  {active.name} готовится к броску{active.id === me ? '' : ' — ждём'}
+                </div>
+              )
+            )}
+            {s.dice && !s.moving && !myTurn && (
+              <div className="tick-label text-teal">
+                {s.dice.zero
+                  ? '0 — застрял на ячейке (кубики-0)'
+                  : s.dice.count === 1
+                    ? `${s.dice.a} — один кубик`
+                    : s.dice.count === 3
+                      ? `${s.dice.a} + ${s.dice.b} + ${s.dice.c} = ${(s.dice.a ?? 0) + (s.dice.b ?? 0) + (s.dice.c ?? 0)}`
+                      : `${s.dice.a} + ${s.dice.b} = ${s.dice.a + s.dice.b}`}
+              </div>
+            )}
+            {myTurn && !s.moving && !rolling && !shake.holding && (() => {
+              // предупреждения о пакостях, действующих на бросок
+              const myCellTask = active ? cellTaskOf(s, map, active.pos) : null;
+              if (myCellTask?.chaos === 'dice0' && s.captured[active!.pos] !== me) {
+                return (
+                  <div className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[8px] text-magma blink-hard text-center">
+                    😈 КУБИКИ-0: пройди задание — иначе бросок всегда 0!
+                  </div>
+                );
+              }
+              if (mePlayer?.oneDie) {
+                return <div className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[8px] text-magma blink-hard">😈 ОДИН КУБИК: бросишь только одним</div>;
+              }
+              if (mePlayer?.dicePlus) {
+                return <div className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[8px] text-teal">🎲 +1 КУБИК: бросаешь тремя!</div>;
+              }
+              return null;
+            })()}
+          </div>
+        )}
+
+        {/* ---------- JOURNEY: прямое управление фишкой — У КАЖДОГО СВОЯ, ОДНОВРЕМЕННО ---------- */}
+        {s.phase === 'playing' && walkFree && !ch && !s.pendingCard && !s.awaitPost && !s.quiz && (
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 z-10">
+            {mePlayer && !mePlayer.spect && mePlayer.alive ? (
+              <div className="flex items-center gap-4">
+                <div className="grid grid-cols-3 gap-1 select-none touch-none">
+                  <span />
+                  <button
+                    className="w-11 h-11 border-2 border-edge bg-panel text-paper font-pixel text-xs cursor-pointer select-none touch-none active:border-gold active:text-gold hover:border-edge2"
+                    onPointerDown={(e) => { e.preventDefault(); journeyPress('up', true); }}
+                    onPointerUp={() => journeyPress('up', false)}
+                    onPointerLeave={() => journeyPress('up', false)}
+                    onPointerCancel={() => journeyPress('up', false)}
+                  >▲</button>
+                  <span />
+                  <button
+                    className="w-11 h-11 border-2 border-edge bg-panel text-paper font-pixel text-xs cursor-pointer select-none touch-none active:border-gold active:text-gold hover:border-edge2"
+                    onPointerDown={(e) => { e.preventDefault(); journeyPress('left', true); }}
+                    onPointerUp={() => journeyPress('left', false)}
+                    onPointerLeave={() => journeyPress('left', false)}
+                    onPointerCancel={() => journeyPress('left', false)}
+                  >◀</button>
+                  <span />
+                  <button
+                    className="w-11 h-11 border-2 border-edge bg-panel text-paper font-pixel text-xs cursor-pointer select-none touch-none active:border-gold active:text-gold hover:border-edge2"
+                    onPointerDown={(e) => { e.preventDefault(); journeyPress('right', true); }}
+                    onPointerUp={() => journeyPress('right', false)}
+                    onPointerLeave={() => journeyPress('right', false)}
+                    onPointerCancel={() => journeyPress('right', false)}
+                  >▶</button>
+                  <span />
+                  <button
+                    className="w-11 h-11 border-2 border-edge bg-panel text-paper font-pixel text-xs cursor-pointer select-none touch-none active:border-gold active:text-gold hover:border-edge2"
+                    onPointerDown={(e) => { e.preventDefault(); journeyPress('down', true); }}
+                    onPointerUp={() => journeyPress('down', false)}
+                    onPointerLeave={() => journeyPress('down', false)}
+                    onPointerCancel={() => journeyPress('down', false)}
+                  >▼</button>
+                  <span />
+                </div>
+                <div className="flex flex-col items-center gap-1.5">
+                  <div className="tick-label text-faint text-center max-w-72">Все фишки ходят ОДНОВРЕМЕННО: стрелки/WASD, ДЖОЙСТИК или кнопки — веди свою. Кто ПЕРВЫМ пересечёт ячейку задания — у того оно откроется, остальные фишки встанут и будут смотреть. Передавать ход не нужно.</div>
+                </div>
+              </div>
+            ) : (
+              <div className="hud-chip pixel-corners px-4 py-2 text-[11px] text-dim">
+                Все фишки идут по карте — кто первый пересечёт ячейку задания, тот и играет
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ---------- RUBG: самолёт — каждый выпрыгивает, ГДЕ ХОЧЕТ ----------
+            Стартовая ячейка НЕ нужна: карта RUBG в редакторе может быть без неё.
+            Пока самолёт летит — панель готовности не показывается: прыжок = готовность. */}
+        {isRubg && s.phase === 'rollOff' && rubg?.plane && (() => {
+          const pl = rubg.plane;
+          const now = Date.now();
+          const len = Math.hypot(pl.x1 - pl.x0, pl.y1 - pl.y0) || 1;
+          const dd = Math.min(len, Math.max(0, ((now - pl.startAt) / 1000) * pl.speed));
+          const pxx = pl.x0 + (pl.x1 - pl.x0) * (dd / len);
+          const pyy = pl.y0 + (pl.y1 - pl.y0) * (dd / len);
+          const jumped = pl.jumped ?? [];
+          const iJumped = jumped.includes(me);
+          const rosterR = s.players.filter((q) => !q.spect);
+          const inside = pxx >= 0 && pxx <= (map.mw ?? 0) && pyy >= 0 && pyy <= (map.mh ?? 0);
+          const mapToksP = map.mapTokens ?? [];
+          const needTokP = mapToksP.length > 0 && !mePlayer?.spect; // фишки заданы картой — выбор обязателен
+          const myTokKey = s.players.find((p) => p.id === me)?.tokenKey;
+          const takenByP = (tid: string) => s.players.find((p) => p.id !== me && p.tokenKey === tid);
+          return (
+            <div className="absolute inset-0 flex items-center justify-center bg-[rgba(4,6,14,0.5)] z-10">
+              <div className="pixel-panel pixel-corners pop-in p-6 max-w-md w-full mx-4 text-center max-h-[92vh] overflow-y-auto">
+                <div className="font-display uppercase tracking-wider text-gold text-lg">🪂 САМОЛЁТ НА ЛИНИИ</div>
+                <p className="text-[11px] text-dim mt-1">Выпрыгивай, ГДЕ ХОЧЕШЬ — прыжок приземлит тебя под самолётом. Ищи задания и ЯЩИКИ с лутом (вскрывай отмычкой), следи за зоной!</p>
+                <div className="font-pixel text-[10px] text-paper my-3">Пройдено маршрута: {Math.round((dd / len) * 100)}%{inside ? '' : ' · самолёт ВНЕ карты'}</div>
+                {iJumped ? (
+                  <div className="font-pixel text-[9px] text-teal blink-hard">ПРЫЖОК СОВЕРШЁН — ждём остальных ({jumped.length}/{rosterR.length})</div>
+                ) : needTokP && !myTokKey ? (
+                  <div className="font-pixel text-[9px] text-gold blink-hard py-2">СНАЧАЛА ФИШКА — ПОТОМ ПРЫЖОК ↓</div>
+                ) : (
+                  <PxBtn big color="gold" disabled={!inside} onClick={() => { sfx.start(); dispatch({ t: 'rubgJump', id: me, x: Math.round(pxx), y: Math.round(pyy) }); }}>
+                    🪂 ПРЫГНУТЬ
+                  </PxBtn>
+                )}
+                {needTokP && !iJumped && (
+                  <div className="mt-4 text-left">
+                    <div className="font-display uppercase text-[11px] tracking-wider text-sky mb-2 flex items-center gap-1.5">
+                      <span>{Ic.pawn(13)}</span> Выберите свою фишку
+                    </div>
+                    <div className="flex gap-2 flex-wrap justify-center">
+                      {mapToksP.map((t) => {
+                        const takenBy = takenByP(t.id);
+                        const mine = myTokKey === t.id;
+                        const off = !!takenBy;
+                        return (
+                          <button
+                            key={t.id}
+                            disabled={off}
+                            onClick={() => { sfx.click(); dispatch({ t: 'token', id: me, tokenImg: t.dataUrl, tokenId: t.id }); }}
+                            title={takenBy ? `${t.name} — уже у ${takenBy.name}` : t.name}
+                            className={`relative w-14 h-14 border-[3px] p-1 transition-all ${off ? 'border-edge opacity-35 cursor-not-allowed' : mine ? 'border-gold shadow-[0_0_14px_rgba(255,207,63,0.35)] cursor-pointer' : 'border-edge hover:border-edge2 cursor-pointer'}`}
+                            style={{ background: 'repeating-conic-gradient(#1a2244 0 25%, #10142a 0 50%) 0 0 / 12px 12px' }}
+                          >
+                            {t.anim?.idle?.frames?.length
+                              ? <AnimPreview frames={t.anim.idle.frames} fps={t.anim.idle.fps} size={44} className="w-full h-full" style={{ width: '100%', height: '100%' }} />
+                              : <img src={t.dataUrl} alt={t.name} className="w-full h-full object-contain" style={{ imageRendering: 'pixelated' }} />}
+                            {takenBy && <span className="absolute inset-x-0 bottom-0 bg-coral text-abyss font-pixel text-[6px] truncate px-0.5">{takenBy.name}</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                <div className="mt-3 flex justify-center gap-1.5 flex-wrap">
+                  {rosterR.map((p) => (
+                    <span key={p.id} className={`font-pixel text-[8px] px-1.5 py-0.5 border-2 ${jumped.includes(p.id) ? 'border-teal text-teal' : 'border-edge text-dim'}`}>
+                      {p.name}{jumped.includes(p.id) ? ' ✔' : ''}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ---------- жеребьёвка: все кубики видны сразу, бросают по очереди (зрители — в стороне) ---------- */}
+        {s.phase === 'rollOff' && !s.rollOffWinner && !isRubg && (() => {
+          const roster = s.players.filter((p) => !p.spect);
+          return (
+          <div className="absolute inset-0 flex items-center justify-center bg-[rgba(4,6,14,0.55)] z-10">
+            <div className="pixel-panel pixel-corners pop-in p-6 max-w-lg w-full mx-4 text-center">
+              <div className="font-display uppercase tracking-wider text-gold text-lg">Кто ходит первым?</div>
+              <p className="text-[12px] text-dim mt-1 mb-1">Бросайте по очереди — у кого больше, тот и начинает. При равенстве — переброс.</p>
+              <div className="flex justify-center gap-5 mt-4 mb-5 flex-wrap">
+                {roster.map((p, i) => {
+                  const val = s.rollOffValues[p.id];
+                  const isRoller = i === s.rollOffIdx;
+                  const mine = isRoller && p.id === me;
+                  const theirs = isRoller && p.id !== me;
+                  /* тряска показывается ТОЛЬКО когда она реально идёт: у себя — пока
+                     держим кнопку или докручиваем; у соперника — пока приходят свежие
+                     кадры shake. До нажатия кнопки все видят пустой кубик. */
+                  const shaking = mine ? roShake || roWaiting : theirs && roRemoteShake;
+                  const face = mine
+                    ? (roShake || roWaiting ? roFace : val ?? roFace)
+                    : theirs && roRemoteShake && st.diceShake
+                      ? st.diceShake.a
+                      : val ?? 0;
+                  const color = PLAYER_COLORS[p.color];
+                  return (
+                    <div key={p.id} className="flex flex-col items-center gap-1.5">
+                      {val !== undefined && !shaking ? (
+                        <DieFace key={`${p.id}-${val}`} v={val} frame={color} dropping />
+                      ) : shaking ? (
+                        <DieFace v={face} frame={color} rolling />
+                      ) : (
+                        <DieFace v={0} frame={color} blank />
+                      )}
+                      <div className="font-display text-[10px] uppercase tracking-wide" style={{ color }}>{p.name}</div>
+                      <div className="tick-label text-faint">
+                        {val !== undefined ? `выпало ${val}` : isRoller ? (p.id === me ? 'ваш бросок' : 'бросает…') : 'ждёт очереди'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {roster[s.rollOffIdx]?.id === me ? (
+                <button
+                  onPointerDown={startRoShake}
+                  onPointerUp={endRoShake}
+                  onPointerLeave={() => { if (roShake) endRoShake(); }}
+                  disabled={roWaiting}
+                  className={`btn-px pixel-corners btn-gold px-7 py-3 text-sm select-none touch-none ${roShake ? 'shake-hard' : ''}`}
+                >
+                  {Ic.dice(16)} {roShake ? 'ОТПУСТИТЕ — БРОСОК!' : roWaiting ? 'КУБИК КРУТИТСЯ…' : 'ДЕРЖИТЕ, ЧТОБЫ СМЕШАТЬ'}
+                </button>
+              ) : (
+                <div className="font-pixel text-[9px] text-dim blink-hard">БРОСАЕТ {roster[s.rollOffIdx]?.name}…</div>
+              )}
+            </div>
+          </div>
+          );
+        })()}
+
+        {/* ---------- победитель жеребьёвки: каждый подтверждает старт (и берёт фишку) ----------
+            В RUBG с САМОЛЁТОМ эта панель не нужна: прыжок = готовность (панель самолёта выше).
+            Показывается только как фолбэк для старой сессии без самолёта. */}
+        {s.phase === 'rollOff' && s.rollOffWinner && (!isRubg || !rubg?.plane) && (() => {
+          const readyList = s.rollOffReady ?? [];
+          const roster = s.players.filter((p) => !p.spect);
+          const winnerP = s.players.find((p) => p.id === s.rollOffWinner);
+          const allReady = roster.every((p) => readyList.includes(p.id));
+          const mapToks = map.mapTokens ?? [];
+          const needToken = mapToks.length > 0 && !mePlayer?.spect; // фишки заданы картой — выбор обязателен (зрителям — нет)
+          const myTokenKey = s.players.find((p) => p.id === me)?.tokenKey;
+          const tokenTakenBy = (tid: string) => s.players.find((p) => p.id !== me && p.tokenKey === tid);
+          return (
+            <div className="absolute inset-0 flex items-center justify-center bg-[rgba(4,6,14,0.6)] z-10">
+              <div className="pixel-panel pixel-corners pop-in p-7 max-w-lg w-full mx-4 text-center">
+                <span className="text-gold inline-block floaty">{isRubg ? '🪂' : isJourney ? Ic.pawn(40) : Ic.dice(40)}</span>
+                <div className="font-pixel text-gold text-[11px] mt-3">{isRubg ? 'RUBG БЕЗ САМОЛЁТА — СТАРТ СО СТАРТОВОЙ ЯЧЕЙКИ' : isJourney ? (isSoloJourney ? 'ОДИНОКОЕ ПРИКЛЮЧЕНИЕ' : 'ВСЕ СТАРТУЮТ ОДНОВРЕМЕННО') : 'ПЕРВЫМ ХОДИТ'}</div>
+                {isRubg ? (
+                  <p className="text-[11px] text-dim mt-2">Фолбэк: сессия без самолёта. Ищите личные задания и ящики, следите за сжимающейся зоной. Побеждает ПОСЛЕДНИЙ ЖИВОЙ!</p>
+                ) : isJourney ? (
+                  <p className="text-[11px] text-dim mt-2">{isSoloJourney ? 'Играет ТОЛЬКО ХОСТ — все подключившиеся смотрят трансляцию. Жеребьёвки нет: фишка хоста идёт свободно от старта.' : isQuest ? 'Каждый играет ИНДИВИДУАНО и в СВОЁМ ТЕМПЕ: фишка идёт от общего старта свободно, вошёл в ячейку задания — играй лично (трансляции нет, другие не ждут). Побеждает первый, кто выполнит КОНЦОВКУ.' : 'Жеребьёвки нет — каждый ведёт СВОЮ фишку со старта. Кто ПЕРВЫМ пересечёт ячейку задания — у того оно и откроется, остальные будут смотреть.'}</p>
+                ) : (
+                  <div
+                    className="font-display uppercase text-3xl mt-2"
+                    style={{ color: winnerP ? PLAYER_COLORS[winnerP.color] : undefined }}
+                  >
+                    {winnerP?.name ?? '—'}
+                  </div>
+                )}
+                {isSkill && <p className="text-[11px] text-magma mt-2">SKILL CHALLENGE: играть будет только хост — вы зритель{mePlayer?.spect ? ' (и вы тоже)' : ''}.</p>}
+                {isSoloJourney && mePlayer?.spect && <p className="text-[11px] text-sky mt-2">JOURNEY: играет хост — вы зритель трансляции.</p>}
+                {!isJourney && (
+                  <div className="flex justify-center gap-4 mt-5 flex-wrap">
+                    {roster.map((p) => (
+                      <div key={p.id} className="flex flex-col items-center gap-1">
+                        <DieFace v={s.rollOffValues[p.id] ?? 1} frame={PLAYER_COLORS[p.color]} dropping={p.id === s.rollOffWinner} />
+                        <span className="font-display text-[9px] uppercase" style={{ color: PLAYER_COLORS[p.color] }}>{p.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-5 space-y-2 text-left">
+                  {roster.map((p) => {
+                    const isReady = readyList.includes(p.id);
+                    const pTok = needToken && p.tokenKey ? mapToks.find((t) => t.id === p.tokenKey) : null;
+                    return (
+                      <div key={p.id} className={`flex items-center justify-between gap-2 hud-chip pixel-corners px-3 py-2 ${p.id === me && !isReady ? 'border-gold pulse-ring' : ''}`}>
+                        <span className="font-display text-[11px] uppercase tracking-wide truncate" style={{ color: PLAYER_COLORS[p.color] }}>{p.name}</span>
+                        {isReady ? (
+                          <span className="font-pixel text-[8px] text-teal shrink-0 text-right">ГОТОВ ✓{pTok ? <span className="text-dim"> · {pTok.name}</span> : ''}</span>
+                        ) : p.id === me ? (
+                          <PxBtn small color="teal" disabled={needToken && !myTokenKey} onClick={() => { sfx.start(); dispatch({ t: 'rollOffReady', id: me }); }}>{Ic.play(12)} Старт игры</PxBtn>
+                        ) : (
+                          <span className="font-pixel text-[8px] text-faint">ЖДЁМ…</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {needToken && !readyList.includes(me) && (
+                  <div className="mt-4 text-left">
+                    <div className="font-display uppercase text-[11px] tracking-wider text-sky mb-2 flex items-center gap-1.5">
+                      <span>{Ic.pawn(13)}</span> Выберите свою фишку
+                    </div>
+                    <div className="flex gap-2 flex-wrap justify-center">
+                      {mapToks.map((t) => {
+                        const takenBy = tokenTakenBy(t.id);
+                        const mine = myTokenKey === t.id;
+                        const off = !!takenBy;
+                        return (
+                          <button
+                            key={t.id}
+                            disabled={off}
+                            onClick={() => { sfx.click(); dispatch({ t: 'token', id: me, tokenImg: t.dataUrl, tokenId: t.id }); }}
+                            title={takenBy ? `${t.name} — уже у ${takenBy.name}` : t.name}
+                            className={`relative w-14 h-14 border-[3px] p-1 transition-all ${off ? 'border-edge opacity-35 cursor-not-allowed' : mine ? 'border-gold shadow-[0_0_14px_rgba(255,207,63,0.35)] cursor-pointer' : 'border-edge hover:border-edge2 cursor-pointer'}`}
+                            style={{ background: 'repeating-conic-gradient(#1a2244 0 25%, #10142a 0 50%) 0 0 / 12px 12px' }}
+                          >
+                            {t.anim?.idle?.frames?.length
+                              ? <AnimPreview frames={t.anim.idle.frames} fps={t.anim.idle.fps} size={44} className="w-full h-full" style={{ width: '100%', height: '100%' }} />
+                              : <img src={t.dataUrl} alt={t.name} className="w-full h-full object-contain" style={{ imageRendering: 'pixelated' }} />}
+                            {takenBy && <span className="absolute inset-x-0 bottom-0 bg-coral text-abyss font-pixel text-[6px] truncate px-0.5">{takenBy.name}</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {!myTokenKey && <p className="font-pixel text-[8px] text-gold mt-2">СНАЧАЛА ФИШКА — ПОТОМ «СТАРТ ИГРЫ»</p>}
+                    {mapToks.length < s.players.length && <p className="font-pixel text-[8px] text-coral mt-1">ФИШЕК ({mapToks.length}) МЕНЬШЕ, ЧЕМ ИГРОКОВ ({s.players.length}) — ХОСТУ НУЖНО ДОБАВИТЬ В РЕДАКТОРЕ!</p>}
+                  </div>
+                )}
+
+                <div className={`font-pixel text-[9px] mt-4 ${allReady ? 'text-teal' : 'text-dim blink-hard'}`}>
+                  {allReady ? 'СТАРТ!' : `ГОТОВЫ ${readyList.length} ИЗ ${roster.length}`}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ---------- победитель ---------- */}
+        {s.phase === 'over' && (
+          <div className="absolute inset-0 flex items-center justify-center bg-[rgba(4,6,14,0.78)] z-30 overflow-hidden">
+            {[...Array(36)].map((_, i) => (
+              <span
+                key={i}
+                className="confetti-bit w-2.5 h-2.5"
+                style={{
+                  left: `${(i * 137) % 100}%`,
+                  background: PLAYER_COLORS[i % 4],
+                  animationDuration: `${2.2 + (i % 5) * 0.5}s`,
+                  animationDelay: `${(i % 8) * 0.3}s`,
+                }}
+              />
+            ))}
+            <div className="pixel-panel pixel-corners pop-in p-8 text-center max-w-md mx-4 relative">
+              <span className="text-gold inline-block floaty">{Ic.trophy(48)}</span>
+              {isSkill ? (
+                <>
+                  <div className={`font-pixel text-sm mt-3 title-glow ${winner ? 'text-teal' : 'text-coral'}`}>
+                    {winner ? 'SKILL CHALLENGE ПРОЙДЕН' : 'SKILL CHALLENGE ПРОВАЛЕН'}
+                  </div>
+                  <div className="font-display uppercase text-2xl text-paper mt-2" style={{ color: winner ? PLAYER_COLORS[winner.color] : undefined }}>
+                    {winner?.name ?? 'РЕСУРСЫ ИСЧЕРПАНЫ'}
+                  </div>
+                  <p className="text-[12px] text-dim mt-2">
+                    {winner
+                      ? `${winner.name} сыграл ${s.mapless?.total ?? SKILL_TURNS} случайных игр — ресурсы на месте! Финальный капитал: ${coinsStr(winner.coinsLeft ?? 0)}`
+                      : `Ресурсы исчерпаны раньше, чем сыграны все ${s.mapless?.total ?? SKILL_TURNS} игр.`}
+                  </p>
+                </>
+              ) : s.ending ? (() => {
+                const e = (map.endings ?? []).find((x) => x.id === s.ending!.endingId);
+                const ep = s.players.find((x) => x.id === s.ending!.playerId);
+                return (
+                  <>
+                    <div className={`font-pixel text-sm mt-3 title-glow ${winner ? 'text-teal' : 'text-coral'}`}>
+                      {winner ? `КОНЦОВКА: ${e?.name ?? '?'}` : 'QUEST ПРОВАЛЕН'}
+                    </div>
+                    <div className="font-display uppercase text-2xl text-paper mt-2" style={{ color: ep ? PLAYER_COLORS[ep.color] : undefined }}>
+                      {ep?.name ?? 'РЕСУРСЫ ИСЧЕРПАНЫ'}
+                    </div>
+                    {e?.desc && <p className="text-[12px] text-dim mt-2">{e.desc}</p>}
+                    {!winner && <p className="text-[12px] text-dim mt-2">Ресурсы исчерпаны — квест остался незавершённым.</p>}
+                  </>
+                );
+              })() : isQuest && !winner ? (() => {
+                /* v0.66: честное «QUEST ПРОВАЛЕН» вместо классического «ПОБЕДА · НИЧЬЯ»
+                   (s.ending пишется только при победе). v0.67: причина «Заданий
+                   провалено…» УДАЛЕНА — поражение по лимиту провалов больше не
+                   существует, квест проигрывается только на нуле HP/ресурсов. */
+                const dead = s.players.filter((p) => !p.alive);
+                const hpP = dead.find((p) => (p.hp ?? RUBG_HP_MAX) <= 0);
+                const loser = hpP ?? dead[0];
+                const cause = hpP
+                  ? 'Полоска HP опустилась до нуля — квест остался незавершённым.'
+                  : 'Ресурсы исчерпаны — квест остался незавершённым.';
+                return (
+                  <>
+                    <div className="font-pixel text-sm mt-3 title-glow text-coral">QUEST ПРОВАЛЕН</div>
+                    <div className="font-display uppercase text-2xl text-paper mt-2" style={{ color: loser ? PLAYER_COLORS[loser.color] : undefined }}>
+                      {loser?.name ?? 'РЕСУРСЫ ИСЧЕРПАНЫ'}
+                    </div>
+                    <p className="text-[12px] text-dim mt-2">{cause}</p>
+                  </>
+                );
+              })() : isMapless ? (
+                <>
+                  <div className={`font-pixel text-sm mt-3 title-glow ${winner ? 'text-teal' : 'text-coral'}`}>
+                    {winner ? 'ЧЕЛЛЕНДЖ ПРОЙДЕН!' : 'ЧЕЛЛЕНДЖ ПРОВАЛЕН'}
+                  </div>
+                  <div className="font-display uppercase text-2xl text-paper mt-2" style={{ color: winner ? PLAYER_COLORS[winner.color] : undefined }}>
+                    {winner?.name ?? 'РЕСУРСЫ ИСЧЕРПАНЫ'}
+                  </div>
+                  <p className="text-[12px] text-dim mt-2">
+                    {winner
+                      ? `Все ${s.mapless?.total ?? '?'} матчей сыграны! Финальный капитал: ${coinsStr(winner.coinsLeft ?? 0)}`
+                      : 'Ресурсы исчерпаны раньше, чем сыграны все матчи.'}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="font-pixel text-gold text-sm mt-3 title-glow">ПОБЕДА</div>
+                  <div className="font-display uppercase text-2xl text-paper mt-2" style={{ color: winner ? PLAYER_COLORS[winner.color] : undefined }}>
+                    {winner?.name ?? 'НИЧЬЯ'}
+                  </div>
+                  <p className="text-[12px] text-dim mt-2">
+                    {winner ? 'Соперники остались без ресурсов. Поле покорено!' : 'Ресурсы исчерпали все — партия annullée.'}
+                  </p>
+                </>
+              )}
+              <div className="flex gap-3 justify-center mt-6">
+                {room.isHost && <GhostBtn onClick={() => void saveSessionSnapshot(`${map.name} · итог`)}>{Ic.save(13)} В архив</GhostBtn>}
+                <PxBtn onClick={() => { st.leaveRoom(); st.setScreen('menu'); }}>{Ic.home(14)} В меню</PxBtn>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ---------- карточка бонуса/ловушки ---------- */}
+      {s.pendingCard && !peekMap && (
+        <Modal title={s.pendingCard.card.kind === 'bonus' ? 'Карточка бонуса' : 'Карточка ловушки'} icon={s.pendingCard.card.kind === 'bonus' ? Ic.star(16) : Ic.skull(16)} w="max-w-md" locked>
+          <div className="text-center">
+            <img
+              src={cardImg ?? cardArt(s.pendingCard.card.kind === 'joy' ? 'bonus' : s.pendingCard.card.kind, s.pendingCard.card.name, s.pendingCard.card.id.length)}
+              alt={s.pendingCard.card.name}
+              className="mx-auto border-[3px] border-edge max-h-44 object-contain pop-in"
+            />
+            <div className="font-display uppercase text-xl mt-3" style={{ color: s.pendingCard.card.kind === 'bonus' ? '#2ee6a8' : '#ff5d73' }}>
+              {s.pendingCard.card.name}
+            </div>
+            <p className="text-[13px] text-dim mt-1.5">{s.pendingCard.card.desc}</p>
+            <div className="hud-chip pixel-corners inline-block px-3 py-1.5 mt-3">
+              <span className="font-display text-[11px] uppercase text-gold">{effectLabel(s.pendingCard.card.effect)}</span>
+            </div>
+            <div className="mt-5">
+              {s.pendingCard.player === me ? (
+                <PxBtn color={s.pendingCard.card.kind === 'bonus' ? 'teal' : 'coral'} onClick={() => dispatch({ t: 'cardAck', id: me })}>{Ic.check(14)} Принять судьбу</PxBtn>
+              ) : (
+                <span className="font-pixel text-[8px] text-dim blink-hard">
+                  {s.players.find((p) => p.id === s.pendingCard!.player)?.name} читает карточку…
+                </span>
+              )}
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* ---------- челлендж: не размонтируется под картой мира, чтобы эмулятор не сбрасывался ---------- */}
+      {ch && task && (
+        <div className={peekMap ? 'hidden' : undefined}>
+        <Modal
+          title={isMapless && s.mapless ? `Матч ${Math.min(s.mapless.done + 1, s.mapless.total)} · ${task.title}` : `Ячейка №${ch.cellIdx + 1} · ${task.title}`}
+          icon={Ic.cart(16)}
+          w={taskWinSize === 1 ? 'max-w-6xl' : taskWinSize === -1 ? 'max-w-2xl' : 'max-w-4xl'}
+          locked
+        >
+          {/* v0.56: размер окна задания — «−»/«Стд»/«＋» */}
+          <div className="flex justify-end mb-2">{taskSizeBtns}</div>
+          <div className="grid md:grid-cols-[220px_1fr] gap-4">
+            <div className="space-y-3">
+              <img
+                src={taskImg ?? cartridgeArt(task.title, romName, ch.cellIdx)}
+                alt={task.title}
+                className="w-full border-[3px] border-edge object-cover"
+              />
+              <div className="min-w-0">
+                <TaskDesc text={task.desc} label="Задание" />
+              </div>
+              <div className="tick-label text-faint">Ром: {romName} · {consoleLabel(taskRom?.ext)}</div>
+              {ownerName && owner !== active?.id && (
+                <div className="hud-chip pixel-corners px-3 py-2 text-[11px] text-magma border-magma">
+                  Хозяин ячейки: {ownerName} — потраченные ресурсы уйдут ему
+                </div>
+              )}
+              {/* «Глянуть карту мира» — снова доступна в режиме комнат: неоткрытое скрывает туман */}
+              <GhostBtn small onClick={() => setPeekMap(true)}>{Ic.map(12)} Глянуть карту мира</GhostBtn>
+              {myTurn && ch.status !== 'choose' && !controlsLocked && (
+                <GhostBtn small onClick={() => setControlsOpen(true)}>{Ic.gear(12)} Управление</GhostBtn>
+              )}
+              {/* звук эмулятора — всегда под кнопкой «Управление»: и при запуске, и во время задания */}
+              {myTurn && ch.status !== 'choose' && <EmuVolumeChip />}
+              {controlsLocked && (
+                <div className="hud-chip pixel-corners px-3 py-2 text-[10px] text-magma border-magma">
+                  😈 Реверс крестовины: смена кнопок ЗАПРЕЩЕНА
+                </div>
+              )}
+            </div>
+
+            <div className="min-w-0">
+              {ch.status === 'choose' && (
+                <div>
+                  {myTurn ? (
+                    <div>
+                      <div className="font-display uppercase text-sm text-paper mb-3">Чем платите за задание?</div>
+                      <div className={`grid ${coinsActive ? 'sm:grid-cols-3' : 'grid-cols-2'} gap-3`}>
+                        {!coinsOnly && (
+                          <button
+                            onClick={() => { sfx.coin(); dispatch({ t: 'chooseMode', id: me, mode: 'time' }); }}
+                            disabled={(mePlayer?.secLeft ?? 0) <= 0}
+                            className="pixel-panel pixel-corners p-4 text-left hover:border-sky hover:-translate-y-0.5 transition-all cursor-pointer group disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:border-edge"
+                          >
+                            <span className="text-sky">{Ic.clock(22)}</span>
+                            <div className="font-display uppercase text-paper group-hover:text-sky mt-2">Время</div>
+                            <div className="font-pixel text-[10px] text-sky mt-1">{fmtClock(mePlayer?.secLeft ?? 0)}</div>
+                            <div className="text-[10px] text-dim mt-1.5">{(mePlayer?.secLeft ?? 0) <= 0 ? 'Время исчерпано — ресурс недоступен' : 'Таймер стартует по кнопке «Запуск задания».'}</div>
+                          </button>
+                        )}
+                        {!coinsOnly && (
+                          <button
+                            onClick={() => { sfx.coin(); dispatch({ t: 'chooseMode', id: me, mode: 'tries' }); }}
+                            disabled={(mePlayer?.triesLeft ?? 0) <= 0}
+                            className="pixel-panel pixel-corners p-4 text-left hover:border-gold hover:-translate-y-0.5 transition-all cursor-pointer group disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:border-edge"
+                          >
+                            <span className="text-gold">{Ic.target(22)}</span>
+                            <div className="font-display uppercase text-paper group-hover:text-gold mt-2">Попытки</div>
+                            <div className="font-pixel text-[10px] text-gold mt-1">{mePlayer?.triesLeft ?? 0} ПОП.</div>
+                            <div className="text-[10px] text-dim mt-1.5">{(mePlayer?.triesLeft ?? 0) <= 0 ? 'Попытки исчерпаны — ресурс недоступен' : 'Запуск = 1 попытка, каждый перезапуск — ещё одна.'}</div>
+                          </button>
+                        )}
+                        {coinsActive && (
+                          <button
+                            onClick={() => { sfx.coin(); dispatch({ t: 'chooseMode', id: me, mode: 'coins' }); }}
+                            className="pixel-panel pixel-corners p-4 text-left hover:border-teal hover:-translate-y-0.5 transition-all cursor-pointer group"
+                          >
+                            <span className="text-teal"><Coin size={20} /></span>
+                            <div className="font-display uppercase text-paper group-hover:text-teal mt-2">Монеты</div>
+                            <div className="font-pixel text-[10px] text-teal mt-1"><CoinRow value={mePlayer?.coinsLeft ?? 0} size={11} /></div>
+                            <div className="text-[10px] text-dim mt-1.5">Во время игры ничего не тратится: победа +{map.taskWinCoins ?? 0}<Coin size={9} /> · пропуск {map.skipCoins ?? 5}<Coin size={9} />.</div>
+                          </button>
+                        )}
+                      </div>
+                      <div className="mt-3 flex justify-end gap-2 flex-wrap">
+                        {coinsActive && (
+                          <GhostBtn onClick={() => dispatch({ t: 'skip', id: me, instant: true, resource: 'coins', spentMs: 0, loads: 0 })} disabled={(mePlayer?.coinsLeft ?? 0) > 0 && (mePlayer?.coinsLeft ?? 0) < skipCoinsNeed}>
+                            {Ic.bolt(12)} Сразу пропустить · {skipCoinsNeed}<Coin size={10} />
+                          </GhostBtn>
+                        )}
+                        {!coinsOnly && (
+                          <>
+                            <GhostBtn onClick={() => dispatch({ t: 'skip', id: me, instant: true, resource: 'time', spentMs: 0, loads: 0 })} disabled={(mePlayer?.secLeft ?? 0) < 60}>
+                              {Ic.bolt(12)} Сразу пропустить · {skipNeed} мин
+                            </GhostBtn>
+                            <GhostBtn onClick={() => dispatch({ t: 'skip', id: me, instant: true, resource: 'tries', spentMs: 0, loads: 0 })} disabled={(mePlayer?.triesLeft ?? 0) <= 0}>
+                              {Ic.bolt(12)} Сразу пропустить · {skipNeed} поп.
+                            </GhostBtn>
+                          </>
+                        )}
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        {immuneBtns}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-10">
+                      <span className="font-pixel text-[9px] text-dim blink-hard">{active?.name} ВЫБИРАЕТ РЕСУРС…</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {ch.status !== 'choose' && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] uppercase flex items-center gap-1.5 ${ch.mode === 'time' ? 'text-sky' : ch.mode === 'coins' ? 'text-teal' : ch.mode === 'hp' ? 'text-coral' : 'text-gold'}`}>
+                      {ch.mode === 'time' ? Ic.clock(13) : ch.mode === 'coins' ? <Coin size={13} /> : ch.mode === 'hp' ? <span>❤</span> : Ic.target(13)} {ch.mode === 'time' ? 'Режим времени' : ch.mode === 'coins' ? 'Монетная игра' : ch.mode === 'hp' ? 'Ресурс: полоска HP' : 'Режим попыток'}
+                    </span>
+                    {ch.mode === 'hp' && (
+                      <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[10px] text-coral" title="HP-режим: плата по итогам — перезапуски бесплатны">
+                        ❤ HP {Math.round(mePlayer?.hp ?? 100)}% · победа +{RUBG_WIN_HP}% · поражение/пропуск −{RUBG_LOSE_HP}%
+                      </span>
+                    )}
+                    {ch.mode === 'coins' && (
+                      <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[10px] text-teal" title="Монеты платятся по итогам: победа — награда, пропуск — цена">
+                        <CoinRow value={mePlayer?.coinsLeft ?? 0} size={11} /> · победа +{map.taskWinCoins ?? 0}<Coin size={9} /> · пропуск {map.skipCoins ?? 5}<Coin size={9} /> · перезапуски бесплатны
+                      </span>
+                    )}
+                    {info && ch.mode === 'time' && (
+                      <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[10px] text-sky">
+                        {fmtClock(Math.max(0, (mePlayer?.secLeft ?? 0) - info.ms / 1000))} · потрачено {info.min} мин
+                      </span>
+                    )}
+                    {info && ch.mode === 'tries' && (
+                      <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[10px] text-gold">
+                        ОСТАЛОСЬ: {Math.max(0, (mePlayer?.triesLeft ?? 0) - info.loads)} ПОП. · ЗАГРУЗОК {info.loads}
+                      </span>
+                    )}
+                    {ch.status === 'voting' && (
+                      <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[9px] text-teal blink-hard">
+                        ГОЛОСА: {ch.approvals.length}/{votesNeed}
+                      </span>
+                    )}
+                    {task?.chaos && (
+                      <span
+                        className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[9px] text-magma"
+                        title={CHAOS_LIST.find((c) => c.kind === task.chaos)?.desc}
+                      >
+                        😈 {chaosLabel(task.chaos)}
+                      </span>
+                    )}
+                    {task?.joy && (() => {
+                      const jm = JOY_LIST.find((j) => j.id === task.joy);
+                      return jm ? (
+                        <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[9px] text-teal" title={jm.desc}>
+                          🎉 {jm.name}
+                        </span>
+                      ) : null;
+                    })()}
+                  </div>
+
+                  <div className="grid lg:grid-cols-[1fr_190px] gap-3 items-start">
+                    <div className="min-w-0">
+                      {myTurn ? (
+                        <>
+                          <div className="flex items-center justify-between mb-1.5 gap-2">
+                            <span className="tick-label text-faint">
+                              {isFs ? 'ESC — выход из полного экрана' : ch.paused ? 'эмулятор на паузе' : ''}
+                            </span>
+                            <GhostBtn small onClick={toggleFs}>
+                              {isFs ? Ic.cross(12) : Ic.map(12)} {isFs ? 'Свернуть' : 'Во весь экран'}
+                            </GhostBtn>
+                          </div>
+                          <div ref={emuWrapRef} className={isFs ? 'bg-[#05070f] h-full w-full flex items-center justify-center p-4' : ''}>
+                            <div style={isFs ? { width: `min(92vw, calc(88vh * ${consoleAspect(taskRom?.ext === 'sega' ? segExt : taskRom?.ext).toFixed(4)}))` } : undefined}>
+                        {romBuf ? (
+                          <SegaBox
+                            key={emuKey}
+                            romData={romBuf}
+                            ext={segExt}
+                            core={isSega ? undefined : 'nes'}
+                            remapSpec={remapSpec}
+                            chaos={activeChaos}
+                            initialState={(saveState as string | null) ?? null}
+                            paused={ch.status === 'ready' || ch.status === 'voting' || ch.paused}
+                            pausedHint={ch.status === 'ready' ? 'Нажмите «Запуск задания»' : undefined}
+                            onApi={(a) => { ejsApiRef.current = a; }}
+                            onSettingsFail={() =>
+                              useApp.getState().toast('Меню не открылось само — наведите курсор на экран эмулятора и нажмите шестерёнку на панели внизу', 'err')
+                            }
+                          />
+                        ) : (
+                          <div className="aspect-[256/240] bg-black border-[3px] border-edge flex items-center justify-center">
+                            <span className="font-pixel text-[8px] text-faint blink-hard">ЗАГРУЗКА РОМА…</span>
+                          </div>
+                        )}
+                            </div>
+                          </div>
+                        </>
+                      ) : streamShow ? (
+                        <div className="border-[3px] border-edge bg-black">
+                          <img src={stream!.data} alt="Трансляция" className="w-full" />
+                          <div className="px-2 py-1 flex items-center gap-2 bg-[rgba(7,9,18,0.9)]">
+                            <span className={`w-2 h-2 shrink-0 ${streamLive ? 'bg-teal' : 'bg-coral'}`} title={streamLive ? 'Кадры идут' : 'Ждём кадры'} />
+                            <span className="font-pixel text-[7px] text-paper">ТРАНСЛЯЦИЯ · {stream!.name}</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="aspect-[256/240] bg-black border-[3px] border-edge flex flex-col items-center justify-center gap-2">
+                          <span className="text-dim">{Ic.eye(28)}</span>
+                          <span className="font-pixel text-[8px] text-faint text-center px-4">
+                            {options.broadcast
+                              ? 'ОЖИДАНИЕ ТРАНСЛЯЦИИ…'
+                              : 'ТРАНСЛЯЦИЯ ВЫКЛЮЧЕНА В ОПЦИЯХ'}
+                          </span>
+                        </div>
+                      )}
+                      {myTurn && (
+                        <div className="mt-1.5 tick-label text-faint">
+                          {FAMILY_HINT[padFam]}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      {myTurn && ch.status === 'ready' && (
+                        <>
+                          <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.start(); dispatch({ t: 'startTask', id: me }); }}>
+                            {Ic.play(16)} Запуск задания
+                          </PxBtn>
+                          {ch.mode === 'coins' ? (
+                            <p className="text-[10px] text-dim leading-tight">
+                              Эмулятор загружен и ждёт. Монетная игра: во время задания ничего не списывается — победа принесёт {map.taskWinCoins ?? 0}<Coin size={9} />, пропуск обойдётся в {map.skipCoins ?? 5}<Coin size={9} />. Перезапуски бесплатны и бесконечны.
+                            </p>
+                          ) : ch.mode === 'hp' ? (
+                            <p className="text-[10px] text-dim leading-tight">
+                              Эмулятор загружен и ждёт. HP-режим: во время задания ничего не списывается — победа +{RUBG_WIN_HP}% HP, поражение/пропуск −{RUBG_LOSE_HP}% HP. Перезапуски бесплатны.
+                            </p>
+                          ) : (
+                            <p className="text-[10px] text-dim leading-tight">
+                              Эмулятор загружен и ждёт. {ch.mode === 'time' ? 'Таймер пойдёт' : 'Попытка спишется'} только после запуска — можно спокойно подготовиться.
+                            </p>
+                          )}
+                          {ch.mode === 'coins' ? (
+                            <GhostBtn
+                              className="w-full"
+                              disabled={(mePlayer?.coinsLeft ?? 0) > 0 && (mePlayer?.coinsLeft ?? 0) < skipCoinsNeed}
+                              title={(mePlayer?.coinsLeft ?? 0) > 0 && (mePlayer?.coinsLeft ?? 0) < skipCoinsNeed ? 'Монет не хватает на плату за пропуск — играйте и побеждайте' : undefined}
+                              onClick={() => dispatch({ t: 'skip', id: me, instant: true, resource: 'coins', spentMs: 0, loads: 0 })}
+                            >
+                              {Ic.bolt(13)} Пропустить · {skipCoinsNeed}<Coin size={10} />
+                            </GhostBtn>
+                          ) : ch.mode === 'hp' ? (
+                            <GhostBtn
+                              className="w-full"
+                              onClick={() => dispatch({ t: 'skip', id: me, instant: true, spentMs: 0, loads: 0 })}
+                            >
+                              {Ic.bolt(13)} Пропустить · −{RUBG_LOSE_HP}% HP
+                            </GhostBtn>
+                          ) : (
+                            <GhostBtn
+                              className="w-full"
+                              disabled={ch.lowStart === true}
+                              title={ch.lowStart ? 'Ресурса меньше цены пропуска — авансом заплатить нельзя. Запускайте и тратьте ресурс: «Пропустить» разблокируется на нуле' : undefined}
+                              onClick={() => dispatch({ t: 'skip', id: me, instant: true, spentMs: 0, loads: 0 })}
+                            >
+                              {Ic.bolt(13)} Заплатить {skipNeed} и пропустить
+                            </GhostBtn>
+                          )}
+                          {immuneBtns}
+                        </>
+                      )}
+                      {myTurn && (ch.status === 'playing' || ch.status === 'voting') && (
+                        <>
+                          <GhostBtn
+                            className="w-full"
+                            disabled={!canReload}
+                            title={!canReload ? 'Ресурс закончился — перезапускать нечем. Пропустите задание (кнопка «Пропустить»)' : undefined}
+                            onClick={() => dispatch({ t: 'reloadSave', id: me })}
+                          >
+                            {Ic.rotate(13)} Перезапуск задания
+                          </GhostBtn>
+                          <GhostBtn
+                            className="w-full"
+                            disabled={ch.status === 'voting'}
+                            onClick={() => dispatch({ t: 'togglePause', id: me })}
+                          >
+                            {ch.paused ? Ic.play(13) : Ic.pause(13)} {ch.paused ? 'Продолжить' : 'Пауза'}
+                          </GhostBtn>
+                          {ch.paused && ch.status === 'playing' && !controlsLocked && (
+                            <GhostBtn className="w-full border-magma/60 text-magma" onClick={() => setControlsOpen(true)}>
+                              {Ic.gear(13)} Сменить управление
+                            </GhostBtn>
+                          )}
+                          {chCodeOnly ? (
+                            <p className="font-pixel text-[8px] text-teal text-center py-2 leading-relaxed">
+                              🤖 ЗАДАНИЕ ТОЛЬКО ПО КОДУ — ручного зачёта нет.
+                              Выполнится условие из CodeSearch — задание засчитается само.
+                            </p>
+                          ) : (
+                            <PxBtn color="teal" className="w-full" onClick={() => dispatch({ t: 'declareDone', id: me })}>{Ic.check(14)} Прошёл задание</PxBtn>
+                          )}
+                          {ch.mode === 'coins' ? (
+                            <GhostBtn
+                              className="w-full"
+                              disabled={(mePlayer?.coinsLeft ?? 0) > 0 && (mePlayer?.coinsLeft ?? 0) < skipCoinsNeed}
+                              title={(mePlayer?.coinsLeft ?? 0) > 0 && (mePlayer?.coinsLeft ?? 0) < skipCoinsNeed ? 'Монет не хватает на плату за пропуск — играйте и побеждайте' : undefined}
+                              onClick={() => dispatch({ t: 'skip', id: me, instant: true, resource: 'coins', spentMs: 0, loads: 0 })}
+                            >
+                              {Ic.bolt(13)} Пропустить · {skipCoinsNeed}<Coin size={10} />
+                            </GhostBtn>
+                          ) : ch.mode === 'hp' ? (
+                            <GhostBtn
+                              className="w-full"
+                              disabled={ch.status === 'voting'}
+                              onClick={() => dispatch({ t: 'skip', id: me, instant: true, spentMs: 0, loads: 0 })}
+                            >
+                              {Ic.bolt(13)} Пропустить · −{RUBG_LOSE_HP}% HP
+                            </GhostBtn>
+                          ) : (
+                            <>
+                              <GhostBtn
+                                className="w-full"
+                                disabled={!naturalCanSkip}
+                                title={!naturalCanSkip ? (ch.lowStart ? 'Ресурса было меньше цены пропуска — кнопка разблокируется, когда ресурс закончится' : 'Сначала потратьте ресурсы — или платите сразу') : undefined}
+                                onClick={() => info && dispatch({ t: 'skip', id: me, instant: false, spentMs: info.ms, loads: info.loads })}
+                              >
+                                {Ic.bolt(13)} Пропустить · потратить {ch.mode === 'time'
+                                  ? `${naturalCanSkip && remainingNow <= 0 ? Math.max(1, Math.ceil((info?.ms ?? 0) / 60000)) : Math.max(info?.min ?? 0, skipNeed)} мин`
+                                  : `${naturalCanSkip && remainingNow <= 0 ? Math.max(1, mePlayer?.triesLeft ?? 0) : Math.max(info?.loads ?? 0, skipNeed)} поп.`}
+                              </GhostBtn>
+                              <GhostBtn
+                                className="w-full"
+                                disabled={!instantSkipAllowed}
+                                title={!instantSkipAllowed ? (ch.lowStart ? 'Ресурса было меньше цены пропуска — кнопка разблокируется, когда ресурс закончится' : 'Вы уже потратили достаточно ресурсов — используйте кнопку «Пропустить», она спишет фактическую цену') : undefined}
+                                onClick={() => dispatch({ t: 'skip', id: me, instant: true, resource: ch.mode === 'time' ? 'time' : 'tries', spentMs: 0, loads: 0 })}
+                              >
+                                {Ic.bolt(13)} Заплатить {skipNeed} {ch.mode === 'time' ? 'мин' : 'поп.'} и пропустить
+                              </GhostBtn>
+                            </>
+                          )}
+                          {immuneBtns}
+                        </>
+                      )}
+                      {!myTurn && others.some((p) => p.id === me) && (
+                        <>
+                          <GhostBtn className="w-full" onClick={() => { setInvOpen(true); sfx.click(); }}>
+                            {Ic.grid(13)} Инвентарь{invCount > 0 ? ` · ${invCount}` : ''}{incomingTrades.length > 0 ? ' 💼' : ''}
+                          </GhostBtn>
+                          {ch.status === 'voting' ? (
+                            <>
+                              {!ch.approvals.includes(me) && (
+                                <PxBtn color="teal" className="w-full" onClick={() => dispatch({ t: 'approve', id: me })}>{Ic.check(14)} Согласен</PxBtn>
+                              )}
+                              {!ch.violations.includes(me) && (
+                                <PxBtn color="coral" className="w-full" onClick={() => dispatch({ t: 'violate', id: me })}>{Ic.cross(14)} Нарушил задание</PxBtn>
+                              )}
+                              <p className="text-[10px] text-dim leading-tight">Следите за экраном: если условия задания нарушены — жмите «Нарушил». Единогласно — сохранение перезагрузится.</p>
+                            </>
+                          ) : (
+                            <PxBtn color="coral" className="w-full" onClick={() => dispatch({ t: 'violate', id: me })}>{Ic.cross(14)} Нарушил задание</PxBtn>
+                          )}
+                        </>
+                      )}
+                      {ch.status === 'voting' && myTurn && (
+                        <p className="font-pixel text-[8px] text-gold blink-hard text-center py-2">ЖДЁМ ПОДТВЕРЖДЕНИЯ ИГРОКОВ…</p>
+                      )}
+                      {mePlayer && !mePlayer.alive && (
+                        <p className="font-pixel text-[8px] text-faint text-center py-2">НАБЛЮДЕНИЕ</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </Modal>
+        </div>
+      )}
+
+      {/* ---------- пик карты поверх модалок ---------- */}
+      {peekMap && (
+        <div className="fixed inset-0 z-[85] flex flex-col pointer-events-none">
+          <div className="flex items-center gap-3 px-4 py-2 pointer-events-auto bg-[rgba(7,9,18,0.85)] border-b-2 border-edge">
+            <span className="font-display uppercase text-gold text-sm flex items-center gap-2">{Ic.map(15)} Карта мира — игра продолжается</span>
+            <PxBtn small className="ml-auto" onClick={() => setPeekMap(false)}>{Ic.cross(12)} Вернуться</PxBtn>
+          </div>
+          <div className="text-center text-faint tick-label pt-2">Эмулятор поставлен на паузу — вернитесь и нажмите «Продолжить»</div>
+        </div>
+      )}
+
+      {/* ---------- инвентарь карточек (виден и зрителям) ---------- */}
+      {invOpen && <InventoryModal onClose={() => setInvOpen(false)} />}
+
+      {/* ---------- наш редактор управления (клавиатура + геймпад) ---------- */}
+      {controlsOpen && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-[rgba(4,6,14,0.88)]" onClick={() => setControlsOpen(false)} />
+          <div className="relative pixel-panel pixel-corners pop-in w-full max-w-2xl p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-magma">{Ic.gear(18)}</span>
+              <span className="font-display uppercase tracking-wider text-paper text-sm">
+                Управление · {consoleLabel(taskRom?.ext)}
+              </span>
+              <span className="tick-label text-gold ml-2">применяется сразу</span>
+              <GhostBtn small className="ml-auto" onClick={() => setControlsOpen(false)}>{Ic.cross(12)} Закрыть</GhostBtn>
+            </div>
+            <KeyBinder compact mode={padFam} />
+          </div>
+        </div>
+      )}
+
+      {/* ---------- выбор после захвата (окно открывается ПОСЛЕ анимации победы) ---------- */}
+      {s.awaitPost && myTurn && !ch && !(s.fxs ?? []).some((f) => f.gate) && (() => {
+        const postTask = active ? cellTaskOf(s, map, active.pos) : null;
+        const dice0Hint = postTask?.chaos === 'dice0';
+        return (
+          <Modal title={dice0Hint ? 'Задание пройдено!' : 'Ячейка захвачена!'} icon={Ic.trophy(16)} w="max-w-lg" locked>
+            <p className="text-[13px] text-dim mb-4">
+              {isSkill
+                ? 'Челлендж пройден — вы сражались только с собой и победили. Ячейка разбита и пока пуста: она восстановится через 2 хода.'
+                : dice0Hint
+                  ? 'Задание с «Кубиками-0» пройдено. Пока вы не замените его, все, кто встанет на ячейку, будут бросать 0 и застревать. Вы — хозяин, вас проклятие не держит.'
+                  : 'Победа! Фишка разбила ячейку: пока она пуста (восстановится через 2 хода), хозяин — вы. Что дальше?'}
+            </p>
+            {isSkill ? (
+              <div className="space-y-3">
+                <p className="text-[11px] text-magma border-2 border-magma/40 px-2 py-1.5">Создать задание нельзя: в SKILL CHALLENGE вы играете ОДИН и сражаетесь только с собой — заменять некому.</p>
+                <button onClick={() => { sfx.coin(); dispatch({ t: 'postChoice', id: me, choice: 'continue' }); }} className="pixel-panel pixel-corners p-4 text-left hover:border-gold hover:-translate-y-0.5 transition-all cursor-pointer group w-full">
+                  <span className="text-gold">{Ic.dice(22)}</span>
+                  <div className="font-display uppercase text-paper group-hover:text-gold mt-2 text-sm">Играть дальше</div>
+                  <div className="text-[10px] text-dim mt-1">Сохраняется право броска — продолжите ход</div>
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <button onClick={() => { sfx.coin(); dispatch({ t: 'postChoice', id: me, choice: 'continue' }); }} className="pixel-panel pixel-corners p-4 text-left hover:border-gold hover:-translate-y-0.5 transition-all cursor-pointer group">
+                  <span className="text-gold">{Ic.dice(22)}</span>
+                  <div className="font-display uppercase text-paper group-hover:text-gold mt-2 text-sm">Играть дальше</div>
+                  <div className="text-[10px] text-dim mt-1">Сохраняется право броска — продолжите ход</div>
+                </button>
+                <button onClick={() => { sfx.click(); setTplOpen(true); }} className="pixel-panel pixel-corners p-4 text-left hover:border-magma hover:-translate-y-0.5 transition-all cursor-pointer group">
+                  <span className="text-magma">{Ic.cart(22)}</span>
+                  <div className="font-display uppercase text-paper group-hover:text-magma mt-2 text-sm">Новое задание</div>
+                  <div className="text-[10px] text-dim mt-1">{dice0Hint ? 'Замените задание — снимете проклятие с ячейки' : 'Задание вступит в силу через 3 хода, ячейка до этого — разбита и пуста (доп. ход сгорит)'}</div>
+                </button>
+              </div>
+            )}
+          </Modal>
+        );
+      })()}
+
+      {/* ---------- ДИАЛОГ С NPC (QUEST): дерево реплик, награды, флаги, сдача квестов ---------- */}
+      {dlgNpc && s?.phase === 'playing' && (() => {
+        const dlg = dlgNpc.npc.dialog;
+        const node = dlg ? dlg.nodes.find((n) => n.id === (dlgNode ?? dlg.root)) : null;
+        if (!dlg || !node) return null;
+        const fl = s.qFlags?.[me] ?? {};
+        const opts = (node.opts ?? []).filter((o) => (!o.reqFlag || fl[o.reqFlag]) && (!o.reqNotFlag || !fl[o.reqNotFlag]));
+        const quests = dlgNpc.npc.quests ?? [];
+        return (
+          <div className="fixed inset-0 z-[74] flex items-end sm:items-center justify-center p-3 sm:p-6">
+            <div className="absolute inset-0 bg-[rgba(4,6,14,0.7)]" onClick={closeDialog} />
+            <div className="relative pixel-panel pixel-corners pop-in w-full max-w-xl max-h-[88vh] overflow-y-auto p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-display uppercase text-sm text-teal truncate">💬 {dlgNpc.def.name}</span>
+                <span className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={flipHideSeen}
+                    className={`text-[9px] font-display uppercase px-1.5 py-1 border-2 cursor-pointer ${hideSeen ? 'text-teal border-teal/50' : 'text-faint border-edge'}`}
+                    title={hideSeen
+                      ? 'Реплики, которые этот персонаж уже отвечал, свёрнуты («…уже слышали») — кнопка «показать» вернёт текст; реплики с галочкой автора «показывать всегда» не сворачиваются. Настройка действует до конца партии. Нажмите, чтобы показывать всё.'
+                      : 'Нажмите, чтобы сворачивать реплики, которые персонаж уже отвечал'}
+                  >{hideSeen ? '🙈 сказанное скрыто' : '👁 сказанное видно'}</button>
+                  <button onClick={closeDialog} className="text-dim hover:text-coral cursor-pointer" aria-label="Закрыть">{Ic.cross(14)}</button>
+                </span>
+              </div>
+
+              {/* КВЕСТЫ NPC: на узле с маркером «📜 квесты на этом узле» (авто-ветка «Есть ли для меня работа?»).
+                  Для старых карт БЕЗ маркеров — как раньше, на каждом узле. */}
+              {quests.length > 0 && nodeShowsQuests(dlgNpc.npc, node) && (
+                <div className="space-y-1.5 border-2 border-edge px-2.5 py-2">
+                  <div className="tick-label text-gold">📜 Квесты NPC</div>
+                  {quests.map((q) => {
+                    const claimed = !!fl[`quest:${q.id}`];
+                    const ready = !claimed && questGoalDoneFor(s, mePlayer!, q.goal);
+                    return (
+                      <div key={q.id} className="flex items-center gap-2 justify-between">
+                        <div className="min-w-0">
+                          <div className={`font-display text-[11px] uppercase truncate ${claimed ? 'text-teal' : 'text-paper'}`}>{claimed ? '✅ ' : ready ? '❗ ' : '▫ '}{q.title}</div>
+                          <div className="tick-label text-faint truncate">{claimed ? 'квест сдан — награда получена' : questGoalText(q.goal, map!)}</div>
+                        </div>
+                        {ready && (
+                          <PxBtn small color="gold" onClick={() => { sfx.coin(); dispatch({ t: 'npcClaim', id: me, npcId: dlgNpc.npc.id, questId: q.id }); }}>
+                            Сдать квест
+                          </PxBtn>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* ТОРГОВЛЯ v0.51: кнопка «Торговать» открывает 3-оконное окно торговли (как в классических RPG).
+                  Показывается на узле с маркером «🛒 торговля на этом узле» (авто-ветка «Можно ли поторговать с тобой?»);
+                  для старых карт БЕЗ маркеров — как раньше, на каждом узле. */}
+              {nodeShowsShop(dlgNpc.npc, node) && (dlgNpc.npc.shop ?? []).length > 0 && coinsActive && (
+                <PxBtn
+                  color="gold"
+                  className="w-full"
+                  onClick={() => { setTradeNpcId(dlgNpc.npc.id); sfx.click(); }}
+                  title="Открыть окно торговли: товары торговца, СДЕЛКА и ваш рюкзак — перетаскивайте и обменивайтесь"
+                >🛒 Торговать{discBadge(dlgNpc.npc, fl) > 0 ? ` · скидка ${discBadge(dlgNpc.npc, fl)} %` : ''}</PxBtn>
+              )}
+
+              {/* v0.52: реплика узла. Тумблер «🙈 сказанное скрыто» сворачивает тексты,
+                  которые персонаж уже отвечал (s.dlgSeen) — вместо текста «…уже слышали»
+                  с кнопкой «показать». Варианты ответа видны всегда. */}
+              {(() => {
+                /* v0.54 (наоборот к v0.53): сворачиваются ТОЛЬКО реплики с ПИНОМ автора
+                   (node.pinHide); стартовый узел (dlg.root) пишется ВСЕГДА — даже с пином */
+                const seen = hideSeen && node.pinHide && node.id !== dlg.root && !!(s.dlgSeen?.[me]?.[node.id]);
+                return (
+                  <div className="border-2 border-teal/40 bg-teal/5 px-3 py-2.5">
+                    {seen && !revealSeen ? (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[12px] text-faint italic leading-snug">…вы это уже слышали</span>
+                        <button
+                          onClick={() => { setRevealSeen(true); sfx.hover(); }}
+                          className="text-[10px] text-teal hover:text-paper underline cursor-pointer shrink-0"
+                          title="Показать реплику целиком"
+                        >показать</button>
+                      </div>
+                    ) : (
+                      <div className="text-[13px] text-paper leading-snug">{node.text || '…'}</div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              <div className="space-y-1.5">
+                {opts.map((o, oi) => (
+                  <button
+                    key={oi}
+                    onClick={() => {
+                      sfx.click();
+                      dispatch({ t: 'dialogPick', id: me, npcId: dlgNpc.npc.id, nodeId: node.id, optIdx: (node.opts ?? []).indexOf(o) });
+                      const fl2 = useApp.getState().session?.qFlags?.[me] ?? {};
+                      const allowed = (!o.reqFlag || fl2[o.reqFlag]) && (!o.reqNotFlag || !fl2[o.reqNotFlag]);
+                      if (!allowed) { closeDialog(); return; }
+                      if (o.next && dlg.nodes.some((n) => n.id === o.next)) setDlgNode(o.next);
+                      else if (o.ending) {
+                        const e = (map?.endings ?? []).find((x) => x.id === o.ending);
+                        if (e && e.goal && e.goal.kind !== 'none') { /* путь выбран — цель ещё предстоит выполнить */ closeDialog(); }
+                        else closeDialog(); // концовка без условия — партия завершится сама
+                      } else closeDialog();
+                    }}
+                    className="w-full text-left px-3 py-2 border-2 border-edge hover:border-teal hover:bg-teal/5 transition-colors cursor-pointer"
+                  >
+                    <span className="text-[12px] text-paper">▸ {o.text || '…'}</span>
+                    {o.give && (o.give.coins || o.give.min || o.give.tries) ? (
+                      <span className="ml-1.5 text-[10px] text-gold">
+                        [награда: {o.give.coins ? <span>+{o.give.coins}<Coin size={9} /> </span> : ''}{o.give.min ? `+${o.give.min} мин ` : ''}{o.give.tries ? `+${o.give.tries} поп.` : ''}]
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+                {opts.length === 0 && (
+                  <GhostBtn className="w-full" onClick={closeDialog}>Закрыть</GhostBtn>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ---------- ОКНО ТОРГОВЛИ NPC (v0.51): товары / СДЕЛКА / рюкзак ---------- */}
+      {tradeNpc && s && map && s.phase === 'playing' && (
+        <TradeWindow s={s} map={map} me={me} npc={tradeNpc.npc} def={tradeNpc.def} dispatch={dispatch} onClose={() => setTradeNpcId(null)} />
+      )}
+
+      {/* ---------- карточка бонуса/ловушки QUEST (индивидуальная) ---------- */}
+      {s?.qCards && me && s.qCards[me] && !peekMap && !dlgNpcId && (
+        <Modal title={s.qCards[me].kind === 'bonus' ? 'Карточка бонуса' : 'Карточка ловушки'} icon={s.qCards[me].kind === 'bonus' ? Ic.star(16) : Ic.skull(16)} w="max-w-md" locked>
+          <div className="text-center">
+            <img
+              src={qCardImg ?? cardArt(s.qCards[me].kind === 'bonus' ? 'bonus' : 'trap', s.qCards[me].name)}
+              alt={s.qCards[me].name}
+              className="w-full border-[3px] border-edge object-cover"
+            />
+            <div className="font-display uppercase text-paper text-sm mt-3">{s.qCards[me].name}</div>
+            <p className="text-[12px] text-dim mt-1.5">{s.qCards[me].desc}</p>
+            {s.qCards[me].effect && (
+              <p className="text-[11px] text-gold mt-1">{effectLabel(s.qCards[me].effect)}</p>
+            )}
+            <PxBtn className="mt-4 w-full" onClick={() => dispatch({ t: 'qCardAck', id: me })}>Понятно</PxBtn>
+          </div>
+        </Modal>
+      )}
+
+      {/* ---------- осмотр ячейки на карте ---------- */}
+      {inspectIdx !== null && <CellInspectModal idx={inspectIdx} onClose={() => setInspectIdx(null)} />}
+
+      {/* ==================== QUEST: интерфейс режима ==================== */}
+      {isQuest && s.phase === 'playing' && mePlayer && mePlayer.alive && !mePlayer.spect && (
+        <>
+          {/* ЛИЧНОЕ ЗАДАНИЕ (на доверии, как в RUBG): вошёл в ячейку — играй ИНДИВИДУАНО.
+              Других не останавливает, трансляции нет (в QUEST SOLO хост стримит зрителям). */}
+          {myQJob !== undefined && myQTask && (() => {
+            const qName = qRomDef?.name ?? myQTask.romId;
+            return (
+              <div className={peekMap ? 'hidden' : undefined}>
+              <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.78)] p-3">
+                <div className={`pixel-panel pixel-corners p-4 ${taskWinCls} w-full max-h-[93vh] overflow-y-auto`}>
+                  <div className="flex items-center justify-between gap-3 flex-wrap min-w-0">
+                    <div className="font-display uppercase text-lg text-teal break-words min-w-0">🧭 ЗАДАНИЕ · {myQTask.title}</div>
+                    {taskSizeBtns}
+                    <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myQJob.cellIdx + 1} · играешь ТОЛЬКО ты</span>
+                  </div>
+                  <div className="grid md:grid-cols-[220px_1fr] gap-4 mt-2">
+                    <div className="space-y-3 min-w-0">
+                      <img
+                        src={qTaskImg ?? cartridgeArt(myQTask.title, qName, myQJob.cellIdx)}
+                        alt={myQTask.title}
+                        className="w-full border-[3px] border-edge object-cover"
+                      />
+                      {myQTask.desc && <TaskDesc text={myQTask.desc} label="Задание" />}
+                      <div className="tick-label text-faint">Ром: {qName} · {consoleLabel(qRomDef?.ext)}</div>
+                      {/* «Глянуть карту мира» — снова доступна в режиме комнат: неоткрытое скрывает туман */}
+                      <GhostBtn small onClick={() => setPeekMap(true)}>{Ic.map(12)} Глянуть карту мира</GhostBtn>
+                      <GhostBtn small onClick={() => setControlsOpen(true)}>{Ic.gear(12)} Управление</GhostBtn>
+                      <EmuVolumeChip />
+                      <GhostBtn small onClick={rubgToggleFs}>{isFs ? Ic.cross(12) : Ic.map(12)} {isFs ? 'Свернуть' : 'Во весь экран'}</GhostBtn>
+                    </div>
+                    <div className="min-w-0 space-y-3">
+                      <div ref={rubgEmuWrapRef} className={isFs ? 'bg-[#05070f] h-full w-full flex items-center justify-center p-4' : ''}>
+                        <div style={isFs ? { width: `min(92vw, calc(88vh * ${consoleAspect(qRomExt).toFixed(4)}))` } : undefined}>
+                  {qRomBuf ? (
+                    <SegaBox
+                      key={qEmuKey}
+                      romData={qRomBuf}
+                      ext={(qRomDef?.fileName.split('.').pop() ?? 'md').toLowerCase()}
+                      core={qRomDef?.ext === 'nes' ? 'nes' : undefined}
+                      remapSpec={remapSpec}
+                      chaos={[]}
+                      initialState={(qSaveState as string | null) ?? null}
+                      paused={!qArmed || peekMap || qPaused}
+                      pausedHint={!qArmed ? 'Нажмите «Старт игры»' : qPaused && !peekMap ? 'ПАУЗА — нажмите «Продолжить»' : undefined}
+                      onApi={(a) => { ejsApiRef.current = a; }}
+                    />
+                  ) : (
+                    <div className="aspect-[256/240] max-h-[46vh] bg-black border-[3px] border-edge flex items-center justify-center">
+                      <span className="font-pixel text-[8px] text-faint blink-hard">ЗАГРУЗКА РОМА…</span>
+                    </div>
+                  )}
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-faint">Режим доверия — победа и поражение на твоей совести. Каждый игрок проходит задания САМ: выполненные засчитываются только тебе (цели концовок и квестов — личные).</p>
+                      {!qArmed ? (
+                        <>
+                          <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.start(); setQArmed(true); }}>
+                            {Ic.play(16)} Старт игры
+                          </PxBtn>
+                          <p className="text-[10px] text-dim leading-tight">Эмулятор загружен и стоит НА ПАУЗЕ — прочитайте задание, настройте управление. Игра начнётся по кнопке «Старт игры».</p>
+                        </>
+                      ) : (
+                        <>
+                          {qCodeOnly ? (
+                            <p className="font-pixel text-[8px] text-teal text-center py-2 leading-relaxed border-2 border-[rgba(46,230,168,0.4)] px-2 py-2">
+                              🤖 ЗАДАНИЕ ТОЛЬКО ПО КОДУ — ручных кнопок «ПОБЕДА»/«ПОРАЖЕНИЕ» нет.
+                              Код зачёта выполнится — победа зачтётся сама; код поражения — провал сам.
+                            </p>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-2">
+                              <PxBtn color="teal" onClick={() => { sfx.success(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: true }); }}>
+                                🏆 ПОБЕДА
+                              </PxBtn>
+                              <PxBtn color="coral" onClick={() => { sfx.fail(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false }); }}>
+                                💀 ПОРАЖЕНИЕ
+                              </PxBtn>
+                            </div>
+                          )}
+                          <div className="grid grid-cols-3 gap-2 mt-2">
+                            <GhostBtn onClick={() => setQPaused((x) => !x)} title="Пауза эмулятора без сброса прогресса">
+                              {qPaused ? Ic.play(13) : Ic.pause(13)} {qPaused ? 'Продолжить' : 'Пауза'}
+                            </GhostBtn>
+                            <GhostBtn
+                              title="Перезапустить игру с сохранения (или с начала)"
+                              onClick={() => { ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null); sfx.alarm(); }}
+                            >
+                              {Ic.rotate(13)} Перезапуск
+                            </GhostBtn>
+                            <GhostBtn
+                              title="Отойти от задания без последствий — можно зайти снова"
+                              onClick={() => { dispatch({ t: 'qJobLeave', id: me, cellIdx: myQJob.cellIdx }); setQArmed(false); }}
+                            >
+                              🚪 Уйти
+                            </GhostBtn>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              </div>
+            );
+          })()}
+
+          {/* КНОПКА ДИАЛОГА: NPC в радиусе (или клавиша E) */}
+          {nearNpc && !dlgNpcId && !myQJob && (
+            <div className="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60]">
+              <PxBtn color="teal" onClick={() => openDialog(nearNpc.npc.id)}>
+                💬 ГОВОРИТЬ С «{nearNpc.def.name}» [E]
+              </PxBtn>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ==================== RUBG: интерфейс режима ==================== */}
+      {isRubg && s.phase === 'playing' && mePlayer && mePlayer.alive && !mePlayer.spect && (
+        <>
+          {/* ---------- ЛИЧНОЕ ЗАДАНИЕ: как в других режимах — картинка, название, задание,
+              кнопки «карта мира / управление / звук / во весь экран / пауза».
+              Под картой мира модал НЕ размонтируется (только скрывается) — иначе эмулятор
+              сбрасывался и игра начиналась заново. Кнопки «Уйти» нет: выход — ПОБЕДА/ПОРАЖЕНИЕ ---------- */}
+          {myJob !== undefined && myRubgTask && (() => {
+            const rName = rRomDef?.name ?? myRubgTask.romId;
+            return (
+            <div className={peekMap ? 'hidden' : undefined}>
+            <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.78)] p-3">
+              <div className={`pixel-panel pixel-corners p-4 ${taskWinCls} w-full max-h-[93vh] overflow-y-auto`}>
+                <div className="flex items-center justify-between gap-3 flex-wrap min-w-0">
+                  <div className="font-display uppercase text-lg text-gold break-words min-w-0">🎮 ЛИЧНОЕ ЗАДАНИЕ · {myRubgTask.title}</div>
+                  {taskSizeBtns}
+                  <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myJob.cellIdx + 1} · играешь ТОЛЬКО ты</span>
+                </div>
+                <div className="grid md:grid-cols-[220px_1fr] gap-4 mt-2">
+                  {/* левая колонка: картинка, задание, кнопки */}
+                  <div className="space-y-3 min-w-0">
+                    <img
+                      src={rTaskImg ?? cartridgeArt(myRubgTask.title, rName, myJob.cellIdx)}
+                      alt={myRubgTask.title}
+                      className="w-full border-[3px] border-edge object-cover"
+                    />
+                    {myRubgTask.desc && <TaskDesc text={myRubgTask.desc} label="Задание" />}
+                    <div className="tick-label text-faint">Ром: {rName} · {consoleLabel(rRomDef?.ext)}</div>
+                    {/* «Глянуть карту мира» — снова доступна в режиме комнат: неоткрытое скрывает туман */}
+                    <GhostBtn small onClick={() => setPeekMap(true)}>{Ic.map(12)} Глянуть карту мира</GhostBtn>
+                    <GhostBtn small onClick={() => setControlsOpen(true)}>{Ic.gear(12)} Управление</GhostBtn>
+                    <EmuVolumeChip />
+                    <GhostBtn small onClick={rubgToggleFs}>{isFs ? Ic.cross(12) : Ic.map(12)} {isFs ? 'Свернуть' : 'Во весь экран'}</GhostBtn>
+                  </div>
+                  {/* правая колонка: эмулятор + итоги */}
+                  <div className="min-w-0 space-y-3">
+                    <div ref={rubgEmuWrapRef} className={isFs ? 'bg-[#05070f] h-full w-full flex items-center justify-center p-4' : ''}>
+                      <div style={isFs ? { width: `min(92vw, calc(88vh * ${consoleAspect(rRomExt).toFixed(4)}))` } : undefined}>
+                  {rRomBuf ? (
+                    <SegaBox
+                      key={rEmuKey}
+                      romData={rRomBuf}
+                      ext={(rRomDef?.fileName.split('.').pop() ?? 'md').toLowerCase()}
+                      core={rRomDef?.ext === 'nes' ? 'nes' : undefined}
+                      remapSpec={remapSpec}
+                      chaos={[]}
+                      initialState={(rSaveState as string | null) ?? null}
+                      paused={!rubgJobArmed || peekMap || rubgPaused}
+                      pausedHint={!rubgJobArmed ? 'Нажмите «Старт игры»' : rubgPaused && !peekMap ? 'ПАУЗА — нажмите «Продолжить»' : undefined}
+                      onApi={(a) => { ejsApiRef.current = a; }}
+                    />
+                  ) : (
+                    <div className="aspect-[256/240] max-h-[46vh] bg-black border-[3px] border-edge flex items-center justify-center">
+                      <span className="font-pixel text-[8px] text-faint blink-hard">ЗАГРУЗКА РОМА…</span>
+                    </div>
+                  )}
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-faint">Никаких подтверждений — режим доверия. Победа: +{RUBG_WIN_HP}% HP + трофей, ячейка твоя. Поражение: −{RUBG_LOSE_HP}% HP. Остальные игроки продолжают бегать — на тебя никто не ждёт.</p>
+                    {!rubgJobArmed ? (
+                      <>
+                        <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.start(); setRubgJobArmed(true); }}>
+                          {Ic.play(16)} Старт игры
+                        </PxBtn>
+                        <p className="text-[10px] text-dim leading-tight">Эмулятор загружен и стоит НА ПАУЗЕ — прочитайте задание, подготовьтесь и настройте управление. Игра начнётся по кнопке «Старт игры».</p>
+                      </>
+                    ) : (
+                      <>
+                        {rCodeOnly ? (
+                          <p className="font-pixel text-[8px] text-teal text-center leading-relaxed border-2 border-[rgba(46,230,168,0.4)] px-2 py-2 mb-2">
+                            🤖 ЗАДАНИЕ ТОЛЬКО ПО КОДУ — ручных кнопок «ПОБЕДА»/«ПОРАЖЕНИЕ» нет.
+                            Код зачёта выполнится — победа зачтётся сама; код поражения — провал сам.
+                          </p>
+                        ) : (
+                          <div className="grid grid-cols-3 gap-2">
+                            <PxBtn color="teal" onClick={() => { sfx.success(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: true }); }}>
+                              🏆 ПОБЕДА +{RUBG_WIN_HP}%
+                            </PxBtn>
+                            <PxBtn color="coral" onClick={() => { sfx.fail(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false }); }}>
+                              💀 ПОРАЖЕНИЕ −{RUBG_LOSE_HP}%
+                            </PxBtn>
+                            <GhostBtn onClick={() => setRubgPaused((x) => !x)} title="Пауза эмулятора без сброса прогресса">
+                              {rubgPaused ? Ic.play(13) : Ic.pause(13)} {rubgPaused ? 'Продолжить' : 'Пауза'}
+                            </GhostBtn>
+                          </div>
+                        )}
+                        <GhostBtn
+                          className="w-full mt-2"
+                          title="Перезапустить игру с сохранения (или с начала, если сохранения нет) — как «Перезапуск задания» в других режимах"
+                          onClick={() => { ejsApiRef.current?.loadSaveReliable((rSaveState as string | null) ?? null); sfx.alarm(); }}
+                        >
+                          {Ic.rotate(13)} Перезапуск задания
+                        </GhostBtn>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+            </div>
+            );
+          })()}
+
+          {/* ---------- КАРМАН: ЗАЖАТЬ «НАЧАТЬ ВОРОВСТВО» (окантовка-часы, без лимита) ----------
+              → ОТПУСТИТЬ: таймер и ВЫХОД 🚪 → WASD нащупывай предметы → «ЗАХВАТИТЬ» →
+              донеси до ВЫХОДА → «СВОРОВАТЬ». Карман 10×10 клеток ---------- */}
+          {(myStealing || (stealOpen && stealVictim)) && (() => {
+            const vid = myStealing ? myStealing.victim : stealVictim!;
+            const victim = s.players.find((x) => x.id === vid);
+            const active = !!myStealing; // фаза таймера (хост подтвердил старт)
+            const holdSec = stealHoldMs / 1000;
+            /* окантовка-часы БЕЗ ЛИМИТА: полный оборот каждые 8 с, с каждым кругом цвет растёт */
+            const holdTurns = Math.floor(holdSec / 8);
+            const holdFrac = (holdSec % 8) / 8;
+            const holdColor = ['#ff8b3f', '#ffcf3f', '#2ee6a8', '#35d46f'][Math.min(holdTurns, 3)];
+            const leftMs = active ? Math.max(0, myStealing.startedAt + myStealing.dur * 1000 - Date.now()) : 0;
+            const leftFrac = active ? Math.max(0, Math.min(1, leftMs / Math.max(1, myStealing.dur * 1000))) : 0;
+            const frac = active ? leftFrac : holdFrac;
+            const ringColor = active
+              ? (frac > 0.5 ? '#2ee6a8' : frac > 0.25 ? '#ffcf3f' : '#ff5d73')
+              : holdColor;
+            const held = active ? pocketHeld : null; // предмет В РУКЕ
+            const curIt = active && !held ? pocketLayout.get(pocketCur) : undefined;
+            const atExit = pocketCur === POCKET_EXIT;
+            return (
+              <div className="fixed inset-0 z-[62] flex items-center justify-center bg-[rgba(4,6,14,0.85)] p-4">
+                <div className="pixel-panel pixel-corners p-4 max-w-md w-full max-h-[94vh] overflow-y-auto">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="tick-label text-coral">🤏 КАРМАН · {victim?.name ?? '?'} · {POCKET_COLS}×{POCKET_CELLS / POCKET_COLS}</div>
+                    {!active && (
+                      <button onClick={() => { setStealOpen(false); setStealSent(false); }} className="text-dim hover:text-coral cursor-pointer" aria-label="Закрыть">{Ic.cross(14)}</button>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-faint mt-1">
+                    {active
+                      ? 'Старт от ВЫХОДА 🚪. WASD/стрелки/джой — нащупывай предметы (мышь выключена), встав на нужный — «ЗАХВАТИТЬ», донеси до выхода — «СВОРОВАТЬ». Пояс не воруется!'
+                      : 'ЗАЖМИ «НАЧАТЬ ВОРОВСТВО» — окантовка крутится БЕЗ ЛИМИТА: сколько удержал — столько времени получишь. ОТПУСТИ — таймер пойдёт.'}
+                  </p>
+                  {/* СЕТКА 10×10 с окантовкой-часами; клетка 0 — ВЫХОД 🚪 */}
+                  <div
+                    className="mt-3 p-[4px]"
+                    style={{ background: `conic-gradient(${ringColor} 0 ${(frac * 360).toFixed(1)}deg, rgba(49,60,114,0.55) ${(frac * 360).toFixed(1)}deg 360deg)` }}
+                  >
+                    <div className="bg-[#0d1226] p-1.5 grid gap-[3px]" style={{ gridTemplateColumns: `repeat(${POCKET_COLS}, minmax(0, 1fr))` }}>
+                      {Array.from({ length: POCKET_CELLS }).map((_, i) => {
+                        if (i === POCKET_EXIT) {
+                          return (
+                            <div
+                              key="pocket-exit"
+                              title="ВЫХОД — отсюда начинаешь и сюда несёшь добычу (дойти стрелками/WASD)"
+                              className={`aspect-square min-h-0 flex items-center justify-center text-[11px] leading-none select-none border-2 ${pocketCur === POCKET_EXIT && active ? 'border-teal bg-teal/25' : 'border-teal/60 bg-teal/10'}`}
+                            >🚪</div>
+                          );
+                        }
+                        const it = pocketLayout.get(i);
+                        const sel = active && i === pocketCur;
+                        const heldHere = !!held && it?.id === held.id;
+                        /* МЫШЬЮ клетку выбрать НЕЛЬЗЯ: перемещение — только стрелки/WASD/джой/экранные стрелки */
+                        return (
+                          <div
+                            key={i}
+                            className={`aspect-square min-h-0 border flex items-center justify-center leading-none select-none ${sel ? (held ? 'border-gold bg-gold/20' : 'border-coral bg-coral/15') : heldHere ? 'border-gold/70 bg-gold/10' : it ? 'border-[#313c72]' : 'border-[#1a2244]'}`}
+                            title={it ? RUBG_ITEMS[it.kind].name : 'пусто'}
+                          >
+                            {active && heldHere ? (
+                              <span className="text-[10px]">🤏</span>
+                            ) : active && it ? (
+                              <span className="text-[10px]">{RUBG_ITEMS[it.kind].icon}</span>
+                            ) : (
+                              <span className="text-[7px] text-[#1a2244]">·</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {active ? (
+                    <>
+                      <div className={`font-display text-2xl text-center my-2 ${(leftMs < 2000) ? 'text-coral blink-hard' : 'text-paper'}`}>{(leftMs / 1000).toFixed(1)} с</div>
+                      {held && (
+                        <div className={`text-center text-[10px] mb-1.5 ${atExit ? 'text-teal' : 'text-gold'}`}>
+                          В РУКЕ: {RUBG_ITEMS[held.kind].icon} {RUBG_ITEMS[held.kind].name} — {atExit ? 'жми «СВОРОВАТЬ»!' : 'донеси до ВЫХОДА 🚪'}
+                        </div>
+                      )}
+                      <div className="grid grid-cols-4 gap-1.5">
+                        <button onClick={() => setPocketCur((c) => Math.max(0, c - POCKET_COLS))} className="py-2 border-2 border-edge text-paper font-pixel text-[9px] cursor-pointer hover:border-edge2 active:bg-edge/40">▲</button>
+                        <button onClick={() => setPocketCur((c) => Math.max(0, c - 1))} className="py-2 border-2 border-edge text-paper font-pixel text-[9px] cursor-pointer hover:border-edge2 active:bg-edge/40">◀</button>
+                        <button onClick={() => setPocketCur((c) => Math.min(POCKET_CELLS - 1, c + 1))} className="py-2 border-2 border-edge text-paper font-pixel text-[9px] cursor-pointer hover:border-edge2 active:bg-edge/40">▶</button>
+                        <button onClick={() => setPocketCur((c) => Math.min(POCKET_CELLS - 1, c + POCKET_COLS))} className="py-2 border-2 border-edge text-paper font-pixel text-[9px] cursor-pointer hover:border-edge2 active:bg-edge/40">▼</button>
+                      </div>
+                      {/* КОНТЕКСТНАЯ КНОПКА: на предмете — ЗАХВАТИТЬ; с предметом на ВЫХОДЕ — СВОРОВАТЬ */}
+                      <PxBtn
+                        color={held ? (atExit ? 'teal' : 'gold') : curIt ? 'coral' : 'gold'}
+                        className="w-full mt-2"
+                        disabled={held ? !atExit : !curIt}
+                        onClick={() => pocketAct(myStealing.victim)}
+                      >
+                        {held
+                          ? (atExit ? `🤏 СВОРОВАТЬ: ${RUBG_ITEMS[held.kind].name}` : '🏃 НЕСИ ДО ВЫХОДА 🚪')
+                          : curIt
+                            ? `✋ ЗАХВАТИТЬ: ${RUBG_ITEMS[curIt.kind].name}`
+                            : '🔍 нащупай предмет (WASD/тап)'}
+                      </PxBtn>
+                      <button onClick={() => dispatch({ t: 'rubgStealFail', id: me, victimId: myStealing.victim })} className="mt-2 w-full text-[10px] text-faint underline cursor-pointer">Убрать руку (раскроешь себя)</button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="font-display text-sm text-center my-2 text-magma">
+                        Держишь {(stealHoldMs / 1000).toFixed(1)} с → столько же будет времени в кармане
+                      </div>
+                      <button
+                        onPointerDown={stealHoldOn}
+                        onPointerUp={stealHoldOff}
+                        onPointerLeave={() => { if (stealHoldRef.current) stealHoldOff(); }}
+                        disabled={stealSent}
+                        className="w-full py-3 btn-px pixel-corners btn-coral text-sm select-none touch-none"
+                      >
+                        🤏 НАЧАТЬ ВОРОВСТВО (держи без лимита)
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* ---------- ЖЕРТВА: ТОЛЬКО слабовидные ПОМЕХИ (без надписей) — чем дольше роются, тем сильнее.
+              «Остановить воровство» — в обычном инвентаре (кнопка «Инвентарь») ---------- */}
+          {mySteal && !myStealing && (() => {
+            const elapsed = Math.min(1, (Date.now() - mySteal.startedAt) / (mySteal.dur * 1000));
+            return (
+              <div
+                className="fixed inset-0 z-[55] pointer-events-none"
+                style={{
+                  opacity: 0.07 + elapsed * 0.6,
+                  background: 'repeating-linear-gradient(0deg, rgba(255,255,255,0.10) 0 2px, transparent 2px 5px), repeating-linear-gradient(90deg, rgba(255,93,115,0.12) 0 3px, transparent 3px 7px)',
+                  mixBlendMode: 'screen',
+                }}
+              />
+            );
+          })()}
+
+          {/* ---------- ПОЯС RUBG: 3 слота на экране (только они действуют); ----------
+              остальное — в ОБЩЕМ инвентаре (кнопка «Инвентарь» внизу). Пояс НЕ воруется ---------- */}
+          {mySteal === undefined && (
+            <div className="fixed bottom-3 right-3 z-30 w-64 pixel-panel pixel-corners p-2.5 space-y-1.5 max-h-[62vh] overflow-y-auto">
+              <div className="tick-label">🧰 ПОЯС · HP {Math.round(mePlayer.hp ?? 100)}% · слотов {RUBG_BELT_SLOTS}</div>
+              {/* ЯЩИК РЯДОМ: подсказка ТОЛЬКО когда отмычки на поясе нет (некому показать кнопку).
+                  Когда отмычка на поясе — чип СКРЫТ: у самой отмычки есть своя кнопка
+                  «ОТКРЫТЬ ЯЩИК №N» — единственная, без дублей (раньше кнопка была в двух местах). */}
+              {nearBox && !beltLockpick && (
+                <div className="border-2 border-[#ffcf3f]/70 bg-[#ffcf3f]/10 px-2 py-1.5">
+                  <div className="font-display text-[11px] text-[#ffcf3f]">📦 РЯДОМ ЯЩИК №{nearBox.idx + 1}</div>
+                  <p className="text-[9px] text-faint leading-tight mt-0.5">нужна отмычка 🔑 на поясе — надень её из ИНВЕНТАРЯ, кнопка взлома появится на самой отмычке</p>
+                </div>
+              )}
+              {(() => {
+                const inv = mePlayer.items ?? [];
+                const belted = inv.filter((x: RubgItem) => x.belt);
+                const slots = Array.from({ length: RUBG_BELT_SLOTS }, (_, i) => belted[i] as RubgItem | undefined);
+                return slots.map((it: RubgItem | undefined, slot: number) => {
+                  if (!it) {
+                    return (
+                      <div key={`beltEmpty${slot}`} className="border-2 border-dashed border-edge px-2 py-2.5 text-center font-pixel text-[8px] text-faint">
+                        слот {slot + 1} пуст{inv.length > belted.length ? ' — надень предмет из ИНВЕНТАРЯ' : ''}
+                      </div>
+                    );
+                  }
+                  const meta = RUBG_ITEMS[it.kind];
+                  const heal = meta.hp > 0 && meta.radius === 0;
+                  const weapon = meta.radius > 0;
+                  const isStealCard = it.kind === 'steal';
+                  const isStealthCard = it.kind === 'stealth';
+                  /* рядом есть играющий в радиусе кражи? */
+                  const mp = s.journeyPos?.[me];
+                  const stealNear = isStealCard && mp
+                    ? Object.entries(rubg?.jobs ?? {}).some(([pid]) => {
+                        if (pid === me) return false;
+                        const jp = s.journeyPos?.[pid];
+                        return !!jp && Math.hypot(jp.x - mp.x, jp.y - mp.y) <= RUBG_STEAL_RANGE * CELL;
+                      })
+                    : false;
+                  return (
+                    <div key={it.id} className="border-2 border-[#ff8b3f]/60 bg-[#ff8b3f]/5 px-2 py-1.5">
+                      <div className="font-display text-[11px] text-paper flex items-center gap-1.5">
+                        <span>{meta.icon}</span>
+                        <span className="min-w-0 truncate">{meta.name}</span>
+                        {isStealCard && it.uses !== undefined && <span className="ml-auto font-pixel text-[8px] text-teal">×{it.uses}</span>}
+                        {heal && <span className="ml-auto font-pixel text-[8px] text-teal">+{meta.hp}%</span>}
+                        {weapon && <span className="ml-auto font-pixel text-[8px] text-coral">−{meta.hp}% · {meta.radius} кл</span>}
+                      </div>
+                      {heal && (
+                        <button
+                          onClick={() => dispatch({ t: 'rubgUseItem', id: me, itemId: it.id })}
+                          disabled={(mePlayer.hp ?? 100) >= RUBG_HP_MAX}
+                          className="mt-1 w-full py-1 border-2 border-teal text-teal font-pixel text-[8px] cursor-pointer hover:bg-teal/10 disabled:opacity-35 disabled:cursor-not-allowed"
+                        >{(mePlayer.hp ?? 100) >= RUBG_HP_MAX ? 'HP ПОЛНОЕ' : 'ИСПОЛЬЗОВАТЬ'}</button>
+                      )}
+                      {isStealCard && (
+                        <button
+                          onClick={stealOpenFlow}
+                          disabled={!stealNear}
+                          className={`mt-1 w-full py-1.5 border-2 font-pixel text-[8px] select-none touch-none ${stealNear ? 'border-coral text-coral cursor-pointer hover:bg-coral/10' : 'border-edge text-faint cursor-not-allowed'}`}
+                        >{stealNear ? '🤏 УКРАСТЬ' : 'подойди к играющему'}</button>
+                      )}
+                      {isStealthCard && (
+                        <button
+                          onClick={() => dispatch({ t: 'rubgStealth', id: me })}
+                          className="mt-1 w-full py-1 border-2 border-[#c07aff] text-[#c07aff] font-pixel text-[8px] cursor-pointer hover:bg-[#c07aff]/10"
+                        >👻 АКТИВИРОВАТЬ СТЕЛС</button>
+                      )}
+                      {it.kind === 'lockpick' && (
+                        <button
+                          onClick={() => { if (nearBox) openHack(nearBox.idx); }}
+                          disabled={!nearBox}
+                          className={`mt-1 w-full py-1 border-2 font-pixel text-[8px] select-none touch-none ${nearBox ? 'border-teal text-teal cursor-pointer hover:bg-teal/10' : 'border-edge text-faint cursor-not-allowed'}`}
+                        >{nearBox ? `🔓 ОТКРЫТЬ ЯЩИК №${nearBox.idx + 1}` : 'подойди к ящику 📦'}</button>
+                      )}
+                      {weapon && (
+                        <button
+                          onClick={() => setAimItemId(aimItemId === it.id ? null : it.id)}
+                          className="mt-1 w-full py-1 border-2 border-magma text-magma font-pixel text-[8px] cursor-pointer hover:bg-magma/10"
+                        >{aimItemId === it.id ? 'ВЫБЕРИ ЦЕЛЬ ↓' : 'АТАКА →'}</button>
+                      )}
+                      {weapon && aimItemId === it.id && (() => {
+                        const mp2 = s.journeyPos?.[me];
+                        const range = meta.radius * CELL;
+                        const targets = mp2
+                          ? s.players.filter((q) => {
+                              if (q.id === me || !q.alive || q.spect) return false;
+                              if ((rubg?.stealth ?? []).includes(q.id)) return false; // в стелсе не видно
+                              const jp = s.journeyPos?.[q.id];
+                              return !!jp && Math.hypot(jp.x - mp2.x, jp.y - mp2.y) <= range;
+                            })
+                          : [];
+                        return (
+                          <div className="mt-1 space-y-1">
+                            {targets.length === 0 && <div className="text-[9px] text-faint">Никого в радиусе {meta.radius} кл</div>}
+                            {targets.map((q) => {
+                              const jp = s.journeyPos?.[q.id]!;
+                              const d2 = Math.hypot(jp.x - mp2!.x, jp.y - mp2!.y);
+                              const busy = !!(rubg?.jobs ?? {})[q.id];
+                              const chance = busy ? 100 : Math.round(Math.max(15, 1 - d2 / range) * 100);
+                              return (
+                                <button
+                                  key={q.id}
+                                  onClick={() => { dispatch({ t: 'rubgShoot', id: me, itemId: it.id, targetId: q.id }); setAimItemId(null); }}
+                                  className="w-full text-left px-2 py-1 border-2 border-edge font-pixel text-[8px] text-paper cursor-pointer hover:border-magma"
+                                >
+                                  {busy ? '🎯' : '👟'} {q.name} · {Math.round(d2 / CELL)}кл · {chance}%{busy ? ' (играет)' : ''}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
+                      {/* Перемещение предметов (на пояс / с пояса) — ТОЛЬКО в инвентаре (кнопка «Инвентарь» вверху):
+                          с пояса снимать на бегу было нельзя — случайные нажатия убирали нужное оружие */}
+                    </div>
+                  );
+                });
+              })()}
+              {/* Кнопка «Инвентарь» здесь НЕ нужна: она есть вверху, рядом с «Карта мира» */}
+              <p className="text-[8px] text-faint leading-tight">На поясе макс. {RUBG_BELT_SLOTS} предмета — только они действуют (лечиться/стрелять/воровать/стелс/взлом). Пояс НЕ воруется. Надеть/снять — только в ИНВЕНТАРЕ.</p>
+            </div>
+          )}
+
+          {/* ---------- ВЗЛОМ ЯЩИКА: мини-игра «ЗАМОК В РАЗРЕЗЕ» ----------
+              Отмычка выбирается на поясе; в окне — замок сбоку, отмычка и 5 подпружиненных
+              бойков. Мышь влево-вправо — выбор бойка, движение мышьей ВВЕРХ — удар по бойку
+              (чем резче — тем выше подскок; пружины у бойков случайные: плавные и резкие).
+              В верхней точке — «ЗАФИКСИРОВАТЬ». Фиксация мимо верхней точки — отмычка СЛОМАНА,
+              но окно остаётся открытым: «ДРУГАЯ ОТМЫЧКА» (новый случайный расклад бойков) /
+              «ОТКРЫТЬ СИЛОЙ» (25%, провал — бан; доступно ТОЛЬКО после поломки отмычки) /
+              «ПРЕКРАТИТЬ ВЗЛОМ» (отказ тоже ломает отмычку — спамить попытками нельзя) ---------- */}
+          {hackBox && (() => {
+            const lp = (mePlayer.items ?? []).find((x) => x.kind === 'lockpick' && x.belt);
+            /* прекратить взлом: если отмычка ещё «в замке» (не сломана и не потрачена на успех) —
+               она СЧИТАЕТСЯ СЛОМАННОЙ: выхода без потери отмычки нет, спамить попытками нельзя */
+            const stopHack = () => {
+              if (!hackBroken && lp) {
+                dispatch({ t: 'rubgBoxBreak', id: me, cellIdx: hackBox.cellIdx, itemId: lp.id });
+                sfx.pinBreak();
+                useApp.getState().toast('Взлом прекращён — отмычка сломана', 'err');
+              }
+              setHackBox(null);
+            };
+            return (
+              <div className="fixed inset-0 z-[64] flex items-center justify-center bg-[rgba(4,6,14,0.85)] p-4">
+                <div className="pixel-panel pixel-corners p-4 max-w-md w-full max-h-[94vh] overflow-y-auto">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="tick-label text-gold">{hackBroken ? '🔓 ЗАМОК ЯЩИКА №' + (hackBox.cellIdx + 1) + ' · отмычка сломана' : '🔓 ЗАМОК ЯЩИКА №' + (hackBox.cellIdx + 1) + ' · попытка ' + (hackAttempt + 1)}</div>
+                    <button onClick={stopHack} className="text-dim hover:text-coral cursor-pointer" aria-label="Прекратить взлом">{Ic.cross(14)}</button>
+                  </div>
+                  <p className="text-[10px] text-faint mt-1">
+                    {hackBroken
+                      ? 'Отмычка сломана о замок. Можно взять другую отмычку (новый случайный расклад бойков), попробовать открыть СИЛОЙ или прекратить взлом.'
+                      : 'Мышь влево-вправо — выбор бойка. Двигай мышь ВВЕРХ — боек подлетает (сила = скорость мыши, пружины у всех разные). В зелёной зоне жми «ЗАФИКСИРОВАТЬ» — промах сломает отмычку!'}
+                  </p>
+                  <div className={hackBroken ? 'opacity-40 pointer-events-none' : undefined}>
+                    <LockpickGame
+                      attempt={hackAttempt}
+                      fixedInit={hackFixed}
+                      onFix={(arr) => { setHackFixed(arr); sfx.pinFix(); }}
+                      onBreak={() => {
+                        if (lp) dispatch({ t: 'rubgBoxBreak', id: me, cellIdx: hackBox.cellIdx, itemId: lp.id });
+                        sfx.pinBreak();
+                        useApp.getState().toast('Отмычка СЛОМАНА — нужна новая (ящики и победы в заданиях дают отмычки)', 'err');
+                        setHackBroken(true); // интерфейс НЕ закрывается: другая отмычка / сила / прекратить
+                      }}
+                    />
+                  </div>
+                  {hackBroken ? (
+                    <div className="mt-2 space-y-2">
+                      <div className="border-2 border-coral bg-coral/10 px-2 py-1.5 font-pixel text-[9px] text-coral uppercase">❌ отмычка сломана — мини-игра прервана</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <PxBtn
+                          color="gold"
+                          disabled={!lp}
+                          title={lp ? 'Новая попытка со случайным раскладом бойков' : 'Нет отмычки на поясе — надень её в ИНВЕНТАРЕ'}
+                          onClick={() => { setHackFixed(randomPrePins()); setHackAttempt((a) => a + 1); setHackBroken(false); }}
+                        >🔑 ДРУГАЯ ОТМЫЧКА</PxBtn>
+                        <button
+                          onClick={() => {
+                            if (!forceArm) { setForceArm(true); window.setTimeout(() => setForceArm(false), 4000); return; }
+                            setForceArm(false);
+                            dispatch({ t: 'rubgBoxForce', id: me, cellIdx: hackBox.cellIdx });
+                            setHackBox(null);
+                          }}
+                          className={`py-2 px-2 border-2 font-pixel text-[9px] uppercase select-none touch-none ${forceArm ? 'border-coral bg-coral/15 text-coral' : 'border-magma text-magma cursor-pointer hover:bg-magma/10'}`}
+                        >{forceArm ? '⚠ точно? ящик закроется навсегда' : '💥 открыть силой · 25%'}</button>
+                      </div>
+                      {!lp && <p className="text-[9px] text-faint leading-tight">Отмычек на поясе нет. Открой ИНВЕНТАРЬ (вверху), надень отмычку на пояс и снова нажми «открыть ящик».</p>}
+                      <PxBtn color="dim" className="w-full" onClick={stopHack}>✋ ПРЕКРАТИТЬ ВЗЛОМ</PxBtn>
+                    </div>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      <PxBtn
+                        color="gold"
+                        className="w-full"
+                        disabled={(hackFixed.filter(Boolean).length ?? 0) < 5}
+                        title={(hackFixed.filter(Boolean).length ?? 0) < 5 ? 'Сначала зафиксируй все 5 бойков в верхней точке' : undefined}
+                        onClick={() => {
+                          if (lp) dispatch({ t: 'rubgBoxHack', id: me, cellIdx: hackBox.cellIdx, itemId: lp.id });
+                          sfx.boxOpen();
+                          setHackFixed([]);
+                          setHackBox(null);
+                        }}
+                      >🔓 ОТКРЫТЬ ЗАМОК ЯЩИКА</PxBtn>
+                      <PxBtn color="dim" className="w-full" onClick={stopHack}>✋ ПРЕКРАТИТЬ ВЗЛОМ (отмычка сломается)</PxBtn>
+                    </div>
+                  )}
+                  <p className="text-[9px] text-faint leading-tight mt-1.5">Попытка тратит ОТМЫЧКУ 🔑 с пояса (победа, поломка или отказ от взлома). «СИЛОЙ» — только когда отмычка сломана: шанс 25%, провал закрывает этот ящик для тебя НАВСЕГДА. У каждой новой попытки — свой случайный расклад бойков.</p>
+                </div>
+              </div>
+            );
+          })()}
+        </>
+      )}
+
+      {tplOpen && <TemplateModal cellIdx={active?.pos ?? 0} onClose={() => setTplOpen(false)} />}
+
+      {/* ---------- v0.56: КАТ-СЦЕНА — кино-полосы (v0.60 — без плашки;
+           v0.61 — у «Растворяющихся» тоже РЕЗКИЙ край: сплошной чёрный без градиента;
+           v0.62 — постоянной кнопки «⏭ ПРОПУСТИТЬ [ESC]» больше нет: подсказка
+           плавно проявляется ТОЛЬКО при нажатом ESC, полоска заполняется, пока
+           клавиша удерживается; додержал — кат-сцена пропущена;
+           v0.65 — полосы «Растворяющихся» НИЖЕ (10vh вместо 13vh), и ТЕ ЖЕ полосы
+           показывает КИНО-ЗАХВАТ БОССА: босс поймал фишку — экран в полосах,
+           задание началось — полосы плавно ушли (управление вернули)) ---------- */}
+      {(cutActive || cutBarsOut || carryBars || carryBarsOut) && (() => {
+        const canSkip = cutRef.current?.def.skippable !== false;
+        const dissolving = (options.cutBars ?? 'dissolve') !== 'classic'; // v0.57: стиль полос из общих опций
+        const barsIn = cutActive || carryBars; // v0.65: полосы на экране (кино или захват боссом)
+        const barCls = (side: 'top' | 'bottom') =>
+          barsIn
+            ? (dissolving ? `cut-bar-d-${side}` : `cut-bar-${side}`)
+            : (dissolving ? `cut-bar-d-${side} cut-out-${side}` : `cut-bar-${side} cut-out-${side}`); // уход — плавный у обоих стилей
+        return (
+          <div className="fixed inset-0 z-[70] pointer-events-none cut-keep">
+            <div className={`absolute inset-x-0 top-0 bg-black ${barCls('top')}`} style={{ height: dissolving ? '10vh' : '7vh' }} />
+            <div className={`absolute inset-x-0 bottom-0 bg-black ${barCls('bottom')}`} style={{ height: dissolving ? '10vh' : '7vh' }} />
+            {cutActive && canSkip && (
+              /* v0.62: подсказка пропуска — только визуальная (pointer-events-none);
+                 держится смонтированной всё кино, чтобы работать transition гашения */
+              <div
+                aria-hidden
+                className={`cut-esc-hint absolute right-4 bottom-[8.5vh] px-4 py-2 border-2 border-gold bg-[rgba(4,6,14,0.7)] font-pixel text-[10px] text-gold text-center ${cutEscHint ? 'cut-esc-on' : ''}`}
+              >
+                ДЕРЖИТЕ ESC — ПРОПУСК
+                <span className="block h-[3px] mt-1.5 bg-[rgba(255,207,63,0.18)] overflow-hidden">
+                  {cutEscHint && (
+                    <span
+                      key={cutEscSession}
+                      className="block h-full bg-gold"
+                      style={{ width: '0%', animation: `cutEscFill ${CUT_ESC_HOLD_MS}ms linear forwards` }}
+                    />
+                  )}
+                </span>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ---------- квиз (видят все живые игроки) ---------- */}
+      <QuizOverlay />
+    </div>
+  );
+}
+
+/* ---------- кубик ---------- */
+
+function DieFace({ v, dropping, delay, rolling, blank, frame }: { v: number; dropping?: boolean; delay?: boolean; rolling?: boolean; blank?: boolean; frame?: string }) {
+  const pips: Record<number, [number, number][]> = {
+    0: [], // «Кубики-0»: пустая грань
+    1: [[1, 1]],
+    2: [[0, 0], [2, 2]],
+    3: [[0, 0], [1, 1], [2, 2]],
+    4: [[0, 0], [0, 2], [2, 0], [2, 2]],
+    5: [[0, 0], [0, 2], [1, 1], [2, 0], [2, 2]],
+    6: [[0, 0], [0, 2], [1, 0], [1, 2], [2, 0], [2, 2]],
+  };
+  if (blank) {
+    return (
+      <div
+        className="w-16 h-16 border-[3px] border-dashed border-edge2 shadow-[0_6px_0_rgba(0,0,0,0.35)] flex items-center justify-center"
+        style={frame ? { borderColor: frame, boxShadow: `0 6px 0 rgba(0,0,0,0.35), 0 0 10px ${frame}33` } : undefined}
+      >
+        <span className="font-pixel text-[12px] text-faint">?</span>
+      </div>
+    );
+  }
+  return (
+    <div
+      className={`w-16 h-16 bg-paper border-[3px] border-abyss shadow-[0_6px_0_rgba(0,0,0,0.5)] grid grid-cols-3 grid-rows-3 p-2 ${dropping ? 'dice-drop' : ''} ${rolling ? 'shake-hard' : ''}`}
+      style={{
+        ...(dropping && delay ? { animationDelay: '0.07s' } : {}),
+        ...(frame ? { borderColor: frame, boxShadow: `0 6px 0 rgba(0,0,0,0.5), 0 0 14px ${frame}44` } : {}),
+      }}
+    >
+      {[...Array(9)].map((_, i) => {
+        const r = Math.floor(i / 3), c = i % 3;
+        const on = (pips[v] ?? pips[1]).some(([pr, pc]) => pr === r && pc === c);
+        return <span key={i} className={`rounded-[2px] ${on ? 'bg-abyss' : ''}`} />;
+      })}
+    </div>
+  );
+}
+
+/* ---------- шаблон нового задания ---------- */
+
+function TemplateModal({ cellIdx, onClose }: { cellIdx: number; onClose: () => void }) {
+  const { roms, saves, session, selfId } = useApp();
+  const [romId, setRomId] = useState('');
+  const [saveId, setSaveId] = useState('');
+  const [title, setTitle] = useState('');
+  const [desc, setDesc] = useState('');
+  const [chaosCardId, setChaosCardId] = useState('');
+  const [joyId, setJoyId] = useState('');
+  const romSaves = saves.filter((x) => x.romId === romId);
+  /* в игре выбираются ТОЛЬКО уровни/боссы/моё задание — частные живут в редакторе заданий */
+  const pickableSaves = romSaves.filter((x) => saveKindOf(x) !== 'private');
+  /* ромы группируются по папкам — как в «Запуске эмулятора» и редакторе заданий */
+  const romFolders = [...new Set(roms.map((r) => r.folder ?? '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+  const looseRoms = roms.filter((r) => !r.folder);
+  const mePlayer = session?.players.find((p) => p.id === selfId);
+  const chaosCards = (mePlayer?.inventory ?? []).filter((c) => !!c.chaos);
+
+  const apply = () => {
+    const romIsNes = roms.find((r) => r.id === romId)?.ext === 'nes';
+    if (!romId || (romIsNes && !saveId)) {
+      useApp.getState().toast(romIsNes ? 'Выберите ром и сохранение' : 'Выберите ром', 'err');
+      return;
+    }
+    const task: TaskDef = {
+      romId, saveId: saveId || undefined,
+      title: title.trim() || (roms.find((r) => r.id === romId)?.name ?? 'Задание'),
+      desc: desc.trim() || 'Задание, придуманное игроком на этой сессии.',
+      joy: (joyId || undefined) as TaskDef['joy'],
+    };
+    dispatch({ t: 'setCellTask', id: useApp.getState().selfId, cellIdx, task, cardId: chaosCardId || undefined });
+    sfx.success();
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-[rgba(4,6,14,0.85)]" onClick={onClose} />
+      <div className="relative pixel-panel pixel-corners pop-in w-full max-w-md p-5">
+        <div className="font-display uppercase tracking-wide text-magma text-sm mb-3 flex items-center gap-2">
+          {Ic.cart(16)} Шаблон задания · ячейка №{cellIdx + 1}
+        </div>
+        <p className="text-[11px] text-dim mb-3">Ром и сохранение из библиотеки — как в папках с шаблонами. Задание действует до конца этой сессии.</p>
+        <div className="space-y-3">
+          <Field label="Ром (по папкам)">
+            <select className="field-in w-full px-2 py-2 text-sm" value={romId} onChange={(e) => { setRomId(e.target.value); setSaveId(''); }}>
+              <option value="">— выбрать —</option>
+              {romFolders.map((f) => (
+                <optgroup key={`f-${f}`} label={`📁 ${f}`}>
+                  {roms.filter((r) => r.folder === f).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                </optgroup>
+              ))}
+              {looseRoms.length > 0 && (
+                romFolders.length
+                  ? <optgroup label="Без папки">{looseRoms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
+                  : looseRoms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)
+              )}
+            </select>
+          </Field>
+          <Field label="Сохранение (уровни / боссы / моё задание)">
+            <select className="field-in w-full px-2 py-2 text-sm" value={saveId} onChange={(e) => setSaveId(e.target.value)}>
+              <option value="">— без сохранения (старт с начала) —</option>
+              {(['level', 'boss', 'mytask'] as const).map((k) => {
+                const list = pickableSaves.filter((x) => saveKindOf(x) === k);
+                if (!list.length) return null;
+                return (
+                  <optgroup key={k} label={SAVE_KIND_LABEL[k]}>
+                    {list.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                  </optgroup>
+                );
+              })}
+            </select>
+            <p className="text-[10px] text-faint mt-1">Частные сохранения в игре не выбираются — они доступны только в редакторе заданий.</p>
+          </Field>
+          <Field label="Название">
+            <input className="field-in w-full px-3 py-2 text-sm" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Chip'n'Dale 2 — босс" />
+          </Field>
+          <Field label="Описание">
+            <textarea className="field-in w-full px-3 py-2 text-sm h-16 resize-none" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Пройти босса с одной полоской здоровья…" />
+          </Field>
+          <Field label="Пакость из инвентаря (необязательно, максимум одна)">
+            {chaosCards.length === 0 ? (
+              <p className="text-[11px] text-dim">В инвентаре нет пакостных карточек — они выпадают на ячейках-шансах.</p>
+            ) : (
+              <div className="grid gap-1 max-h-[150px] overflow-y-auto pr-1">
+                <button
+                  onClick={() => setChaosCardId('')}
+                  className={`text-left px-2.5 py-1.5 border-2 text-[11px] cursor-pointer transition-colors ${chaosCardId === '' ? 'border-edge2 text-paper' : 'border-edge text-dim hover:border-edge2'}`}
+                >
+                  {chaosCardId === '' ? '●' : '○'} Без пакости
+                </button>
+                {chaosCards.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => { setChaosCardId(c.id); sfx.hover(); }}
+                    className={`text-left px-2.5 py-1.5 border-2 text-[11px] cursor-pointer transition-colors ${chaosCardId === c.id ? 'border-magma bg-magma/10 text-paper' : 'border-edge text-dim hover:border-edge2'}`}
+                    title={c.desc}
+                  >
+                    {chaosCardId === c.id ? '●' : '○'} 😈 {c.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            {chaosCardId && <p className="text-[10.5px] text-magma mt-1">Карточка будет потрачена — следующий играющий здесь получит пакость.</p>}
+          </Field>
+          <Field label="Радость за прохождение (награда прошедшему, максимум одна)">
+            <select className="field-in w-full px-2 py-2 text-sm" value={joyId} onChange={(e) => { setJoyId(e.target.value); sfx.hover(); }}>
+              <option value="">— без радости —</option>
+              {JOY_LIST.map((j) => <option key={j.id} value={j.id}>{j.name}</option>)}
+            </select>
+            {joyId && (
+              <p className="text-[10.5px] text-teal mt-1">🎉 {JOY_LIST.find((j) => j.id === joyId)?.desc}</p>
+            )}
+          </Field>
+          <div className="flex justify-end gap-2 pt-1">
+            <GhostBtn onClick={onClose}>Отмена</GhostBtn>
+            <PxBtn color="magma" onClick={apply}>{Ic.check(14)} Заменить задание</PxBtn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+void idbGet;
+
+/* ---------- инвентарь: монопольные карточки, торги карточками и ячейками ---------- */
+
+const fmtPrice = (m: number, t: number): string =>
+  m > 0 && t > 0 ? `${m} мин + ${t} поп.` : m > 0 ? `${m} мин` : `${t} поп.`;
+
+/* Цвета карточек «как в монополии»: цветная обводка + цветная шапка с названием */
+function cardColors(c: CardDef): { band: string; ink: string } {
+  if (c.chaos) return { band: '#ff5d73', ink: '#2a0810' };
+  if (c.kind === 'joy') return { band: '#2ee6a8', ink: '#06281c' };
+  if (c.kind === 'trap') return { band: '#ff8b3f', ink: '#2b1204' };
+  return { band: '#ffcf3f', ink: '#2b2004' };
+}
+
+const cardBadge = (c: CardDef): string => {
+  if (c.chaos) return '😈 ПАКОСТЬ';
+  if (c.kind === 'joy') {
+    if (c.effect.type === 'immuneSega' || c.effect.type === 'immuneNes') return '🛡 ИММУНИТЕТ';
+    return '🎉 РАДОСТЬ';
+  }
+  return c.kind === 'trap' ? '☠ ЛОВУШКА' : '🌟 БОНУС';
+};
+
+function InventoryModal({ onClose }: { onClose: () => void }) {
+  const st = useApp();
+  const s = st.session;
+  const map = st.sessionMap;
+  const me = st.selfId;
+  const [sellSel, setSellSel] = useState<{ kind: 'card' | 'cell'; id: string; name: string } | null>(null);
+  const [sellTo, setSellTo] = useState('');
+  const [sellMin, setSellMin] = useState(5);
+  const [sellTries, setSellTries] = useState(0);
+  const [counterOfferId, setCounterOfferId] = useState('');
+  const [cMin, setCMin] = useState(3);
+  const [cTries, setCTries] = useState(3);
+  if (!s) return null;
+  const mePlayer = s.players.find((p) => p.id === me);
+  const active = s.players[s.turn % s.players.length];
+  const myTurn = !!active && active.id === me;
+  const inv = mePlayer?.inventory ?? [];
+  const trades = s.trades ?? [];
+  const isOpen = (o: { status: string }) => o.status === 'pending' || o.status === 'countered';
+  const reservedIds = new Set(trades.filter(isOpen).map((o) => o.cardId));
+  const reservedCells = new Set(trades.filter(isOpen).map((o) => o.cellIdx));
+  const busy = !!(s.moving || s.challenge || s.pendingCard || s.quiz || s.awaitPost);
+  const joyUsedThisTurn = (mePlayer?.joyTurn ?? -1) === (s.turnNo ?? 1);
+  const findCard = (id: string): { card: CardDef; ownerName: string } | null => {
+    for (const p of s.players) {
+      const c = (p.inventory ?? []).find((x) => x.id === id);
+      if (c) return { card: c, ownerName: p.name };
+    }
+    return null;
+  };
+  const cellTitle = (idx: number): string => {
+    const cell = map?.cells[idx];
+    if (!cell) return `Ячейка №${idx + 1}`;
+    const t = cell.task?.title ? ` · ${cell.task.title}` : '';
+    return `Ячейка ${cell.nonumber || cell.n === 0 ? 'без номера' : '№' + cell.n}${cell.label ? ` «${cell.label}»` : ''}${t}`;
+  };
+  const sellTargets = s.players.filter((p) => p.alive && p.id !== me && (p.id !== active?.id || !busy));
+  const incoming = trades.filter((o) => o.to === me && isOpen(o));
+  const outgoing = trades.filter((o) => o.from === me && isOpen(o));
+  const myCells = Object.entries(s.captured ?? {})
+    .map(([k, v]) => ({ idx: Number(k), owner: v as string }))
+    .filter((x) => x.owner === me && map?.cells[x.idx])
+    .sort((a, b) => a.idx - b.idx);
+  const canSell = !myTurn || !busy; // текущий игрок тоже может торговать — пока не бросил кубики
+  const joyAppliable = (c: CardDef) =>
+    !c.chaos && c.effect.type !== 'immuneSega' && c.effect.type !== 'immuneNes';
+  /* RUBG: пояс/инвентарь и «Остановить воровство» */
+  const rubgMap = map?.mode === 'rubg';
+  const rubgInv = mePlayer?.items ?? [];
+  const rubgBelted = rubgInv.filter((x) => x.belt);
+  const stopCdLeft = rubgMap ? Math.max(0, RUBG_STOP_CD * 1000 - (Date.now() - (s.rubg?.stopCd?.[me!] ?? 0))) : 0;
+  const invHpRes = map?.mode === 'rubg' || map?.resMode === 'hp';
+
+  return (
+    <div className="fixed inset-0 z-[96] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-[rgba(4,6,14,0.88)]" onClick={onClose} />
+      <div className="relative pixel-panel pixel-corners pop-in w-full max-w-3xl max-h-[92vh] overflow-y-auto p-5">
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <span className="text-teal">{Ic.grid(18)}</span>
+          <span className="font-display uppercase tracking-wider text-paper text-sm">Инвентарь</span>
+          {invHpRes ? (
+            <span className="tick-label text-coral">❤ HP {Math.round(mePlayer?.hp ?? 100)}%</span>
+          ) : (
+            <span className="tick-label text-gold">{fmtClock(mePlayer?.secLeft ?? 0)} · {mePlayer?.triesLeft ?? 0} поп.</span>
+          )}
+          {myTurn && (busy
+            ? <span className="tick-label text-magma">ваш ход — торги недоступны</span>
+            : <span className="tick-label text-teal">ваш ход — торги открыты до броска кубиков</span>)}
+          <GhostBtn small className="ml-auto" onClick={onClose}>{Ic.cross(12)} Закрыть</GhostBtn>
+        </div>
+
+        {/* ---------- RUBG: предметы (пояс/инвентарь) + «Остановить воровство» ---------- */}
+        {rubgMap && (
+          <div className="border-2 border-[#ff8b3f]/60 px-3 py-2.5 mb-4 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="tick-label text-[#ff8b3f]">🧰 РУБГ · на поясе {rubgBelted.length}/{RUBG_BELT_SLOTS} · всего предметов {rubgInv.length}</span>
+              <span className="tick-label text-faint">с пояса — действуют; пояс не воруется</span>
+            </div>
+            {/* «Остановить воровство»: доступен всегда (кулдаун 15 с), без надписей — о краже говорят только помехи */}
+            <PxBtn
+              color="coral"
+              className="w-full"
+              disabled={stopCdLeft > 0}
+              onClick={() => dispatch({ t: 'rubgStopThief', id: me! })}
+            >
+              {stopCdLeft > 0 ? `🚨 ОСТАНОВИТЬ ВОРОВСТВО (${Math.ceil(stopCdLeft / 1000)}с)` : '🚨 ОСТАНОВИТЬ ВОРОВСТВО'}
+            </PxBtn>
+            {rubgInv.length === 0 && <div className="text-[11px] text-dim">Пусто — взламывай ЯЩИКИ 📦 отмычкой 🔑 или побеждай в заданиях</div>}
+            {rubgInv.map((it: RubgItem) => {
+              const meta = RUBG_ITEMS[it.kind];
+              return (
+                <div key={it.id} className={`flex items-center gap-2 px-2 py-1.5 border-2 ${it.belt ? 'border-[#ff8b3f]/60 bg-[#ff8b3f]/5' : 'border-edge'}`}>
+                  <span>{meta.icon}</span>
+                  <span className="font-display text-[11px] text-paper min-w-0 truncate">{meta.name}{it.kind === 'steal' && it.uses !== undefined ? ` (${it.uses} исп.)` : ''}</span>
+                  <span className={`ml-auto font-pixel text-[7px] shrink-0 ${it.belt ? 'text-[#ff8b3f]' : 'text-faint'}`}>{it.belt ? 'НА ПОЯСЕ' : 'в инвентаре'}</span>
+                  {it.belt ? (
+                    <GhostBtn small onClick={() => dispatch({ t: 'rubgBelt', id: me!, itemId: it.id, on: false })}>С пояса</GhostBtn>
+                  ) : (
+                    <GhostBtn
+                      small
+                      onClick={() => {
+                        if (rubgBelted.length >= RUBG_BELT_SLOTS) {
+                          useApp.getState().toast(`Пояс полон (${RUBG_BELT_SLOTS} слота) — снимите что-нибудь с пояса`, 'err');
+                          return;
+                        }
+                        dispatch({ t: 'rubgBelt', id: me!, itemId: it.id, on: true });
+                      }}
+                    >На пояс</GhostBtn>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ---------- QUEST: РЮКЗАК — предметы, купленные у NPC (хилки пьются отсюда) ---------- */}
+        {!rubgMap && isQuestMode(map?.mode) && rubgInv.length > 0 && (
+          <div className="border-2 border-[#ff8b3f]/60 px-3 py-2.5 mb-4 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="tick-label text-[#ff8b3f]">🎒 Рюкзак · предметов {rubgInv.length}</span>
+              <span className="tick-label text-faint">куплено у NPC · хилки восстанавливают HP</span>
+            </div>
+            {rubgInv.map((it: RubgItem) => {
+              const meta = RUBG_ITEMS[it.kind];
+              const heal = meta.hp > 0 && meta.radius === 0;
+              const hpFull = (mePlayer?.hp ?? 100) >= 100;
+              return (
+                <div key={it.id} className="flex items-center gap-2 px-2 py-1.5 border-2 border-edge">
+                  <span>{meta.icon}</span>
+                  <span className="font-display text-[11px] text-paper min-w-0 truncate">{meta.name}</span>
+                  <span className="ml-auto tick-label text-faint shrink-0" title={heal ? `Восстанавливает ${meta.hp}% HP` : 'Сувенир — пригодится в других приключениях'}>{heal ? `+${meta.hp}% HP` : 'сувенир'}</span>
+                  {heal && (
+                    <PxBtn
+                      small
+                      color="teal"
+                      disabled={hpFull}
+                      className={hpFull ? 'opacity-40' : ''}
+                      title={hpFull ? 'Полоска HP полна' : `Выпить: +${meta.hp}% HP`}
+                      onClick={() => dispatch({ t: 'rubgUseItem', id: me!, itemId: it.id })}
+                    >Выпить</PxBtn>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* входящие предложения */}
+        {incoming.length > 0 && (
+          <div className="space-y-2 mb-4">
+            <div className="tick-label text-gold">💼 Предложения вам</div>
+            {incoming.map((o) => {
+              const info = findCard(o.cardId ?? '');
+              const item = o.cellIdx !== undefined ? cellTitle(o.cellIdx) : info?.card.name ?? '—';
+              const isCell = o.cellIdx !== undefined;
+              const afford = (mePlayer?.secLeft ?? 0) >= o.priceMin * 60 && (mePlayer?.triesLeft ?? 0) >= o.priceTries;
+              const counterSent = o.status === 'countered';
+              return (
+                <div key={o.id} className="border-2 border-gold bg-gold/10 px-3 py-2.5 space-y-2">
+                  <div className="text-[12px] text-paper">
+                    <span className="font-display uppercase">{info?.ownerName ?? s.players.find((p) => p.id === o.from)?.name ?? 'Игрок'}</span>{' '}
+                    предлагает {isCell ? 'ЯЧЕЙКУ' : 'карточку'} «{item}» за {fmtPrice(o.priceMin, o.priceTries)}
+                  </div>
+                  {isCell && <div className="text-[10.5px] text-dim">Покупка ячейки: хозяином становитесь вы, задание остаётся прежним — создавать новое не нужно.</div>}
+                  {counterSent ? (
+                    <>
+                      <div className="text-[11px] text-dim">Вы предложили встречную цену: {fmtPrice(o.counterMin ?? 0, o.counterTries ?? 0)} — ждём ответа владельца…</div>
+                      <GhostBtn small onClick={() => dispatch({ t: 'tradeReply', id: me, offerId: o.id, kind: 'decline' })}>Отменить встречное</GhostBtn>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex gap-2 flex-wrap">
+                        <PxBtn
+                          small
+                          color="teal"
+                          disabled={!afford}
+                          title={!afford ? 'Не хватает минут/попыток на оплату' : undefined}
+                          onClick={() => dispatch({ t: 'tradeReply', id: me, offerId: o.id, kind: 'accept' })}
+                        >
+                          {Ic.check(12)} Купить
+                        </PxBtn>
+                        <GhostBtn small onClick={() => { setCounterOfferId(counterOfferId === o.id ? '' : o.id); setCMin(Math.max(1, o.priceMin)); setCTries(o.priceTries); sfx.click(); }}>
+                          Своя цена
+                        </GhostBtn>
+                        <GhostBtn small onClick={() => dispatch({ t: 'tradeReply', id: me, offerId: o.id, kind: 'decline' })}>Отказаться</GhostBtn>
+                      </div>
+                      {counterOfferId === o.id && (
+                        <div className="border-2 border-edge p-2 space-y-2 bg-[rgba(0,0,0,0.25)]">
+                          <div className="flex items-center justify-between gap-3 flex-wrap">
+                            <span className="text-[11px] text-dim">Минуты</span>
+                            <Stepper value={cMin} onChange={setCMin} min={0} max={90} suffix=" мин" />
+                          </div>
+                          <div className="flex items-center justify-between gap-3 flex-wrap">
+                            <span className="text-[11px] text-dim">Попытки</span>
+                            <Stepper value={cTries} onChange={setCTries} min={0} max={90} suffix=" поп." />
+                          </div>
+                          <PxBtn
+                            small
+                            color="gold"
+                            disabled={cMin + cTries <= 0}
+                            onClick={() => { dispatch({ t: 'tradeReply', id: me, offerId: o.id, kind: 'counter', counterMin: cMin, counterTries: cTries }); setCounterOfferId(''); }}
+                          >
+                            Отправить встречное предложение
+                          </PxBtn>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* исходящие предложения */}
+        {outgoing.length > 0 && (
+          <div className="space-y-2 mb-4">
+            <div className="tick-label text-sky">📤 Ваши предложения</div>
+            {outgoing.map((o) => {
+              const buyer = s.players.find((p) => p.id === o.to);
+              const item = o.cellIdx !== undefined ? cellTitle(o.cellIdx) : findCard(o.cardId ?? '')?.card.name ?? '—';
+              return (
+                <div key={o.id} className="border-2 border-edge bg-panel px-3 py-2.5 space-y-1.5">
+                  {o.status === 'pending' ? (
+                    <div className="text-[12px] text-paper">«{item}» → {buyer?.name ?? '—'}: ждём ответа…</div>
+                  ) : (
+                    <div className="text-[12px] text-paper">
+                      {buyer?.name ?? '—'} предлагает встречную цену: {fmtPrice(o.counterMin ?? 0, o.counterTries ?? 0)}
+                    </div>
+                  )}
+                  <div className="flex gap-2 flex-wrap">
+                    {o.status === 'countered' && (
+                      <PxBtn small color="teal" onClick={() => dispatch({ t: 'tradeResolve', id: me, offerId: o.id, accept: true })}>
+                        {Ic.check(12)} Согласиться на встречную
+                      </PxBtn>
+                    )}
+                    <GhostBtn small onClick={() => dispatch({ t: 'tradeResolve', id: me, offerId: o.id, accept: false })}>
+                      {o.status === 'countered' ? 'Отказаться' : 'Отменить предложение'}
+                    </GhostBtn>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* форма продажи карточки или ячейки */}
+        {sellSel && (
+          <div className="border-2 border-gold/60 bg-gold/5 p-3 mb-4 space-y-2">
+            <div className="font-display text-[12px] uppercase text-gold">
+              Продажа: {sellSel.kind === 'cell' ? 'ячейка' : 'карточка'} «{sellSel.name}»
+            </div>
+            {sellSel.kind === 'cell' && (
+              <p className="text-[10.5px] text-dim">Покупатель станет хозяином ячейки; задание останется прежним — новое создавать не нужно.</p>
+            )}
+            <Field label="Покупатель (играющего сейчас предложить нельзя)">
+              <select className="field-in w-full px-2 py-2 text-sm" value={sellTo} onChange={(e) => setSellTo(e.target.value)}>
+                <option value="">— выбрать игрока —</option>
+                {sellTargets.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} · {fmtClock(p.secLeft)} · {p.triesLeft} поп.</option>
+                ))}
+              </select>
+            </Field>
+            {sellTargets.length === 0 && <p className="text-[10.5px] text-magma">Живых покупателей нет (или все, кроме играющего, выбыли).</p>}
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <span className="text-[11px] text-dim">Цена: минуты</span>
+              <Stepper value={sellMin} onChange={setSellMin} min={0} max={90} suffix=" мин" />
+            </div>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <span className="text-[11px] text-dim">Цена: попытки</span>
+              <Stepper value={sellTries} onChange={setSellTries} min={0} max={90} suffix=" поп." />
+            </div>
+            <div className="flex gap-2">
+              <PxBtn
+                color="gold"
+                disabled={!sellTo || sellMin + sellTries <= 0}
+                onClick={() => {
+                  dispatch({
+                    t: 'tradeOffer', id: me, to: sellTo, priceMin: sellMin, priceTries: sellTries,
+                    ...(sellSel.kind === 'cell' ? { cellIdx: Number(sellSel.id) } : { cardId: sellSel.id }),
+                  });
+                  setSellSel(null);
+                  setSellTo('');
+                }}
+              >
+                {Ic.check(14)} Предложить за {fmtPrice(sellMin, sellTries)}
+              </PxBtn>
+              <GhostBtn onClick={() => setSellSel(null)}>Отмена</GhostBtn>
+            </div>
+          </div>
+        )}
+
+        {/* мои карточки — «как в монополии»: вертикальные карточки с цветной шапкой */}
+        <div className="space-y-2">
+          <div className="tick-label text-faint">Мои карточки · {inv.length}</div>
+          {inv.length === 0 ? (
+            <div className="text-center py-6 text-dim text-[12px]">
+              Инвентарь пуст. Пакости выпадают на ячейках-шансах (если создатель карты их добавил),
+              радости — за прохождение заданий с наградой. Карточку можно применить, продать или обменять.
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-3 pt-1">
+              {inv.map((c, i) => {
+                const col = cardColors(c);
+                const reserved = reservedIds.has(c.id);
+                return (
+                  <div key={`${c.id}-${i}`} className="flex flex-col gap-1.5" style={{ width: 124 }}>
+                    {/* карточка «как в монополии»: вертикаль 1:2, обводка цветом, название в шапке */}
+                    <div
+                      className="flex flex-col border-[3px] bg-[#f6f2e3] text-[#23263a] shadow-[0_5px_0_rgba(0,0,0,0.4)]"
+                      style={{ borderColor: col.band, height: 186 }}
+                      title={c.desc}
+                    >
+                      <div
+                        className="text-center font-display uppercase text-[10px] leading-[1.15] px-1 py-1.5 border-b-[3px] break-words"
+                        style={{ borderColor: col.band, background: col.band, color: col.ink }}
+                      >
+                        {c.name}
+                      </div>
+                      <div className="flex-1 px-1.5 py-1 text-[9px] leading-[1.25] overflow-hidden">{c.desc}</div>
+                      <div className="px-1.5 py-1 text-center font-pixel text-[7px] border-t-[3px]" style={{ borderColor: col.band, color: col.ink }}>
+                        {cardBadge(c)}
+                      </div>
+                    </div>
+                    {reserved && <span className="font-pixel text-[7px] text-gold text-center">💼 В СДЕЛКЕ</span>}
+                    <div className="flex gap-1">
+                      {joyAppliable(c) && (
+                        <button
+                          className="flex-1 font-pixel text-[7px] py-1 border-2 border-teal text-teal hover:bg-teal/15 cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed"
+                          disabled={!myTurn || busy || reserved || joyUsedThisTurn}
+                          title={
+                            reserved ? 'Карточка зарезервирована сделкой'
+                            : !myTurn || busy ? 'Применять — только в свой ход до броска, когда стол пуст'
+                            : joyUsedThisTurn ? 'Одна радость на ход уже использована'
+                            : undefined
+                          }
+                          onClick={() => { dispatch({ t: 'useCard', id: me, cardId: c.id }); sfx.card(); }}
+                        >
+                          ▶ ПРИМЕНИТЬ
+                        </button>
+                      )}
+                      <button
+                        className="flex-1 font-pixel text-[7px] py-1 border-2 border-edge text-dim hover:border-gold hover:text-gold cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed"
+                        disabled={!canSell || reserved}
+                        title={
+                          reserved ? 'Карточка уже участвует в сделке'
+                          : !canSell ? 'Ход уже начался — торговать можно только до броска кубиков'
+                          : undefined
+                        }
+                        onClick={() => { setSellSel({ kind: 'card', id: c.id, name: c.name }); setSellTo(''); setSellMin(5); setSellTries(0); sfx.click(); }}
+                      >
+                        ПРОДАТЬ
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* мои ячейки — можно продать/обменять. В RUBG ячейки НЕ ПРОДАЮТСЯ */}
+        <div className="space-y-2 mt-5">
+          <div className="tick-label text-faint">Мои ячейки · {myCells.length}</div>
+          {rubgMap ? (
+            <div className="text-center py-4 text-dim text-[12px]">
+              {myCells.length === 0
+                ? 'Захваченных ячеек пока нет. Пройдите задание на чужой или свободной ячейке — она станет вашей до конца партии.'
+                : 'В RUBG побеждённые ячейки НЕ ПРОДАЮТСЯ и не обмениваются — они остаются за вами до конца партии.'}
+            </div>
+          ) : (
+          <>
+          {myCells.length === 0 ? (
+            <div className="text-center py-4 text-dim text-[12px]">
+              Захваченных ячеек пока нет. Пройдите задание на чужой или свободной ячейке — и сможете продавать её соперникам.
+            </div>
+          ) : (
+            <div className="grid sm:grid-cols-2 gap-2">
+              {myCells.map(({ idx }) => {
+                const cell = map!.cells[idx];
+                const underChallenge = s.challenge?.cellIdx === idx;
+                const reserved = reservedCells.has(idx);
+                return (
+                  <div key={idx} className="border-2 px-3 py-2.5 flex items-center gap-2 bg-panel" style={{ borderColor: cell.color || 'var(--color-edge)' }}>
+                    <span className="w-3.5 h-3.5 border border-abyss shrink-0" style={{ background: cell.color ?? '#5aa9ff' }} />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-display text-[11px] uppercase text-paper truncate">{cellTitle(idx)}</div>
+                      <div className="text-[10px] text-dim truncate">{cell.task ? `Ром: ${cell.task.title}` : 'без задания'}</div>
+                    </div>
+                    <GhostBtn
+                      small
+                      disabled={!canSell || reserved || underChallenge}
+                      title={
+                        reserved ? 'Ячейка уже участвует в сделке'
+                        : underChallenge ? 'На ячейке сейчас идёт задание'
+                        : !canSell ? 'Ход уже начался — торговать можно только до броска кубиков'
+                        : undefined
+                      }
+                      onClick={() => { setSellSel({ kind: 'cell', id: String(idx), name: cellTitle(idx) }); setSellTo(''); setSellMin(5); setSellTries(0); sfx.click(); }}
+                    >
+                      Продать
+                    </GhostBtn>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <p className="text-[10px] text-faint leading-tight">
+            Торговать могут только игроки, которые сейчас НЕ играют: играющий видит трансляцию, но купить/продать не может.
+          </p>
+          </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- осмотр ячейки на карте (для всех, включая зрителей) ---------- */
+
+/* ---------- текст задания: читаемо всегда (переносы длинных строк) + СПОЙЛЕР для длинного ----------
+   Длинный текст не растягивается одной строкой через экран: переносим слова/любые символы,
+   а если текст длинный — прячем под спойлер с кнопкой «показать целиком». */
+function TaskDesc({ text, label, max = 180 }: { text: string; label?: string; max?: number }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > max;
+  return (
+    <div className="min-w-0 text-[12px] text-dim leading-relaxed break-words [overflow-wrap:anywhere]">
+      {label && <div className="tick-label text-gold mb-1">{label}</div>}
+      {long && !open ? (
+        <>
+          <span>{text.slice(0, max)}…</span>
+          <button
+            onClick={() => { setOpen(true); sfx.click(); }}
+            className="block mt-1 font-pixel text-[8px] text-sky hover:text-paper underline cursor-pointer"
+          >▼ СПОЙЛЕР: показать задание целиком</button>
+        </>
+      ) : (
+        <>
+          <span>{text}</span>
+          {long && (
+            <button
+              onClick={() => { setOpen(false); sfx.click(); }}
+              className="block mt-1 font-pixel text-[8px] text-sky hover:text-paper underline cursor-pointer"
+            >▲ Свернуть задание</button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function CellInspectModal({ idx, onClose }: { idx: number; onClose: () => void }) {
+  const st = useApp();
+  const s = st.session;
+  const map = st.sessionMap;
+  const cell = map?.cells[idx];
+  const task = s && map ? cellTaskOf(s, map, idx) : null;
+  const taskImg = useBlobImage(task?.imageId);
+  const cellImg = useBlobImage(cell?.imageId);
+  if (!s || !map || !cell) return null;
+  const ownerId = s.captured?.[idx];
+  const owner = ownerId ? s.players.find((p) => p.id === ownerId) : null;
+  const revealed = (s.revealed ?? []).includes(idx) || !!ownerId;
+  const hidden = !!st.options.hideUnrevealed && !revealed;
+  const rom = task ? st.roms.find((r) => r.id === task.romId) : undefined;
+  const typeLabel = cell.type === 'task' ? 'Задание' : cell.type === 'rest' ? 'Передышка' : cell.type === 'bonus' ? 'Бонус (шанс)' : cell.type === 'trap' ? 'Ловушка' : cell.type === 'loot' ? 'ЯЩИК С ЛУТОМ' : 'Квиз';
+  const typeColor = cell.type === 'task' ? 'text-gold' : cell.type === 'rest' ? 'text-dim' : cell.type === 'bonus' ? 'text-teal' : cell.type === 'trap' ? 'text-coral' : cell.type === 'loot' ? 'text-[#ff8b3f]' : 'text-sky';
+  const joyMeta = task?.joy ? JOY_LIST.find((j) => j.id === task.joy) : null;
+  return (
+    <Modal title={`${cell.nonumber || cell.n === 0 ? 'Ячейка без номера' : `Ячейка №${cell.n}`}${cell.label ? ` · ${cell.label}` : ''}`} icon={Ic.target(16)} w="max-w-md" onClose={onClose}>
+      {hidden ? (
+        <p className="text-[12px] text-dim text-center py-6">
+          Ячейка ещё не открывалась в партии — содержимое скрыто опцией «скрывать непосещённые ячейки».
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] uppercase ${typeColor}`}>{typeLabel}</span>
+            {cell.color && <span className="w-4 h-4 border border-abyss" style={{ background: cell.color }} />}
+            {owner ? (
+              <span className="hud-chip pixel-corners px-3 py-1.5 text-[10.5px]" style={{ color: PLAYER_COLORS[owner.color] }}>
+                Хозяин: {owner.name}
+              </span>
+            ) : (
+              <span className="hud-chip pixel-corners px-3 py-1.5 text-[10.5px] text-dim">Хозяина нет</span>
+            )}
+          </div>
+          {(cellImg || taskImg) && (
+            <img src={(taskImg ?? cellImg)!} alt="" className="w-full border-[3px] border-edge object-cover max-h-44" />
+          )}
+          {cell.type === 'task' && task && (
+            <>
+              <div>
+                <div className="tick-label text-gold mb-1">Задание</div>
+                <div className="font-display uppercase text-[13px] text-paper break-words">{task.title}</div>
+                {task.desc && <div className="mt-1"><TaskDesc text={task.desc} /></div>}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[9px] text-faint">
+                  {rom ? consoleLabel(rom.ext) : 'РОМ'} · {rom?.name ?? task.romId}
+                </span>
+                {task.chaos && (
+                  <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[9px] text-magma" title={CHAOS_LIST.find((c) => c.kind === task.chaos)?.desc}>
+                    😈 {chaosLabel(task.chaos)}
+                  </span>
+                )}
+                {joyMeta && (
+                  <span className="hud-chip pixel-corners px-3 py-1.5 font-pixel text-[9px] text-teal" title={joyMeta.desc}>
+                    🎉 {joyMeta.name}
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+          {cell.type === 'task' && !task && (
+            <p className="text-[12px] text-dim">Задания на этой ячейке нет — передышка (пока игрок не создаст своё).</p>
+          )}
+          {cell.type === 'rest' && (
+            <p className="text-[12px] text-dim">Пустая клетка-передышка: здесь ничего не происходит — фишка просто отдыхает, ход переходит дальше.</p>
+          )}
+          {cell.type === 'bonus' && (
+            <p className="text-[12px] text-dim">Ячейка-шанс: выпадает случайная карточка из колоды бонусов ({map.bonusCards.length} шт., включая пакости).</p>
+          )}
+          {cell.type === 'trap' && (
+            <p className="text-[12px] text-dim">Ячейка-ловушка: выпадает случайная карточка из колоды ловушек ({map.trapCards.length} шт.).</p>
+          )}
+          {cell.type === 'quiz' && (
+            <p className="text-[12px] text-dim">Ячейка-квиз: прозвучит случайный вопрос из колоды ({(map.quizzes ?? []).length} шт.).</p>
+          )}
+          {cell.type === 'loot' && (
+            <p className="text-[12px] text-dim">Ячейка-ЯЩИК (режим RUBG): одноразовый. Проходом НЕ вскрывается — подойди, выбери на поясе отмычку 🔑 и взломай замок (мини-игра). «Открыть силой» (25%) — только когда отмычка сломалась; провал заклинивает ящик для тебя навсегда (он подписан «ЗАКЛИНИЛО»). Внутри: фляжки/аптечки/ящик медбрата лечат, пистолет/ПП/снайперка бьют, отмычки и карты воровства/стелса дают особые действия.</p>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/* ---------- мини-игра «ЗАМОК В РАЗРЕЗЕ» (взлом ящика отмычкой, RUBG) ----------
+   Замок сбоку: 5 подпружиненных бойков в камерах. Мышь влево-вправо — выбор бойка,
+   резкое движение мышьей ВВЕРХ — удар: боек подлетает тем выше, чем резче удар,
+   пружина возвращает его вниз (у каждого бойка СЛУЧАЙНАЯ пружина: плавная или резкая).
+   В верхней (зелёной) зоне — «ЗАФИКСИРОВАТЬ»: боек заклинен вверх. Промах — отмычка
+   СЛОМАНА, но окно взлома остаётся открытым: «другая отмычка» / «открыть силой» (25%, только
+   отсюда!) / «прекратить взлом». КАЖДАЯ попытка начинается заново: случайное число случайных
+   бойков уже поднято (фиксации между попытками НЕ переносятся) — спамить попытками бессмысленно,
+   ведь выход из взлома тоже СЧИТАЕТСЯ поломкой отмычки. */
+
+const HACK_PINS = 5;      // бойков в замке
+
+/* случайные бойки для НОВОЙ попытки: 0–4 уже подняты (чем больше — тем реже),
+   какие именно — случайно. Расклад у каждой попытки свой, никакого «памяти» */
+function randomPrePins(): boolean[] {
+  const r = Math.random();
+  const n = r < 0.28 ? 0 : r < 0.52 ? 1 : r < 0.72 ? 2 : r < 0.88 ? 3 : 4;
+  const order = [0, 1, 2, 3, 4];
+  for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+  const up = new Set(order.slice(0, n));
+  return Array.from({ length: HACK_PINS }, (_, i) => up.has(i));
+}
+const FIX_ZONE = 0.9;     // верхняя зона фиксации (h ≥ 0.9)
+const CH_X0 = 36;         // левый край первой камеры (viewBox 320)
+const CH_PITCH = 52;      // шаг камер (камера 40px + зазор 12px)
+const CH_TOP = 34;        // верх камеры
+const CH_BOT = 170;       // низ камеры (позиция бойка в покое)
+const PIN_H = 26;         // высота бойка, px
+
+interface HackPin { h: number; v: number; k: number; fixed: boolean; }
+
+function LockpickGame({ attempt, fixedInit, onFix, onBreak }: {
+  attempt: number;                     // смена попытки — пружины и расклад рерандомизируются
+  fixedInit: boolean[];                // случайные уже поднятые бойки ЭТОЙ попытки (0–4)
+  onFix: (fixed: boolean[]) => void;   // боек зафиксирован (клик по кнопке в верхней зоне)
+  onBreak: () => void;                 // фиксация мимо верхней точки — отмычка сломана
+}) {
+  const pinsRef = useRef<HackPin[]>([]);
+  const [sel, setSel] = useState(0);
+  const [, setFrame] = useState(0);
+  const lastYRef = useRef<number | null>(null);
+  const bumpAtRef = useRef(0);
+  const brokenRef = useRef(false);
+  const onFixRef = useRef(onFix);
+  onFixRef.current = onFix;
+  const onBreakRef = useRef(onBreak);
+  onBreakRef.current = onBreak;
+
+  /* инициализация попытки: случайные «уже поднятые» бойки стоят наверху, остальные —
+     случайно чуть приподняты, у каждого случайная пружина (k: ~0.8 — плавная, ~2.8 — резкая) */
+  useEffect(() => {
+    brokenRef.current = false;
+    pinsRef.current = Array.from({ length: HACK_PINS }, (_, i) => ({
+      h: fixedInit[i] ? 1 : Math.random() * 0.16,
+      v: 0,
+      k: 0.8 + Math.random() * 2.0,
+      fixed: !!fixedInit[i],
+    }));
+    setFrame((f) => f + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attempt]);
+
+  /* физика пружин (rAF ~60fps): пружина тянет вниз (жёстче k — резче возврат), трение гасит */
+  useEffect(() => {
+    let raf = 0;
+    let last = performance.now();
+    const loop = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      for (const p of pinsRef.current) {
+        if (p.fixed) continue;
+        p.v -= 3.4 * p.k * dt;
+        p.v *= Math.max(0, 1 - 2.4 * dt);
+        p.h += p.v * dt;
+        if (p.h <= 0) { p.h = 0; p.v = 0; }
+        if (p.h > 1.12) { p.h = 1.12; p.v = Math.min(p.v, 0); }
+      }
+      setFrame((f) => (f + 1) % 1000000);
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  const tryFix = () => {
+    if (brokenRef.current) return;
+    const pins = pinsRef.current;
+    const p = pins[sel];
+    if (!p || p.fixed) return;
+    if (p.h >= FIX_ZONE) {
+      p.fixed = true; p.h = 1; p.v = 0;
+      onFixRef.current(pins.map((q) => q.fixed));
+    } else {
+      brokenRef.current = true;
+      onBreakRef.current();
+    }
+  };
+
+  /* мышь/тач: X — выбор бойка, движение ВВЕРХ — удар (сила = скорость мыши) */
+  const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    const svg = e.currentTarget;
+    const r = svg.getBoundingClientRect();
+    const px = ((e.clientX - r.left) / r.width) * 320;
+    const py = ((e.clientY - r.top) / r.height) * 240;
+    const idx = Math.max(0, Math.min(HACK_PINS - 1, Math.floor((px - CH_X0) / CH_PITCH)));
+    if (idx !== sel) setSel(idx);
+    const lastY = lastYRef.current;
+    lastYRef.current = py;
+    if (lastY === null) return;
+    const dyUp = lastY - py; // >0 — мышь идёт вверх
+    if (dyUp <= 0 || brokenRef.current) return;
+    const p = pinsRef.current[idx];
+    if (!p || p.fixed) return;
+    p.v += dyUp * 0.058; // сила удара = скорость мыши
+    const now = performance.now();
+    if (dyUp > 14 && now - bumpAtRef.current > 80) { bumpAtRef.current = now; sfx.pinBump(); }
+  };
+
+  const pins = pinsRef.current;
+  const fixedN = pins.filter((p) => p.fixed).length;
+  const xc = (i: number) => CH_X0 + i * CH_PITCH + 20; // центр камеры i
+  const pinTopY = (h: number) => CH_BOT - PIN_H - h * (CH_BOT - CH_TOP - PIN_H);
+  const pinBotY = (h: number) => CH_BOT - h * (CH_BOT - CH_TOP - PIN_H);
+
+  return (
+    <div className="mt-2 select-none touch-none">
+      <svg
+        viewBox="0 0 320 240"
+        className="w-full border-[3px] border-edge bg-[#0a0e20]"
+        style={{ touchAction: 'none', cursor: 'ns-resize' }}
+        onPointerMove={onPointerMove}
+        onPointerLeave={() => { lastYRef.current = null; }}
+      >
+        {/* корпус замка */}
+        <rect x="14" y="22" width="292" height="160" fill="#1a2038" stroke="#313c72" strokeWidth="3" />
+        {/* ключевой проём снизу */}
+        <circle cx="160" cy="212" r="9" fill="#0a0e20" stroke="#313c72" strokeWidth="2" />
+        <rect x="156" y="212" width="8" height="18" fill="#0a0e20" stroke="#313c72" strokeWidth="1.5" />
+        {pins.map((p, i) => {
+          const x0 = CH_X0 + i * CH_PITCH;
+          const top = pinTopY(p.h);
+          const bot = pinBotY(p.h);
+          const isSel = i === sel;
+          /* пружина: зигзаг от верха камеры до бойка, сжимается при подъёме */
+          const coils = 5;
+          const seg = Math.max(4, (top - (CH_TOP + 2)) / coils);
+          let path = `M ${xc(i)} ${CH_TOP + 2}`;
+          for (let c = 0; c < coils; c++) {
+            const dir = c % 2 === 0 ? 9 : -9;
+            path += ` L ${xc(i) + dir} ${CH_TOP + 2 + seg * (c + 0.5)} L ${xc(i)} ${CH_TOP + 2 + seg * (c + 1)}`;
+          }
+          return (
+            <g key={i}>
+              {/* камера */}
+              <rect x={x0 + 4} y={CH_TOP} width={CH_PITCH - 12} height={CH_BOT - CH_TOP} fill={isSel ? '#111a3c' : '#0d1226'} stroke={isSel ? '#ffcf3f' : '#313c72'} strokeWidth={isSel ? 2.5 : 1.5} />
+              {/* зелёная зона фиксации */}
+              <rect x={x0 + 4} y={CH_TOP} width={CH_PITCH - 12} height={8} fill={p.h >= FIX_ZONE || p.fixed ? 'rgba(53,212,111,0.65)' : 'rgba(53,212,111,0.18)'} />
+              {/* пружина */}
+              {!p.fixed && <path d={path} fill="none" stroke="#7c86b8" strokeWidth="2" strokeLinejoin="round" />}
+              {/* боек */}
+              <rect x={x0 + 6} y={top} width={CH_PITCH - 16} height={PIN_H} fill={p.fixed ? '#35d46f' : isSel ? '#ffcf3f' : '#8f97c9'} stroke={p.fixed ? '#1f7a43' : '#0a0e20'} strokeWidth="1.5" />
+              {!p.fixed && <line x1={x0 + 6} y1={bot - 6} x2={x0 + CH_PITCH - 10} y2={bot - 6} stroke="#0a0e20" strokeWidth="1.5" />}
+              {p.fixed && <text x={xc(i)} y={top + 18} textAnchor="middle" fontSize="12" fill="#0a0e20">✓</text>}
+              {/* номер бойка */}
+              <text x={xc(i)} y={CH_BOT + 14} textAnchor="middle" fontSize="8" fill={isSel ? '#ffcf3f' : '#7c86b8'}>{i + 1}</text>
+            </g>
+          );
+        })}
+        {/* отмычка: стержень + наконечник под выбранным бойком */}
+        <g>
+          <rect x="14" y="196" width={Math.max(10, xc(sel) - 16)} height="6" fill="#c9a24b" stroke="#7a5c1e" strokeWidth="1.5" />
+          <path d={`M ${xc(sel) - 5} 202 L ${xc(sel)} 186 L ${xc(sel) + 5} 202 Z`} fill="#e0b95c" stroke="#7a5c1e" strokeWidth="1.5" />
+        </g>
+      </svg>
+      <div className="flex items-center justify-between mt-1.5">
+        <span className="font-pixel text-[9px] text-faint">Зафиксировано: <span className={fixedN >= HACK_PINS ? 'text-teal' : 'text-paper'}>{fixedN}/{HACK_PINS}</span></span>
+        <span className="font-pixel text-[8px] text-faint">боек {sel + 1} выбран</span>
+      </div>
+      <button
+        onClick={tryFix}
+        disabled={brokenRef.current || !!pins[sel]?.fixed}
+        className={`mt-1.5 w-full py-2.5 border-2 font-pixel text-[10px] uppercase select-none touch-none ${pins[sel]?.h >= FIX_ZONE && !pins[sel]?.fixed ? 'border-teal bg-teal/20 text-teal cursor-pointer pulse-ring' : brokenRef.current ? 'border-coral text-coral cursor-not-allowed' : 'border-gold text-gold cursor-pointer hover:bg-gold/10'}`}
+      >
+        📌 ЗАФИКСИРОВАТЬ боек {sel + 1}
+      </button>
+    </div>
+  );
+}
