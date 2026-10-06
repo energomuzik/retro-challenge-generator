@@ -4,12 +4,17 @@ import { GhostBtn, Ic, PxBtn } from '../ui';
 import { sfx } from '../sound';
 import { TRAINING, type TSection, type TSlide, type TAnn } from '../trainingData';
 
-/* v0.78 ОБУЧЕНИЕ — слайды-снимки с автопереключением и СГЕНЕРИРОВАННОЙ озвучкой.
-   Озвучка — mp3-файлы (нейроголос «Дмитрий», edge-tts), лежат в
-   src/assets/training/voice/<раздел>-<номер>.mp3 и раздаются Vite как ассеты.
-   Слайд переключается по окончании озвучки (ended); без mp3 — по таймеру.
-   Никакого speechSynthesis и никакой музыки. Указатели (anns) рисуются
-   поверх снимка: стрелки и рамки показывают, куда нажимать. */
+/* v0.80 ОБУЧЕНИЕ — два курса (игрок / создатель карт) + курсоры + громкость.
+   Слайды-снимки с автопереключением и СГЕНЕРИРОВАННОЙ озвучкой: mp3-файлы
+   (нейроголос «Дмитрий», edge-tts) лежат в src/assets/training/voice/
+   <раздел>-<номер>.mp3 и раздаются Vite как ассеты. Слайд переключается по
+   окончании озвучки (ended); без mp3 — по таймеру. Никакого speechSynthesis
+   и никакой музыки. Указатели (anns) поверх снимка: стрелки и КУРСОРЫ
+   (v0.80: рамки-подсветки заменены стрелкой мыши с подписью-чипом).
+   v0.80: «Пройти всё подряд» разделён на два КУРСА — «Курс игрока» и
+   «Курс создателя карт»: у каждого — свои разделы подряд и СКВОЗНАЯ
+   нумерация слайдов (1..N по всему курсу). Разделы по-прежнему доступны
+   по одному. Громкость озвучки — ползунок (запоминается в localStorage). */
 
 /* URL снимков: Vite собирает всё из src/assets/training (webp), ключ — имя файла */
 const IMGS = import.meta.glob('../assets/training/*.webp', { eager: true, import: 'default', query: '?url' }) as Record<string, string>;
@@ -28,57 +33,102 @@ const voiceOf = (secId: string, idx: number): string | null => {
 interface PlayItem { slide: TSlide; sec: TSection; si: number }
 interface PlayState { title: string; color: string; items: PlayItem[]; idx: number }
 
+/* ---------- v0.80: КУРСЫ — обучение разделено на игрока и создателя карт ----------
+   Курс = выбранные разделы ПОДРЯД; слайды нумеруются сквозно по всему курсу.
+   Порядок подобран по маршруту новичка: сначала как играть, потом как делать свои карты. */
+interface TCourse { id: string; title: string; desc: string; color: string; secs: string[] }
+const COURSES: TCourse[] = [
+  {
+    id: 'player', title: 'Курс игрока', color: '#5aa9ff',
+    desc: 'режимы · онлайн · сейвы · эмулятор · CodeSearch',
+    secs: ['start', 'online', 'mode-retropolia', 'mode-journey', 'mode-quest', 'mode-rubg', 'rubg-deep', 'mode-skill', 'saves', 'emulator', 'codesearch', 'tricks'],
+  },
+  {
+    id: 'creator', title: 'Курс создателя карт', color: '#ff9d5c',
+    desc: 'мастер челленджа · карты · фишки · NPC · задания',
+    secs: ['wizard', 'map-basics', 'map-tiles', 'paint', 'map-characters', 'dialogs', 'trade', 'map-tasks'],
+  },
+];
+const SEC_BY_ID = new Map(TRAINING.map((s) => [s.id, s]));
+const courseSlides = (c: TCourse): TSlide[] => c.secs.flatMap((id) => SEC_BY_ID.get(id)?.slides ?? []);
+
 /* длительность слайда без озвучки: читаемая скорость ~12 знаков/сек */
 const slideDur = (s: TSlide): number => Math.max(7000, Math.min(17000, 4500 + (s.narr ?? s.x).length * 62));
 
-/* ---------- слой указателей (стрелки и рамки поверх снимка) ---------- */
+/* ---------- слой указателей: стрелки (SVG) + курсоры (HTML, v0.80) ----------
+   v0.80: РАМКИ-ПОДСВЕТКИ (k:'box') заменены КУРСОРОМ — классическая стрелка
+   мыши указывает остриём в угол элемента, подпись переехала в чип рядом.
+   Курсоры рисуются отдельным HTML-слоем, чтобы не растягиваться вместе со
+   снимком (SVG с preserveAspectRatio=none искажал бы пиктограмму). */
+function CursorGlyph({ color }: { color: string }) {
+  return (
+    <svg width="22" height="26" viewBox="0 0 22 26" className="shrink-0 drop-shadow-[0_2px_3px_rgba(0,0,0,0.9)]">
+      {/* классическая стрелка мыши: остриё — левый верхний угол */}
+      <path d="M2 1 L2 21 L7 16.5 L10.5 24 L14 22.5 L10.5 15 L17 15 Z" fill="#ffffff" stroke="#060a16" strokeWidth="1.6" strokeLinejoin="round" />
+      <path d="M2 1 L2 21 L7 16.5 L10.5 24 L14 22.5 L10.5 15 L17 15 Z" fill={color} fillOpacity="0.3" />
+    </svg>
+  );
+}
+
 function Anns({ anns }: { anns?: TAnn[] }) {
   if (!anns || !anns.length) return null;
+  const gold = '#ffcf3f';
+  const teal = '#3fe0d0';
+  const arrows = anns.map((a, i) => ({ a, i })).filter(({ a }) => a.k !== 'box');
+  const cursors = anns.map((a, i) => ({ a, i })).filter(({ a }) => a.k === 'box');
   return (
-    <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
-      {anns.map((a, i) => {
-        const gold = '#ffcf3f';
-        const teal = '#3fe0d0';
+    <>
+      {arrows.length > 0 && (
+        <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
+          {arrows.map(({ a, i }) => {
+            const c = i % 2 === 0 ? gold : teal;
+            /* стрелка: приходит с направления d и указывает остриём в точку (x,y) */
+            const L = 6;
+            const tip = { x: a.x, y: a.y };
+            const tail = a.d === 'left' ? { x: tip.x + L, y: tip.y }
+              : a.d === 'right' ? { x: tip.x - L, y: tip.y }
+              : a.d === 'up' ? { x: tip.x, y: tip.y + L }
+              : { x: tip.x, y: tip.y - L };
+            const hx = a.d === 'left' ? 2.2 : a.d === 'right' ? -2.2 : 0;
+            const hy = a.d === 'up' ? 2.2 : a.d === 'down' ? -2.2 : 0;
+            return (
+              <g key={i}>
+                <line x1={tail.x} y1={tail.y} x2={tip.x} y2={tip.y} stroke={c} strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
+                <polygon
+                  points={`${tip.x},${tip.y} ${tip.x + hx - (a.d === 'up' || a.d === 'down' ? 1.4 : 0)},${tip.y + hy - (a.d === 'left' || a.d === 'right' ? 1.4 : 0)} ${tip.x + hx + (a.d === 'up' || a.d === 'down' ? 1.4 : 0)},${tip.y + hy + (a.d === 'left' || a.d === 'right' ? 1.4 : 0)}`}
+                  fill={c}
+                />
+                {a.label && (
+                  <text x={(tip.x + tail.x) / 2} y={(tip.y + tail.y) / 2 - 1.4} fontSize="2.6" fill={c} textAnchor="middle" style={{ paintOrder: 'stroke' }} stroke="#060a16" strokeWidth="0.7">
+                    {a.label}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      )}
+      {cursors.map(({ a, i }) => {
         const c = i % 2 === 0 ? gold : teal;
-        if (a.k === 'box') {
-          const w = a.w ?? 12, h = a.h ?? 8;
-          return (
-            <g key={i}>
-              <rect x={a.x} y={a.y} width={w} height={h} fill="none" stroke={c} strokeWidth="0.5" vectorEffect="non-scaling-stroke" className="drop-shadow" />
-              <rect x={a.x} y={a.y} width={w} height={h} fill={c} opacity="0.12" />
-              {a.label && (
-                <text x={a.x + 0.6} y={a.y - 1} fontSize="2.6" fill={c} style={{ paintOrder: 'stroke' }} stroke="#060a16" strokeWidth="0.7">
-                  {a.label}
-                </text>
-              )}
-            </g>
-          );
-        }
-        /* стрелка: приходит с направления d и указывает остриём в точку (x,y) */
-        const L = 6;
-        const tip = { x: a.x, y: a.y };
-        const tail = a.d === 'left' ? { x: tip.x + L, y: tip.y }
-          : a.d === 'right' ? { x: tip.x - L, y: tip.y }
-          : a.d === 'up' ? { x: tip.x, y: tip.y + L }
-          : { x: tip.x, y: tip.y - L };
-        const hx = a.d === 'left' ? 2.2 : a.d === 'right' ? -2.2 : 0;
-        const hy = a.d === 'up' ? 2.2 : a.d === 'down' ? -2.2 : 0;
         return (
-          <g key={i}>
-            <line x1={tail.x} y1={tail.y} x2={tip.x} y2={tip.y} stroke={c} strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
-            <polygon
-              points={`${tip.x},${tip.y} ${tip.x + hx - (a.d === 'up' || a.d === 'down' ? 1.4 : 0)},${tip.y + hy - (a.d === 'left' || a.d === 'right' ? 1.4 : 0)} ${tip.x + hx + (a.d === 'up' || a.d === 'down' ? 1.4 : 0)},${tip.y + hy + (a.d === 'left' || a.d === 'right' ? 1.4 : 0)}`}
-              fill={c}
-            />
-            {a.label && (
-              <text x={(tip.x + tail.x) / 2} y={(tip.y + tail.y) / 2 - 1.4} fontSize="2.6" fill={c} textAnchor="middle" style={{ paintOrder: 'stroke' }} stroke="#060a16" strokeWidth="0.7">
-                {a.label}
-              </text>
-            )}
-          </g>
+          <div key={`cur${i}`} className="absolute pointer-events-none z-10" style={{ left: `${a.x}%`, top: `${a.y}%` }}>
+            <div className="relative">
+              <CursorGlyph color={c} />
+              {/* подпись — над курсором (не накрывает кнопку, на которую указываем);
+                  у самого верха кадра — под курсором */}
+              {a.label && (
+                <span
+                  className={`absolute left-[26px] whitespace-nowrap px-1.5 py-0.5 font-pixel text-[9px] leading-tight border-2 ${a.y >= 12 ? 'bottom-0' : 'top-[26px]'}`}
+                  style={{ color: '#060a16', background: c, borderColor: '#060a16' }}
+                >
+                  {a.label}
+                </span>
+              )}
+            </div>
+          </div>
         );
       })}
-    </svg>
+    </>
   );
 }
 
@@ -88,6 +138,15 @@ export default function TrainingScreen() {
   const [play, setPlay] = useState<PlayState | null>(null);
   const [paused, setPaused] = useState(false);
   const [muted, setMuted] = useState(false);
+  /* v0.80: громкость озвучки — ползунок в шапке окна слайдов, запоминается */
+  const [vol, setVol] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem('rcgTrainingVol'); // ВАЖНО: null ≠ 0 — без ключа дефолт 100%
+      if (raw !== null) { const v = Number(raw); if (Number.isFinite(v) && v >= 0 && v <= 1) return v; }
+    } catch { /* noop */ }
+    return 1;
+  });
+  const volRef = useRef(vol); // narrate читает громкость через ref — без рестарта слайда при движении ползунка
   const [fade, setFade] = useState(false); // плавная смена слайда
   const [voiceOk, setVoiceOk] = useState(true); // есть ли mp3 у текущего слайда
   const epoch = useRef(0); // инвалидация устаревших колбэков озвучки/таймера
@@ -98,6 +157,15 @@ export default function TrainingScreen() {
     try { audioRef.current?.pause(); } catch { /* noop */ }
     audioRef.current = null;
     if (timer.current !== null) { window.clearTimeout(timer.current); timer.current = null; }
+  }, []);
+
+  /* v0.80: изменить громкость — живо и на текущем, и на будущих слайдах */
+  const changeVol = useCallback((v: number) => {
+    const nv = Math.max(0, Math.min(1, v));
+    setVol(nv);
+    volRef.current = nv;
+    try { localStorage.setItem('rcgTrainingVol', String(nv)); } catch { /* noop */ }
+    try { if (audioRef.current) audioRef.current.volume = nv; } catch { /* noop */ }
   }, []);
 
   /* озвучка слайда + планирование следующего. next() срабатывает РОВНО один раз
@@ -129,6 +197,7 @@ export default function TrainingScreen() {
     try {
       const a = new Audio(src);
       audioRef.current = a;
+      a.volume = volRef.current; // v0.80: громкость озвучки
       a.onended = next;
       a.onerror = next;
       a.play().catch(() => next());
@@ -161,18 +230,17 @@ export default function TrainingScreen() {
     });
   }, []);
 
-  const start = useCallback((sec: TSection | 'all') => {
+  /* v0.80: старт — курс (несколько разделов подряд, сквозная нумерация) или один раздел */
+  const start = useCallback((what: TSection | TCourse) => {
     sfx.coin();
     stopAudio();
     setPaused(false);
     setFade(false);
     epoch.current += 1;
-    const items: PlayItem[] = sec === 'all'
-      ? TRAINING.flatMap((s) => s.slides.map((sl, i) => ({ slide: sl, sec: s, si: i })))
-      : sec.slides.map((sl, i) => ({ slide: sl, sec, si: i }));
-    const title = sec === 'all' ? 'Пройти всё подряд' : sec.title;
-    const color = sec === 'all' ? '#ffcf3f' : sec.color;
-    setPlay({ title, color, items, idx: 0 });
+    const items: PlayItem[] = 'secs' in what
+      ? what.secs.flatMap((id) => { const s = SEC_BY_ID.get(id); return s ? s.slides.map((sl, i) => ({ slide: sl, sec: s, si: i })) : []; })
+      : what.slides.map((sl, i) => ({ slide: sl, sec: what, si: i }));
+    setPlay({ title: what.title, color: what.color, items, idx: 0 });
   }, [stopAudio]);
 
   const close = useCallback(() => {
@@ -221,7 +289,6 @@ export default function TrainingScreen() {
   const curImg = cur ? imgOf(cur.slide.img) : null;
   const pct = play ? Math.round(((play.idx + 1) / play.items.length) * 100) : 0;
   const totalSlides = useMemo(() => TRAINING.reduce((n, s) => n + s.slides.length, 0), []);
-
   const voiceNote = !voiceOk ? 'Этот слайд без mp3 — таймер' : 'Озвучка: нейроголос Дмитрий (mp3)';
 
   return (
@@ -234,15 +301,32 @@ export default function TrainingScreen() {
           <h1 className="font-pixel text-gold title-glow text-[16px] sm:text-[20px]">ОБУЧЕНИЕ</h1>
         </div>
         <p className="mt-2 text-[11px] text-dim font-display uppercase tracking-wider">
-          слайды по каждому режиму и редактору — с озвучкой нейроголосом
+          слайды по каждому режиму и редактору — с озвучкой нейроголосом · всего {totalSlides}
         </p>
 
-        {/* пройти всё подряд */}
-        <div className="mt-4">
-          <PxBtn big color="gold" className="w-full" onClick={() => start('all')}>
-            {Ic.play(18)} ПРОЙТИ ВСЁ ПОДРЯД · {totalSlides} слайдов
-          </PxBtn>
+        {/* v0.80: два курса вместо «всё подряд» — слайды каждого курса идут
+            подряд со сквозной нумерацией */}
+        <div className="mt-4 grid sm:grid-cols-2 gap-2.5">
+          {COURSES.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => start(c)}
+              onMouseEnter={() => sfx.hover()}
+              className="menu-row w-full text-left flex items-center gap-4 px-5 py-3.5 border-2 border-edge bg-[rgba(19,26,51,0.55)] transition-all hover:bg-panel2"
+              style={{ '--rowc': c.color } as React.CSSProperties}
+            >
+              <span className="shrink-0 font-pixel text-[15px]" style={{ color: c.color }}>{courseSlides(c).length}</span>
+              <span className="flex-1 min-w-0">
+                <span className="block font-display uppercase tracking-wide text-[14px] text-paper">{c.title}</span>
+                <span className="block text-[10.5px] text-faint mt-0.5">{c.desc}</span>
+              </span>
+              <span className="font-pixel text-[9px]" style={{ color: c.color }}>▶</span>
+            </button>
+          ))}
         </div>
+        <p className="mt-3 mb-0.5 text-[10px] text-faint font-display uppercase tracking-wider">
+          или один раздел по темам:
+        </p>
 
         {/* разделы — скроллящийся список кнопок */}
         <div className="mt-4 flex-1 min-h-0 overflow-y-auto pb-4 pr-1">
@@ -282,6 +366,24 @@ export default function TrainingScreen() {
               className={`px-2 py-1 border-2 font-pixel text-[10px] ${muted ? 'text-faint border-edge' : 'text-gold border-gold'}`}>
               {muted ? '🔇' : '🔊'}
             </button>
+            {/* v0.80: ползунок громкости озвучки (запоминается) */}
+            <span title={`Громкость озвучки: ${Math.round(vol * 100)}%`} className="hidden sm:flex items-center gap-1 px-1">
+              <span className="font-pixel text-[9px] text-faint">🔉</span>
+              <input
+                type="range" min={0} max={1} step={0.05} value={vol}
+                onChange={(e) => changeVol(Number(e.target.value))}
+                className="w-16 lg:w-24 accent-[#ffcf3f] cursor-pointer"
+                aria-label="Громкость озвучки"
+              />
+              <span className="font-pixel text-[8px] text-faint w-7 text-right">{Math.round(vol * 100)}%</span>
+            </span>
+            <input
+              type="range" min={0} max={1} step={0.05} value={vol}
+              onChange={(e) => changeVol(Number(e.target.value))}
+              title={`Громкость озвучки: ${Math.round(vol * 100)}%`}
+              className="sm:hidden w-14 accent-[#ffcf3f] cursor-pointer"
+              aria-label="Громкость озвучки"
+            />
             <button title="Закрыть (Esc)" onClick={close} className="px-2 py-1 border-2 border-edge text-dim font-pixel text-[10px] hover:text-paper hover:border-edge2">✕</button>
           </div>
 
@@ -298,7 +400,13 @@ export default function TrainingScreen() {
                 {curImg && <Anns anns={cur.slide.anns} />}
               </div>
               <div className="pixel-panel pixel-corners px-5 py-4">
-                <div className="font-display uppercase tracking-wide text-[14px] mb-1.5" style={{ color: play.color }}>{cur.slide.t}</div>
+                <div className="flex items-baseline gap-2 flex-wrap mb-1.5">
+                  <div className="font-display uppercase tracking-wide text-[14px]" style={{ color: play.color }}>{cur.slide.t}</div>
+                  {/* v0.80: где я нахожусь в курсе — текущий раздел; нумерация сквозная (шапка справа) */}
+                  {play.items.length > (cur.sec.slides.length) && (
+                    <span className="font-pixel text-[8px] text-faint">раздел: {cur.sec.title}</span>
+                  )}
+                </div>
                 <p className="text-[12.5px] leading-relaxed text-paper/90">{cur.slide.x}</p>
               </div>
             </div>
