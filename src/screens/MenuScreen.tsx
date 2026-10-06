@@ -22,18 +22,40 @@ export default function MenuScreen() {
   const { setScreen } = useApp();
   const [sel, setSel] = useState(0);
 
+  /* v0.81: сетка меню с «широкими» строками: «Обучение» — первой и «Опции» — последней
+     НА ВСЮ ШИРИНУ (как кнопка «Опции» просил заказчик) — между ними пары по две колонки,
+     расположение кнопок остаётся ровным. rows[] описывает строки сетки для клавиатуры. */
+  const rows: number[][] = MENU.length === 8 ? [[0], [1, 2], [3, 4], [5, 6], [7]] : MENU.map((_, i) => [i]);
+  const wide = (i: number) => i === 0 || i === MENU.length - 1;
+
+  const rowOf = (idx: number) => rows.findIndex((r) => r.includes(idx));
+  const gridNav = (idx: number, dr: -1 | 1): number => {
+    const r = rowOf(idx);
+    if (r < 0) return idx;
+    const nr = Math.max(0, Math.min(rows.length - 1, r + dr));
+    const col = rows[r].indexOf(idx);
+    return rows[nr][Math.min(col, rows[nr].length - 1)];
+  };
+  const latNav = (idx: number, d: -1 | 1): number => {
+    const r = rowOf(idx);
+    if (r < 0 || rows[r].length < 2) return idx;
+    const col = rows[r].indexOf(idx);
+    return rows[r][(col + d + rows[r].length) % rows[r].length];
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // v0.61: пункты лежат СЕТКОЙ в две колонки — стрелки ходят по сетке
-      // (вверх/вниз — на строку, влево/вправо — на соседний пункт), Enter открывает
-      if (e.key === 'ArrowDown') { sfx.hover(); setSel((s) => (s + 2) % MENU.length); }
-      else if (e.key === 'ArrowUp') { sfx.hover(); setSel((s) => (s - 2 + MENU.length) % MENU.length); }
-      else if (e.key === 'ArrowRight') { sfx.hover(); setSel((s) => (s + 1) % MENU.length); }
-      else if (e.key === 'ArrowLeft') { sfx.hover(); setSel((s) => (s - 1 + MENU.length) % MENU.length); }
+      // v0.61: пункты лежат СЕТКОЙ — стрелки ходят по строкам сетки (учитывая
+      // широкие строки «Обучение»/«Опции»), Enter открывает
+      if (e.key === 'ArrowDown') { sfx.hover(); setSel((s) => gridNav(s, 1)); }
+      else if (e.key === 'ArrowUp') { sfx.hover(); setSel((s) => gridNav(s, -1)); }
+      else if (e.key === 'ArrowRight') { sfx.hover(); setSel((s) => latNav(s, 1)); }
+      else if (e.key === 'ArrowLeft') { sfx.hover(); setSel((s) => latNav(s, -1)); }
       else if (e.key === 'Enter') { sfx.coin(); setScreen(MENU[sel].screen); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sel, setScreen]);
 
   return (
@@ -62,7 +84,7 @@ export default function MenuScreen() {
                 onClick={() => { sfx.coin(); setScreen(m.screen); }}
                 onMouseEnter={() => { if (sel !== i) { sfx.hover(); setSel(i); } }}
                 className={`menu-row w-full text-left flex items-center gap-4 px-5 py-3 border-2 transition-all ${
-                  i === MENU.length - 1 ? 'sm:col-span-2' : ''
+                  wide(i) ? 'sm:col-span-2' : ''
                 } ${sel === i ? 'border-edge2 bg-panel2' : 'border-transparent bg-[rgba(19,26,51,0.35)]'}`}
                 style={{ '--rowc': m.color } as React.CSSProperties}
               >

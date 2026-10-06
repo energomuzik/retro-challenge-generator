@@ -2,21 +2,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store';
 import { GhostBtn, Ic, PxBtn } from '../ui';
 import { sfx } from '../sound';
-import { TRAINING, type TSection, type TSlide, type TAnn } from '../trainingData';
+import { TRAINING, type TSection, type TSlide } from '../trainingData';
 
-/* v0.80 ОБУЧЕНИЕ — два курса (игрок / создатель карт) + курсоры + громкость.
-   Слайды-снимки с автопереключением и СГЕНЕРИРОВАННОЙ озвучкой: mp3-файлы
-   (нейроголос «Дмитрий», edge-tts) лежат в src/assets/training/voice/
-   <раздел>-<номер>.mp3 и раздаются Vite как ассеты. Слайд переключается по
-   окончании озвучки (ended); без mp3 — по таймеру. Никакого speechSynthesis
-   и никакой музыки. Указатели (anns) поверх снимка: стрелки и КУРСОРЫ
-   (v0.80: рамки-подсветки заменены стрелкой мыши с подписью-чипом).
-   v0.80: «Пройти всё подряд» разделён на два КУРСА — «Курс игрока» и
-   «Курс создателя карт»: у каждого — свои разделы подряд и СКВОЗНАЯ
-   нумерация слайдов (1..N по всему курсу). Разделы по-прежнему доступны
-   по одному. Громкость озвучки — ползунок (запоминается в localStorage). */
+/* v0.81 ОБУЧЕНИЕ 2.0 — КАДРЫ-ШАГИ вместо одного снимка.
+   Каждый слайд — ПОСЛЕДОВАТЕЛЬНОСТЬ кадров (до 20 снимков полного экрана
+   1280×720), снятых с живого интерфейса: видно, как вёл курсор мышки и
+   ПОСЛЕ какого клика что-то произошло. Курсор вшит в сами кадры при съёмке,
+   никаких стрелок/рамок/аннотаций поверх (v0.80 и старше — слой указателей
+   убран целиком). Кадры сменяются автоматически, РАВНОМЕРНО растянутые на
+   длительность озвучки слайда: голос рассказывает тот же шаг, что на экране.
+   Клик по снимку — следующий кадр вручную. Без mp3 — шаг 2.6 с на кадр.
+   v0.80: два КУРСА (игрок / создатель карт), сквозная нумерация слайдов,
+   ползунок громкости (localStorage rcgTrainingVol) — сохранены. */
 
-/* URL снимков: Vite собирает всё из src/assets/training (webp), ключ — имя файла */
+/* URL кадров: Vite собирает всё из src/assets/training (webp), ключ — имя файла */
 const IMGS = import.meta.glob('../assets/training/*.webp', { eager: true, import: 'default', query: '?url' }) as Record<string, string>;
 const imgOf = (key: string): string | null => {
   const url = IMGS[`../assets/training/${key}.webp`];
@@ -35,102 +34,27 @@ interface PlayState { title: string; color: string; items: PlayItem[]; idx: numb
 
 /* ---------- v0.80: КУРСЫ — обучение разделено на игрока и создателя карт ----------
    Курс = выбранные разделы ПОДРЯД; слайды нумеруются сквозно по всему курсу.
-   Порядок подобран по маршруту новичка: сначала как играть, потом как делать свои карты. */
+   v0.81: порядок разделов пересобран по новой программе заказчика — сначала
+   знакомство и режимы игры (7 разделов), потом редакторы и карты-примеры (12). */
 interface TCourse { id: string; title: string; desc: string; color: string; secs: string[] }
 const COURSES: TCourse[] = [
   {
     id: 'player', title: 'Курс игрока', color: '#5aa9ff',
-    desc: 'режимы · онлайн · сейвы · эмулятор · CodeSearch',
-    secs: ['start', 'online', 'mode-retropolia', 'mode-journey', 'mode-quest', 'mode-rubg', 'rubg-deep', 'mode-skill', 'saves', 'emulator', 'codesearch', 'tricks'],
+    desc: 'знакомство · старт · режимы · соло — как играть',
+    secs: ['intro', 'play', 'retropolia', 'skill', 'quest', 'rubg', 'solo'],
   },
   {
     id: 'creator', title: 'Курс создателя карт', color: '#ff9d5c',
-    desc: 'мастер челленджа · карты · фишки · NPC · задания',
-    secs: ['wizard', 'map-basics', 'map-tiles', 'paint', 'map-characters', 'dialogs', 'trade', 'map-tasks'],
+    desc: 'редакторы · задания · квизы · карты-примеры',
+    secs: ['editors', 'maped', 'tasks', 'quiz', 'tokens', 'dialogs', 'mk-retropolia', 'mk-journey', 'mk-quest', 'mk-rubg', 'mk-skill', 'extra'],
   },
 ];
 const SEC_BY_ID = new Map(TRAINING.map((s) => [s.id, s]));
 const courseSlides = (c: TCourse): TSlide[] => c.secs.flatMap((id) => SEC_BY_ID.get(id)?.slides ?? []);
 
-/* длительность слайда без озвучки: читаемая скорость ~12 знаков/сек */
-const slideDur = (s: TSlide): number => Math.max(7000, Math.min(17000, 4500 + (s.narr ?? s.x).length * 62));
-
-/* ---------- слой указателей: стрелки (SVG) + курсоры (HTML, v0.80) ----------
-   v0.80: РАМКИ-ПОДСВЕТКИ (k:'box') заменены КУРСОРОМ — классическая стрелка
-   мыши указывает остриём в угол элемента, подпись переехала в чип рядом.
-   Курсоры рисуются отдельным HTML-слоем, чтобы не растягиваться вместе со
-   снимком (SVG с preserveAspectRatio=none искажал бы пиктограмму). */
-function CursorGlyph({ color }: { color: string }) {
-  return (
-    <svg width="22" height="26" viewBox="0 0 22 26" className="shrink-0 drop-shadow-[0_2px_3px_rgba(0,0,0,0.9)]">
-      {/* классическая стрелка мыши: остриё — левый верхний угол */}
-      <path d="M2 1 L2 21 L7 16.5 L10.5 24 L14 22.5 L10.5 15 L17 15 Z" fill="#ffffff" stroke="#060a16" strokeWidth="1.6" strokeLinejoin="round" />
-      <path d="M2 1 L2 21 L7 16.5 L10.5 24 L14 22.5 L10.5 15 L17 15 Z" fill={color} fillOpacity="0.3" />
-    </svg>
-  );
-}
-
-function Anns({ anns }: { anns?: TAnn[] }) {
-  if (!anns || !anns.length) return null;
-  const gold = '#ffcf3f';
-  const teal = '#3fe0d0';
-  const arrows = anns.map((a, i) => ({ a, i })).filter(({ a }) => a.k !== 'box');
-  const cursors = anns.map((a, i) => ({ a, i })).filter(({ a }) => a.k === 'box');
-  return (
-    <>
-      {arrows.length > 0 && (
-        <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
-          {arrows.map(({ a, i }) => {
-            const c = i % 2 === 0 ? gold : teal;
-            /* стрелка: приходит с направления d и указывает остриём в точку (x,y) */
-            const L = 6;
-            const tip = { x: a.x, y: a.y };
-            const tail = a.d === 'left' ? { x: tip.x + L, y: tip.y }
-              : a.d === 'right' ? { x: tip.x - L, y: tip.y }
-              : a.d === 'up' ? { x: tip.x, y: tip.y + L }
-              : { x: tip.x, y: tip.y - L };
-            const hx = a.d === 'left' ? 2.2 : a.d === 'right' ? -2.2 : 0;
-            const hy = a.d === 'up' ? 2.2 : a.d === 'down' ? -2.2 : 0;
-            return (
-              <g key={i}>
-                <line x1={tail.x} y1={tail.y} x2={tip.x} y2={tip.y} stroke={c} strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
-                <polygon
-                  points={`${tip.x},${tip.y} ${tip.x + hx - (a.d === 'up' || a.d === 'down' ? 1.4 : 0)},${tip.y + hy - (a.d === 'left' || a.d === 'right' ? 1.4 : 0)} ${tip.x + hx + (a.d === 'up' || a.d === 'down' ? 1.4 : 0)},${tip.y + hy + (a.d === 'left' || a.d === 'right' ? 1.4 : 0)}`}
-                  fill={c}
-                />
-                {a.label && (
-                  <text x={(tip.x + tail.x) / 2} y={(tip.y + tail.y) / 2 - 1.4} fontSize="2.6" fill={c} textAnchor="middle" style={{ paintOrder: 'stroke' }} stroke="#060a16" strokeWidth="0.7">
-                    {a.label}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-        </svg>
-      )}
-      {cursors.map(({ a, i }) => {
-        const c = i % 2 === 0 ? gold : teal;
-        return (
-          <div key={`cur${i}`} className="absolute pointer-events-none z-10" style={{ left: `${a.x}%`, top: `${a.y}%` }}>
-            <div className="relative">
-              <CursorGlyph color={c} />
-              {/* подпись — над курсором (не накрывает кнопку, на которую указываем);
-                  у самого верха кадра — под курсором */}
-              {a.label && (
-                <span
-                  className={`absolute left-[26px] whitespace-nowrap px-1.5 py-0.5 font-pixel text-[9px] leading-tight border-2 ${a.y >= 12 ? 'bottom-0' : 'top-[26px]'}`}
-                  style={{ color: '#060a16', background: c, borderColor: '#060a16' }}
-                >
-                  {a.label}
-                </span>
-              )}
-            </div>
-          </div>
-        );
-      })}
-    </>
-  );
-}
+/* длительность слайда без озвучки: читаемая скорость + шаг на каждый кадр */
+const slideDur = (s: TSlide): number =>
+  Math.max(6000, Math.min(24000, 3500 + (s.narr ?? s.x).length * 60 + s.frames.length * 1800));
 
 export default function TrainingScreen() {
   const { setScreen } = useApp();
@@ -146,26 +70,48 @@ export default function TrainingScreen() {
     } catch { /* noop */ }
     return 1;
   });
-  const volRef = useRef(vol); // narrate читает громкость через ref — без рестарта слайда при движении ползунка
+  const volRef = useRef(vol);
   const [fade, setFade] = useState(false); // плавная смена слайда
-  const [voiceOk, setVoiceOk] = useState(true); // есть ли mp3 у текущего слайда
+  const [voiceOk, setVoiceOk] = useState(true);
+  /* v0.81: номер кадра внутри слайда (0..frames.length-1) */
+  const [frame, setFrame] = useState(0);
   const epoch = useRef(0); // инвалидация устаревших колбэков озвучки/таймера
   const timer = useRef<number | null>(null);
+  const frameTimer = useRef<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const stopAudio = useCallback(() => {
     try { audioRef.current?.pause(); } catch { /* noop */ }
     audioRef.current = null;
     if (timer.current !== null) { window.clearTimeout(timer.current); timer.current = null; }
+    if (frameTimer.current !== null) { window.clearInterval(frameTimer.current); frameTimer.current = null; }
   }, []);
 
-  /* v0.80: изменить громкость — живо и на текущем, и на будущих слайдах */
   const changeVol = useCallback((v: number) => {
     const nv = Math.max(0, Math.min(1, v));
     setVol(nv);
     volRef.current = nv;
     try { localStorage.setItem('rcgTrainingVol', String(nv)); } catch { /* noop */ }
     try { if (audioRef.current) audioRef.current.volume = nv; } catch { /* noop */ }
+  }, []);
+
+  /* ---------- v0.81: проигрывание кадров слайда ----------
+     Кадры распределяются РАВНОМЕРНО на длительность озвучки: узнаём duration
+     mp3 → интервал = duration/кадров. Пока метаданные не готовы (или звука
+     нет) — расчётная длительность слайда. Ручной клик по снимку двигает кадр. */
+  const startFrames = useCallback((it: PlayItem, myEpoch: number, audioMs: number | null) => {
+    if (frameTimer.current !== null) { window.clearInterval(frameTimer.current); frameTimer.current = null; }
+    const n = Math.max(1, it.slide.frames.length);
+    const total = audioMs ?? slideDur(it.slide);
+    const stepMs = Math.max(900, Math.min(6000, total / n));
+    let f = 0;
+    setFrame(0);
+    if (n === 1) return;
+    frameTimer.current = window.setInterval(() => {
+      if (epoch.current !== myEpoch) { if (frameTimer.current !== null) { window.clearInterval(frameTimer.current); frameTimer.current = null; } return; }
+      f = (f + 1) % n; // кадры идут по кругу, пока звучит озвучка
+      setFrame(f);
+    }, stepMs);
   }, []);
 
   /* озвучка слайда + планирование следующего. next() срабатывает РОВНО один раз
@@ -191,23 +137,31 @@ export default function TrainingScreen() {
     setVoiceOk(!!src);
     if (!src) {
       /* mp3 нет (сбой генерации/новый слайд) — листаем по таймеру, подписи остаются */
-      timer.current = window.setTimeout(next, slideDur(it.slide));
+      startFrames(it, myEpoch, null);
+      timer.current = window.setTimeout(next, slideDur(it.slide) + 900);
       return;
     }
     try {
       const a = new Audio(src);
       audioRef.current = a;
-      a.volume = volRef.current; // v0.80: громкость озвучки
+      a.volume = volRef.current;
+      /* кадры стартуем как только знаем длительность звука — идеальная синхронизация */
+      a.onloadedmetadata = () => {
+        if (epoch.current === myEpoch && Number.isFinite(a.duration) && a.duration > 0) {
+          startFrames(it, myEpoch, a.duration * 1000);
+        }
+      };
       a.onended = next;
       a.onerror = next;
       a.play().catch(() => next());
+      startFrames(it, myEpoch, null); // кадры идут с расчётного шага, duration уточнит их ритм
       /* сторож: если вкладка в фоне тормозит события — ходим по таймеру с запасом */
-      timer.current = window.setTimeout(next, Math.max(slideDur(it.slide), 12000) + 30000);
-      /* предзагрузка следующего клипа — без пауз при переходе */
-      const nx = play?.items[it.si + 1] ?? null;
-      void nx;
-    } catch { timer.current = window.setTimeout(next, slideDur(it.slide)); }
-  }, [muted, stopAudio, play]);
+      timer.current = window.setTimeout(next, Math.max(slideDur(it.slide), 12000) + 45000);
+    } catch {
+      startFrames(it, myEpoch, null);
+      timer.current = window.setTimeout(next, slideDur(it.slide));
+    }
+  }, [muted, stopAudio, startFrames]);
 
   /* реакция на смену слайда/раздела/паузы/звука */
   useEffect(() => {
@@ -230,12 +184,13 @@ export default function TrainingScreen() {
     });
   }, []);
 
-  /* v0.80: старт — курс (несколько разделов подряд, сквозная нумерация) или один раздел */
+  /* v0.81: старт — курс (несколько разделов подряд, сквозная нумерация) или один раздел */
   const start = useCallback((what: TSection | TCourse) => {
     sfx.coin();
     stopAudio();
     setPaused(false);
     setFade(false);
+    setFrame(0);
     epoch.current += 1;
     const items: PlayItem[] = 'secs' in what
       ? what.secs.flatMap((id) => { const s = SEC_BY_ID.get(id); return s ? s.slides.map((sl, i) => ({ slide: sl, sec: s, si: i })) : []; })
@@ -254,6 +209,7 @@ export default function TrainingScreen() {
     setPaused((p) => {
       const np = !p;
       try { if (np) audioRef.current?.pause(); else void audioRef.current?.play(); } catch { /* noop */ }
+      if (np && frameTimer.current !== null) { window.clearInterval(frameTimer.current); frameTimer.current = null; }
       return np;
     });
   }, []);
@@ -269,7 +225,15 @@ export default function TrainingScreen() {
     setPlay((p) => (p ? { ...p } : p));
   }, []);
 
-  /* Esc — закрыть окно слайдов; ←/→ — листать */
+  /* v0.81: клик по снимку — СЛЕДУЮЩИЙ кадр вручную (последний → первый) */
+  const stepFrame = useCallback(() => {
+    const it = play?.items[play.idx];
+    if (!it || it.slide.frames.length < 2) return;
+    sfx.hover();
+    setFrame((f) => (f + 1) % it.slide.frames.length);
+  }, [play]);
+
+  /* Esc — закрыть окно слайдов; ←/→ — листать слайды; пробел — пауза */
   useEffect(() => {
     if (!play) return;
     const onKey = (e: KeyboardEvent) => {
@@ -286,7 +250,9 @@ export default function TrainingScreen() {
   useEffect(() => () => { try { audioRef.current?.pause(); } catch { /* noop */ } }, []);
 
   const cur = play ? play.items[play.idx] : null;
-  const curImg = cur ? imgOf(cur.slide.img) : null;
+  const frames = cur?.slide.frames ?? [];
+  const frameKey = frames[Math.min(frame, frames.length - 1)] ?? frames[0] ?? '';
+  const curImg = frameKey ? imgOf(frameKey) : null;
   const pct = play ? Math.round(((play.idx + 1) / play.items.length) * 100) : 0;
   const totalSlides = useMemo(() => TRAINING.reduce((n, s) => n + s.slides.length, 0), []);
   const voiceNote = !voiceOk ? 'Этот слайд без mp3 — таймер' : 'Озвучка: нейроголос Дмитрий (mp3)';
@@ -301,11 +267,10 @@ export default function TrainingScreen() {
           <h1 className="font-pixel text-gold title-glow text-[16px] sm:text-[20px]">ОБУЧЕНИЕ</h1>
         </div>
         <p className="mt-2 text-[11px] text-dim font-display uppercase tracking-wider">
-          слайды по каждому режиму и редактору — с озвучкой нейроголосом · всего {totalSlides}
+          кадры-шаги с живым курсором и озвучкой нейроголосом · всего {totalSlides} слайдов
         </p>
 
-        {/* v0.80: два курса вместо «всё подряд» — слайды каждого курса идут
-            подряд со сквозной нумерацией */}
+        {/* v0.80: два курса — слайды каждого курса идут подряд со сквозной нумерацией */}
         <div className="mt-4 grid sm:grid-cols-2 gap-2.5">
           {COURSES.map((c) => (
             <button
@@ -387,17 +352,22 @@ export default function TrainingScreen() {
             <button title="Закрыть (Esc)" onClick={close} className="px-2 py-1 border-2 border-edge text-dim font-pixel text-[10px] hover:text-paper hover:border-edge2">✕</button>
           </div>
 
-          {/* снимок + подпись */}
+          {/* кадры слайда + подпись */}
           <div className="flex-1 min-h-0 overflow-y-auto flex items-start justify-center px-4 py-4">
             <div className={`w-full max-w-3xl flex flex-col gap-3 transition-opacity duration-300 ${fade ? 'opacity-0' : 'opacity-100'}`}>
               <div className="pixel-panel pixel-corners overflow-hidden bg-[rgba(0,0,0,0.5)] relative">
                 {curImg
-                  ? <img src={curImg} alt={cur.slide.t} className="w-full h-auto block" draggable={false} />
+                  ? <img src={curImg} alt={cur.slide.t} className="w-full h-auto block cursor-pointer" draggable={false} onClick={stepFrame} title="Клик — следующий кадр" />
                   : <div className="h-56 flex flex-col items-center justify-center gap-2 text-faint">
-                      <span className="font-pixel text-[12px]">СНИМОК: {cur.slide.img}</span>
-                      <span className="text-[10px]">нет файла src/assets/training/{cur.slide.img}.webp</span>
+                      <span className="font-pixel text-[12px]">КАДР: {frameKey}</span>
+                      <span className="text-[10px]">нет файла src/assets/training/{frameKey}.webp</span>
                     </div>}
-                {curImg && <Anns anns={cur.slide.anns} />}
+                {/* v0.81: счётчик кадров поверх снимка (справа снизу) */}
+                {frames.length > 1 && curImg && (
+                  <span className="absolute right-2 bottom-2 px-1.5 py-0.5 font-pixel text-[9px] border-2 border-edge bg-[rgba(6,9,20,0.8)] text-dim pointer-events-none">
+                    кадр {Math.min(frame, frames.length - 1) + 1}/{frames.length}
+                  </span>
+                )}
               </div>
               <div className="pixel-panel pixel-corners px-5 py-4">
                 <div className="flex items-baseline gap-2 flex-wrap mb-1.5">
@@ -405,6 +375,9 @@ export default function TrainingScreen() {
                   {/* v0.80: где я нахожусь в курсе — текущий раздел; нумерация сквозная (шапка справа) */}
                   {play.items.length > (cur.sec.slides.length) && (
                     <span className="font-pixel text-[8px] text-faint">раздел: {cur.sec.title}</span>
+                  )}
+                  {frames.length > 1 && (
+                    <span className="font-pixel text-[8px] text-faint">клик по снимку — следующий кадр</span>
                   )}
                 </div>
                 <p className="text-[12.5px] leading-relaxed text-paper/90">{cur.slide.x}</p>
