@@ -61,9 +61,6 @@ interface AppState {
   saveCache: Record<string, unknown>;
   romReadyTick: number; // инкрементируется при получении рома — триггерит перезагрузку эмулятора
   cacheRomData: (romId: string, buf: ArrayBuffer, saveId?: string, saveState?: unknown) => void;
-
-  /* v0.82: код комнаты из ссылки-приглашения (#room=…) — JoinScreen подставит и подключится сам */
-  inviteCode: string;
 }
 
 const mkSelfId = () => `p-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -198,7 +195,6 @@ export const useApp = create<AppState>()((set, get) => ({
   romCache: {},
   saveCache: {},
   romReadyTick: 0,
-  inviteCode: '',
   cacheRomData: (romId, buf, saveId, saveState) => {
     const st = get();
     const romCache = { ...st.romCache, [romId]: buf };

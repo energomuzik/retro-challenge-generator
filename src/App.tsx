@@ -3,7 +3,7 @@ import { initApp, useApp } from './store';
 import { Toasts } from './ui';
 import { setVolume, sfx } from './sound';
 import { peekDeleted, undoLastDelete } from './delGuard';
-import { clearInviteUrl, readInviteFromUrl } from './invite';
+import { initMusic, musicSync } from './music';
 import MenuScreen from './screens/MenuScreen';
 import MapEditor from './screens/MapEditor';
 import TaskEditor from './screens/TaskEditor';
@@ -63,39 +63,22 @@ export default function App() {
     };
   }, [options.scanlines, options.ntscMode]);
 
-  /* v0.82: ССЫЛКА-ПРИГЛАЩЕНИЕ — обработка #room=КОД&hub=….
-     Срабатывает и при первой загрузке страницы (гость открыл ссылку из соцсети),
-     и по hashchange (ссылку открыли в УЖЕ открытой вкладке сайта — переход по хэшу
-     не перезагружает страницу). Хост-приглашение — только из меню/подключения:
-     во время партии и в редакторах ссылку молча игнорируем. */
-  const processInvite = () => {
-    const inv = readInviteFromUrl();
-    if (!inv) return;
-    const s = useApp.getState();
-    if (s.screen !== 'menu' && s.screen !== 'join') return;
-    if (inv.hub) {
-      s.setOptions({ relayHub: inv.hub });
-      s.toast('Адрес игрового хаба взят из ссылки-приглашения', 'ok');
-    }
-    useApp.setState({ inviteCode: inv.code });
-    s.setScreen('join');
-    clearInviteUrl();
-  };
+  /* v0.83: ФОНОВАЯ МУЗЫКА — подписка на смену экрана (что играть/где молчать) +
+     снятие блокировки автоплея первым жестом пользователя (клик/клавиша). */
+  useEffect(() => {
+    initMusic();
+  }, []);
+  useEffect(() => {
+    musicSync(screen);
+  }, [screen]);
 
   useEffect(() => {
     let on = true;
     void initApp().finally(() => {
       if (!on) return;
-      processInvite();
       setReady(true);
     });
     return () => { on = false; };
-  }, []);
-
-  useEffect(() => {
-    const onHash = () => processInvite();
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
   useEffect(() => {

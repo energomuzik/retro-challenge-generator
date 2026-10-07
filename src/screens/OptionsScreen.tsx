@@ -6,6 +6,7 @@ import { idbDel, idbAll, exportLibrary, importLibrary } from '../db';
 import { STORES } from '../db';
 import { sfx } from '../sound';
 import { downloadHostBat } from '../host/hostPackage';
+import { MUSIC_TITLES, probePlaylist, useMusic } from '../music';
 
 const DEL_MODES: { key: 'instant' | 'confirm' | 'hold'; label: string; hint: string }[] = [
   { key: 'instant', label: 'Сразу', hint: 'клик по крестику удаляет сразу, как раньше' },
@@ -24,6 +25,15 @@ const SPOILER_MODES: { key: SpoilerMode; label: string; hint: string }[] = [
 export default function OptionsScreen() {
   const { options, setOptions, setScreen, toast, refresh } = useApp();
   const [wipe, setWipe] = useState(false);
+  /* v0.83: фоновая музыка — тумблер, громкость и режим «где играть» */
+  const mEnabled = useMusic((s) => s.enabled);
+  const mMode = useMusic((s) => s.mode);
+  const mVolume = useMusic((s) => s.volume);
+  const mStatus = useMusic((s) => s.status);
+  const mError = useMusic((s) => s.error);
+  const mSet = useMusic((s) => s.setEnabled);
+  const mSetMode = useMusic((s) => s.setMode);
+  const mSetVolume = useMusic((s) => s.setVolume);
 
   // Экспорт всей библиотеки (карты, тайлы, ромы, сохранения, фишки) в один файл
   const doExport = async () => {
@@ -283,6 +293,67 @@ export default function OptionsScreen() {
             </div>
           </Panel>
 
+          <Panel title="Музыка" icon={Ic.volume(16)} accent="var(--color-teal)" className="slide-up md:col-span-2">
+            <div className="p-4 space-y-4">
+              <Toggle
+                checked={mEnabled}
+                onChange={(v) => mSet(v)}
+                label="Фоновая музыка (Яндекс.Диск)"
+                hint="Ретро-минимиксы Dj Berto (Dendy/NES). Играют по решению тумблера и режима ниже; в партии и на экранах создания/подключения — тишина. Выбор и громкость запоминаются."
+              />
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="font-pixel text-[9px] text-faint">🔉</span>
+                <input
+                  type="range" min={0} max={1} step={0.05} value={mVolume}
+                  onChange={(e) => mSetVolume(Number(e.target.value))}
+                  title={`Громкость музыки: ${Math.round(mVolume * 100)}%`}
+                  className="w-40 accent-[#ffcf3f] cursor-pointer"
+                  aria-label="Громкость музыки"
+                />
+                <span className="font-pixel text-[8px] text-faint w-9 text-right">{Math.round(mVolume * 100)}%</span>
+                <span className="tick-label text-faint">громкость музыки (не действует на озвучку обучения и звуки игры)</span>
+              </div>
+              <div>
+                <div className="tick-label mb-1.5">Где играть музыку</div>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {([
+                    ['title', 'Только на титульном экране', 'Музыка звучит только в главном меню: открыли сайт — играет, ушли в любой раздел — молчит'],
+                    ['everywhere', 'Везде, кроме создания игры и подключения', 'Меню, редакторы, обучение, опции — с музыкой; создание игры, подключение, лобби, партия и запуск ромов — тишина'],
+                  ] as ['title' | 'everywhere', string, string][]).map(([mode, lbl, hint]) => (
+                    <button
+                      key={mode}
+                      onClick={() => { mSetMode(mode); sfx.hover(); }}
+                      title={hint}
+                      className={`text-left px-3 py-2 border-2 transition-colors cursor-pointer ${mMode === mode ? 'border-teal bg-teal/10' : 'border-edge hover:border-edge2'}`}
+                    >
+                      <div className={`font-display text-[11px] uppercase ${mMode === mode ? 'text-teal' : 'text-paper'}`}>{lbl}</div>
+                      <div className="text-[10px] text-dim mt-0.5 leading-snug">{hint}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <PxBtn small color="teal" onClick={() => {
+                  toast('Проверяю плейлист на Яндекс.Диске…', 'info');
+                  void probePlaylist().then(({ ok, fail }) => {
+                    toast(ok ? `Плейлист жив: треков доступно ${ok}${fail ? `, недоступно ${fail}` : ''}` : 'Яндекс.Диск не отвечает — проверь интернет или ссылки треков', ok ? 'ok' : 'err');
+                  });
+                }}>
+                  {Ic.rotate(13)} Проверить плейлист
+                </PxBtn>
+                <span className={`tick-label ${mStatus === 'playing' ? 'text-teal' : mStatus === 'error' ? 'text-coral' : 'text-faint'}`}>
+                  {{ resolving: 'подключаюсь к Диску…', playing: 'играет', paused: 'пауза (экран вне списка)', error: `ошибка: ${mError}`, idle: 'выключена' }[mStatus]}
+                </span>
+              </div>
+              <p className="text-[11px] text-faint leading-relaxed">
+                Треки не вшиты в сайт — они стримятся с Яндекс.Диска напрямую в браузер, поэтому сайт грузится как раньше.
+                Музыка стартует после первого клика/клавиши на сайте (так требует браузер), идёт по кругу и переключается на следующий
+                минимикс по окончании. Автор музыки: <span className="text-paper">Dj Berto — Dendy (NES) minimixes</span>
+                ({MUSIC_TITLES.join(' · ')}). Источник: Яндекс.Диск автора проекта.
+              </p>
+            </div>
+          </Panel>
+
           <Panel title="Как устроена связь" icon={Ic.globe(16)} accent="var(--color-sky)" className="slide-up md:col-span-2">
             <div className="p-4 text-[13px] text-dim leading-relaxed space-y-2">
               <p>
@@ -310,10 +381,11 @@ export default function OptionsScreen() {
                 </div>
                 <p className="text-[11px] text-faint mt-2 leading-relaxed">
                   Самый простой способ: нажмите «Скачать сервер», запустите <span className="text-paper">retropolia-host.bat</span> — он сам
-                  поставит туннель Cloudflare и <span className="text-paper">скопирует ссылку в буфер</span>. Вставьте её сюда. Затем в лобби
-                  комнаты нажмите <span className="text-paper">«Скопировать ссылку-приглашение»</span> — адрес хаба вложится в ссылку сам, и
-                  друзьям вписывать ничего не придётся: они просто откроют ссылку. Хаб пересылает весь трафик через компьютер хоста — работает
-                  там, где облако PeerJS недоступно.
+                  поставит туннель Cloudflare и <span className="text-paper">скопирует ссылку в буфер</span>. Вставьте её сюда (и в лобби
+                  комнаты — там та же панель). Затем передайте соперникам <span className="text-paper">код комнаты</span> и этот адрес:
+                  на «Подключении» теперь есть поле <span className="text-paper">«Адрес сервера»</span> — игроки вписывают код и адрес и сразу
+                  открывают комнату через ваш хаб, в Опции лазить не нужно. Хаб пересылает весь трафик через компьютер хоста —
+                  работает там, где облако PeerJS недоступно.
                 </p>
                 <div className="border-t-2 border-edge pt-3 mt-3">
                 <Field label="Свой реле-сервер (если облако 0.peerjs.com недоступно)">

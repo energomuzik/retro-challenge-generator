@@ -6,7 +6,6 @@ import { genRoomCode } from '../net';
 import { newSession, fmtClock } from '../engine';
 import { exportGame, importGame, idbAll, idbDel, idbGet, idbPut, uid } from '../db';
 import { downloadHostBat } from '../host/hostPackage';
-import { buildInviteUrl, clearInviteUrl, parseInviteText } from '../invite';
 import { HoldDeleteButton, rememberDeleted } from '../delGuard';
 import type { BossAnimDef, CustomChallenge, GameMap, MapMode, NpcAnimDef, SessionSnapshot, TokenDef } from '../types';
 import { mapModeModified, normResMode } from '../types';
@@ -452,42 +451,18 @@ export function CreateScreen() {
 /* ---------- подключение ---------- */
 
 export function JoinScreen() {
-  const { setScreen, toast, options } = useApp();
-  /* v0.82: страница могла открыться по ссылке-приглашению (#room=КОД) — код приходит
-     в сторе, вписываем его в поле и сразу стучимся в комнату. Реагируем и на НОВОЕ
-     приглашение, пришедшее по hashchange, пока экран уже открыт (свой код в ref —
-     чтобы одна ссылка не стучалась дважды). */
-  const inviteCode = useApp((s) => s.inviteCode);
-  const joinedRef = useRef('');
-  const [code, setCode] = useState(() => useApp.getState().inviteCode);
+  const { setScreen, toast, options, setOptions } = useApp();
+  const [code, setCode] = useState('');
 
-  const joinWith = (raw: string) => {
+  const join = () => {
+    const c = code.trim().toUpperCase();
+    if (c.length !== 4) { toast('Введите код из 4 символов', 'err'); return; }
     const st = useApp.getState();
-    /* в поле можно вставить и ВСЮ ссылку-приглашение — вытащим из неё код и хаб */
-    const inv = parseInviteText(raw);
-    let c = inv ? inv.code : raw.trim().toUpperCase();
-    if (inv?.hub && inv.hub !== st.options.relayHub) {
-      st.setOptions({ relayHub: inv.hub });
-      st.toast('Адрес игрового хаба взят из ссылки-приглашения', 'ok');
-    }
-    if (!/^[A-Z0-9]{4}$/.test(c)) { toast('Введите код из 4 символов или вставьте ссылку-приглашение', 'err'); return; }
     const room = openRoom(c, false, { session: null, map: null });
-    room.send('action', { t: 'hello', id: st.selfId, name: st.options.name });
+    room.send('action', { t: 'hello', id: st.selfId, name: options.name });
     sfx.coin();
     toast(`Стучимся в комнату ${c}…`, 'info');
   };
-
-  const join = () => joinWith(code);
-
-  useEffect(() => {
-    if (!inviteCode || joinedRef.current === inviteCode) return;
-    joinedRef.current = inviteCode;
-    setCode(inviteCode);
-    clearInviteUrl();
-    toast(`Открыли ссылку-приглашение — подключаемся к комнате ${inviteCode}…`, 'info');
-    joinWith(inviteCode);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inviteCode]);
 
   return (
     <div className="h-full crt-grid-bg overflow-y-auto">
@@ -500,21 +475,29 @@ export function JoinScreen() {
         </div>
         <Panel title="Код комнаты" icon={Ic.users(16)} accent="var(--color-sky)" className="pop-in">
           <div className="p-5 space-y-4">
-            <Field label="Код у создателя партии — или вся ссылка-приглашение целиком">
+            <Field label="Код у создателя партии">
               <input
                 autoFocus
                 className="field-in w-full px-4 py-3 font-pixel text-xl tracking-[0.35em] text-center uppercase"
-                maxLength={400}
-                placeholder="XXXX или ссылка от друга"
+                maxLength={4}
+                placeholder="XXXX"
                 value={code}
                 onChange={(e) => setCode(e.target.value.toUpperCase())}
                 onKeyDown={(e) => { if (e.key === 'Enter') join(); }}
               />
             </Field>
+            <Field label="Адрес сервера (если создатель дал ссылку на свой сервер)">
+              <input
+                className="field-in w-full px-3 py-2 font-display text-sm tracking-wide"
+                placeholder="пусто = облако PeerJS · https://xxxx-xxxx.trycloudflare.com"
+                value={options.relayHub}
+                onChange={(e) => setOptions({ relayHub: e.target.value.trim() })}
+              />
+            </Field>
             <p className="text-[12px] text-dim leading-relaxed">
-              {inviteCode
-                ? <>Ссылка-приглашение подставила код <span className="text-paper font-display uppercase">{inviteCode}</span> — подключаемся автоматически{options.relayHub ? ', канал — игровой хаб хоста (адрес тоже пришёл в ссылке)' : ''}.</>
-                : <>Друг прислал ссылку-приглашение? Просто откройте её — код подставится сам, или вставьте всю ссылку сюда. Вы играете как <span className="text-paper font-display uppercase">{options.name}</span> — имя меняется в опциях.</>}
+              Создатель поднял свой сервер (батник + Cloudflare)? Вставьте его адрес во второе поле — комната
+              откроется через него, облако не понадобится. Вы играете как{' '}
+              <span className="text-paper font-display uppercase">{options.name}</span> — имя меняется в опциях.
             </p>
             <PxBtn color="sky" className="w-full" big onClick={join}>{Ic.play(16)} Войти в игру</PxBtn>
           </div>
@@ -881,22 +864,6 @@ export function LobbyScreen() {
     );
   };
 
-  /* v0.82: ССЫЛКА-ПРИГЛАШЕНИЕ — одна ссылка вместо «код + адрес хаба».
-     Если играем через свой хаб — адрес туннеля вкладывается в ссылку сам,
-     и гостям больше не нужно вписывать его в Опции вручную. */
-  const copyInvite = () => {
-    const url = buildInviteUrl(session.code, options.relayHub);
-    navigator.clipboard?.writeText(url).then(
-      () => useApp.getState().toast(
-        options.relayHub
-          ? 'Ссылка-приглашение скопирована — внутри код комнаты и адрес вашего хаба. Отправьте её игрокам в соцсеть/мессенджер'
-          : 'Ссылка-приглашение скопирована — отправьте её игрокам, они подключатся одним кликом',
-        'ok',
-      ),
-      () => useApp.getState().toast(url, 'info'),
-    );
-  };
-
   /* восстановление партии: заявить сохранённую роль (или снять заявку) */
   const claimRole = (savedId: string) => {
     const cur = useApp.getState();
@@ -1016,23 +983,8 @@ export function LobbyScreen() {
           </div>
           <p className="text-[12px] text-dim mt-3">{options.hideRoomCode ? 'Код скрыт — когда понадобится передать его соперникам, нажмите глазик рядом.' : 'Передайте код соперникам — раздел «Подключиться». Ресурсы у всех: 60 минут + 60 попыток.'}</p>
 
-          {/* v0.82: ССЫЛКА-ПРИГЛАШЕНИЕ — один клик хосту, один клик гостю */}
-          <div className="mt-4 max-w-xl mx-auto pixel-panel pixel-corners p-3.5 border-teal/50">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-teal">{Ic.users(15)}</span>
-              <span className="font-display uppercase text-[12px] tracking-wider text-paper">Ссылка-приглашение — самый простой способ позвать игроков</span>
-            </div>
-            <div className="flex items-center justify-center gap-2 flex-wrap">
-              <PxBtn color="teal" onClick={copyInvite}>{Ic.play(13)} Скопировать ссылку-приглашение</PxBtn>
-            </div>
-            <p className="text-[11px] text-faint mt-2 leading-relaxed">
-              {options.relayHub
-                ? <>В ссылке уже код комнаты и адрес вашего игрового хаба: игрок откроет её — и сразу подключится, вписывать ничего не надо. Ссылка меняется при перезапуске батника — если туннель перезапустили, скопируйте ссылку заново.</>
-                : <>Игрок откроет ссылку — и сразу стучится в эту комнату (код внутри). Играете через облако PeerJS; если облако подводит — ниже «Скачать сервер»: тогда адрес вашего хаба тоже вложится в ссылку.</>}
-            </p>
-          </div>
-
-          {/* v0.82: свой сервер прямо в лобби — раньше был спрятан в Опциях и аварийной панели */}
+          {/* v0.83: свой сервер прямо в лобби (панель «Ссылка-приглашение» убрана —
+              без своего сервера облако всё равно не пробивается) */}
           <div className="mt-3 max-w-xl mx-auto pixel-panel pixel-corners p-3.5">
             <div className="flex items-center gap-2 mb-1.5">
               <span className="text-sky">{Ic.globe(15)}</span>
@@ -1040,7 +992,8 @@ export function LobbyScreen() {
             </div>
             <p className="text-[11px] text-faint leading-relaxed mb-2">
               Скачайте батник и запустите двойным кликом — он сам поднимет туннель Cloudflare и скопирует ссылку.
-              Вставьте её ниже — комната переоткроется через хаб, а «Скопировать ссылку-приглашение» добавит адрес к ссылке.
+              Вставьте её ниже — комната переоткроется через хаб; соперники укажут этот же адрес у себя в
+              «Подключении» (поле «Адрес сервера») вместе с кодом комнаты.
             </p>
             <div className="flex items-center gap-2 flex-wrap">
               <PxBtn small color="sky" onClick={() => { downloadHostBat(); useApp.getState().toast('retropolia-host.bat скачан — запустите его двойным кликом', 'ok'); }}>
