@@ -6,7 +6,7 @@ import { idbDel, idbAll, exportLibrary, importLibrary } from '../db';
 import { STORES } from '../db';
 import { sfx } from '../sound';
 import { downloadHostBat } from '../host/hostPackage';
-import { MUSIC_TITLES, probePlaylist, useMusic } from '../music';
+import { MUSIC_AUTHOR_URL, MUSIC_TITLES, probePlaylist, useMusic } from '../music';
 
 const DEL_MODES: { key: 'instant' | 'confirm' | 'hold'; label: string; hint: string }[] = [
   { key: 'instant', label: 'Сразу', hint: 'клик по крестику удаляет сразу, как раньше' },
@@ -25,15 +25,21 @@ const SPOILER_MODES: { key: SpoilerMode; label: string; hint: string }[] = [
 export default function OptionsScreen() {
   const { options, setOptions, setScreen, toast, refresh } = useApp();
   const [wipe, setWipe] = useState(false);
-  /* v0.83: фоновая музыка — тумблер, громкость и режим «где играть» */
+  /* v0.83: фоновая музыка — тумблер, громкость и режим «где играть»; v0.84: + трек-статус,
+     «следующий», «совсем рандомный рандом», кликабельный автор с предупреждением */
   const mEnabled = useMusic((s) => s.enabled);
   const mMode = useMusic((s) => s.mode);
   const mVolume = useMusic((s) => s.volume);
   const mStatus = useMusic((s) => s.status);
   const mError = useMusic((s) => s.error);
+  const mTrack = useMusic((s) => s.track);
+  const mWild = useMusic((s) => s.wild);
   const mSet = useMusic((s) => s.setEnabled);
   const mSetMode = useMusic((s) => s.setMode);
   const mSetVolume = useMusic((s) => s.setVolume);
+  const mSetWild = useMusic((s) => s.setWild);
+  const mNext = useMusic((s) => s.next);
+  const [askAuthor, setAskAuthor] = useState(false);
 
   // Экспорт всей библиотеки (карты, тайлы, ромы, сохранения, фишки) в один файл
   const doExport = async () => {
@@ -299,7 +305,7 @@ export default function OptionsScreen() {
                 checked={mEnabled}
                 onChange={(v) => mSet(v)}
                 label="Фоновая музыка (Яндекс.Диск)"
-                hint="Ретро-минимиксы Dj Berto (Dendy/NES). Играют по решению тумблера и режима ниже; в партии и на экранах создания/подключения — тишина. Выбор и громкость запоминаются."
+                hint="Ретро-миксы Dj Berto: 7 Dendy minimix + 2 RetroGame MIX. Треки выбираются случайно и не повторяют предыдущий; уходя в тишину — пауза, вернулись — продолжение с того же места. В партии, подключении, создании, запуске ромов и обучении — тишина. Настройки запоминаются."
               />
               <div className="flex items-center gap-3 flex-wrap">
                 <span className="font-pixel text-[9px] text-faint">🔉</span>
@@ -317,8 +323,8 @@ export default function OptionsScreen() {
                 <div className="tick-label mb-1.5">Где играть музыку</div>
                 <div className="grid sm:grid-cols-2 gap-2">
                   {([
-                    ['title', 'Только на титульном экране', 'Музыка звучит только в главном меню: открыли сайт — играет, ушли в любой раздел — молчит'],
-                    ['everywhere', 'Везде, кроме создания игры и подключения', 'Меню, редакторы, обучение, опции — с музыкой; создание игры, подключение, лобби, партия и запуск ромов — тишина'],
+                    ['title', 'Только на титульном экране', 'Музыка звучит только в главном меню: открыли сайт — играет, ушли в любой раздел — пауза, вернулись — продолжение'],
+                    ['everywhere', 'Везде, кроме создания игры и подключения', 'Меню, редакторы, опции — с музыкой; создание игры, подключение, лобби, партия, запуск ромов и обучение — тишина'],
                   ] as ['title' | 'everywhere', string, string][]).map(([mode, lbl, hint]) => (
                     <button
                       key={mode}
@@ -332,7 +338,19 @@ export default function OptionsScreen() {
                   ))}
                 </div>
               </div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <span className="font-pixel text-[9px] text-teal">▶</span>
+                <span className="font-display text-[11px] text-paper" title={mTrack}>
+                  {mTrack || '— трек ещё не выбран —'}
+                </span>
+                <span className={`tick-label ${mStatus === 'playing' ? 'text-teal' : mStatus === 'error' ? 'text-coral' : 'text-faint'}`}>
+                  {{ resolving: 'подключаюсь к Диску…', playing: 'играет', paused: 'пауза (экран вне списка)', error: `ошибка: ${mError}`, idle: 'выключена' }[mStatus]}
+                </span>
+              </div>
               <div className="flex items-center gap-3 flex-wrap">
+                <PxBtn small color="teal" onClick={() => mNext()} title="Включить следующий трек (случайный)">
+                  ⏭ Следующий трек
+                </PxBtn>
                 <PxBtn small color="teal" onClick={() => {
                   toast('Проверяю плейлист на Яндекс.Диске…', 'info');
                   void probePlaylist().then(({ ok, fail }) => {
@@ -341,15 +359,34 @@ export default function OptionsScreen() {
                 }}>
                   {Ic.rotate(13)} Проверить плейлист
                 </PxBtn>
-                <span className={`tick-label ${mStatus === 'playing' ? 'text-teal' : mStatus === 'error' ? 'text-coral' : 'text-faint'}`}>
-                  {{ resolving: 'подключаюсь к Диску…', playing: 'играет', paused: 'пауза (экран вне списка)', error: `ошибка: ${mError}`, idle: 'выключена' }[mStatus]}
-                </span>
               </div>
+              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox" checked={mWild}
+                  onChange={(e) => mSetWild(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 accent-[#ffcf3f] cursor-pointer shrink-0"
+                />
+                <span>
+                  <span className="font-display text-[11px] text-paper uppercase">Совсем рандомный рандом</span>
+                  <span className="block text-[10px] text-dim mt-0.5 leading-snug">
+                    каждый новый трек стартует со СЛУЧАЙНОГО места (а не с начала) — треки и так выбираются случайно;
+                    работает при первом старте, кнопке «Следующий трек» и по окончании трека
+                  </span>
+                </span>
+              </label>
               <p className="text-[11px] text-faint leading-relaxed">
                 Треки не вшиты в сайт — они стримятся с Яндекс.Диска напрямую в браузер, поэтому сайт грузится как раньше.
-                Музыка стартует после первого клика/клавиши на сайте (так требует браузер), идёт по кругу и переключается на следующий
-                минимикс по окончании. Автор музыки: <span className="text-paper">Dj Berto — Dendy (NES) minimixes</span>
-                ({MUSIC_TITLES.join(' · ')}). Источник: Яндекс.Диск автора проекта.
+                Музыка стартует после первого клика/клавиши на сайте (так требует браузер); при переходе в тишину ставится
+                на паузу и продолжается с того же места, треки идут в случайном порядке. Внизу экрана при старте музыки
+                выезжает микро-плеер: название трека, «следующий» и громкость (наведите мышь — не уедет). Автор музыки:{' '}
+                <button
+                  onClick={() => setAskAuthor(true)}
+                  className="text-teal underline decoration-dotted hover:text-[#7ee7d0] cursor-pointer"
+                  title="Открыть сайт автора (с предупреждением)"
+                >
+                  Dj Berto — Dendy (NES) minimixes
+                </button>{' '}
+                (все {MUSIC_TITLES.length} треков: {MUSIC_TITLES.join(' · ')}). Источник: Яндекс.Диск автора проекта.
               </p>
             </div>
           </Panel>
@@ -466,6 +503,26 @@ export default function OptionsScreen() {
           <div className="flex gap-3 justify-end">
             <GhostBtn onClick={() => setWipe(false)}>Отмена</GhostBtn>
             <PxBtn color="coral" onClick={doWipe}>Стереть всё</PxBtn>
+          </div>
+        </Modal>
+      )}
+      {askAuthor && (
+        <Modal title="Уходим с нашей странички?" icon={Ic.globe(16)} onClose={() => setAskAuthor(false)} w="max-w-md">
+          <div className="p-4 space-y-4">
+            <p className="text-[13px] text-dim leading-relaxed">
+              Сейчас в новой вкладке откроется сайт автора музыки —{' '}
+              <span className="text-paper font-display text-[12px]">promodj.com/berto</span>.
+              Вы покидаете нашу страничку и переходите во ВНЕШНЕЕ место, за содержание которого проект не отвечает.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <PxBtn
+                color="teal"
+                onClick={() => { window.open(MUSIC_AUTHOR_URL, '_blank', 'noopener,noreferrer'); setAskAuthor(false); }}
+              >
+                {Ic.globe(13)} Открыть сайт автора
+              </PxBtn>
+              <GhostBtn onClick={() => setAskAuthor(false)}>Остаться</GhostBtn>
+            </div>
           </div>
         </Modal>
       )}

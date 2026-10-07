@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { initApp, useApp } from './store';
 import { Toasts } from './ui';
+import { MiniPlayer } from './MiniPlayer';
 import { setVolume, sfx } from './sound';
 import { peekDeleted, undoLastDelete } from './delGuard';
 import { initMusic, musicSync } from './music';
@@ -162,6 +163,7 @@ export default function App() {
       {screen === 'options' && <OptionsScreen />}
       {screen === 'training' && <TrainingScreen />}
       <Toasts items={toasts} />
+      <MiniPlayer />
       {/* v0.56: полосатый фильтр; v0.57: NES NTSC — РЕЖИМОМ из общих опций
          (1 «Полосатый» — старый фильтр, 2 «Мягкий CRT» — новый, действует и на кадр эмулятора) */}
       {options.scanlines && <div className="crt-scanlines" />}
