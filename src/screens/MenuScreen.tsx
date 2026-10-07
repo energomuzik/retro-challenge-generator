@@ -6,9 +6,9 @@ import { sfx } from '../sound';
 import { VERSION } from '../version';
 
 const MENU: { key: string; label: string; screen: Screen; desc: string; color: string; icon: (s?: number) => React.ReactNode }[] = [
-  // v0.80: «Обучение» — ПЕРВАЯ строка меню (раньше четвёртая): новые игроки
+  // v0.86: пункт переименован в «ПОМОЩЬ - ОБУЧЕНИЕ». v0.80: он же — ПЕРВАЯ строка меню (раньше четвёртая): новые игроки
   // сначала проходят курсы, потом идут в комнаты и редакторы
-  { key: 'training', label: 'Обучение', screen: 'training', desc: 'курсы игрока и создателя карт — с озвучкой', color: '#b48bff', icon: Ic.book },
+  { key: 'training', label: 'ПОМОЩЬ - ОБУЧЕНИЕ', screen: 'training', desc: 'курсы игрока и создателя карт — с озвучкой', color: '#b48bff', icon: Ic.book },
   { key: 'create', label: 'Создать игру', screen: 'create', desc: 'выбрать карту · открыть комнату', color: '#ffcf3f', icon: Ic.dice },
   { key: 'join', label: 'Подключиться', screen: 'join', desc: 'войти в комнату по коду', color: '#5aa9ff', icon: Ic.globe },
   { key: 'load', label: 'Загрузить игру', screen: 'load', desc: 'сохранённые партии', color: '#8f97c9', icon: Ic.save },

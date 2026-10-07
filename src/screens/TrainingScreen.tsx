@@ -264,7 +264,7 @@ export default function TrainingScreen() {
         {/* шапка */}
         <div className="flex items-center gap-3 pt-2">
           <GhostBtn onClick={() => { sfx.click(); setScreen('menu'); }}>{Ic.back(14)} Меню</GhostBtn>
-          <h1 className="font-pixel text-gold title-glow text-[16px] sm:text-[20px]">ОБУЧЕНИЕ</h1>
+          <h1 className="font-pixel text-gold title-glow text-[16px] sm:text-[20px]">ПОМОЩЬ - ОБУЧЕНИЕ</h1>
         </div>
         <p className="mt-2 text-[11px] text-dim font-display uppercase tracking-wider">
           кадры-шаги с живым курсором и озвучкой нейроголосом · всего {totalSlides} слайдов
@@ -296,7 +296,7 @@ export default function TrainingScreen() {
         {/* разделы — скроллящийся список кнопок */}
         <div className="mt-4 flex-1 min-h-0 overflow-y-auto pb-4 pr-1">
           <div className="grid sm:grid-cols-2 gap-2.5">
-            {TRAINING.map((s) => (
+            {TRAINING.map((s, si) => (
               <button
                 key={s.id}
                 onClick={() => start(s)}
@@ -304,7 +304,8 @@ export default function TrainingScreen() {
                 className="menu-row w-full text-left flex items-center gap-4 px-5 py-3 border-2 border-transparent bg-[rgba(19,26,51,0.35)] transition-all hover:bg-panel2"
                 style={{ '--rowc': s.color } as React.CSSProperties}
               >
-                <span className="shrink-0 font-pixel text-[13px]" style={{ color: s.color }}>{s.slides.length}</span>
+                {/* v0.86: номер пункта по порядку (1, 2, 3…) вместо числа слайдов */}
+                <span className="shrink-0 font-pixel text-[13px]" style={{ color: s.color }}>{si + 1}</span>
                 <span className="flex-1 min-w-0">
                   <span className="block font-display uppercase tracking-wide text-[14px] text-dim hover:text-paper transition-colors">{s.title}</span>
                   <span className="block text-[10.5px] text-faint mt-0.5">{s.desc}</span>
@@ -374,7 +375,7 @@ export default function TrainingScreen() {
                   <div className="font-display uppercase tracking-wide text-[14px]" style={{ color: play.color }}>{cur.slide.t}</div>
                   {/* v0.80: где я нахожусь в курсе — текущий раздел; нумерация сквозная (шапка справа) */}
                   {play.items.length > (cur.sec.slides.length) && (
-                    <span className="font-pixel text-[8px] text-faint">раздел: {cur.sec.title}</span>
+                    <span className="font-pixel text-[8px] text-faint">раздел {TRAINING.indexOf(cur.sec) + 1}: {cur.sec.title}</span>
                   )}
                   {frames.length > 1 && (
                     <span className="font-pixel text-[8px] text-faint">клик по снимку — следующий кадр</span>
