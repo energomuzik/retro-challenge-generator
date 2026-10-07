@@ -85,7 +85,7 @@ const LS_VOL = 'rcgMusicVol'; // 0..1, дефолт 0.5
 const LS_ON = 'rcgMusicOn'; // '1' | '0', дефолт включена
 const LS_MODE = 'rcgMusicMode'; // 'title' | 'everywhere', дефолт 'everywhere' (v0.84.0)
 const LS_WILD = 'rcgMusicWild'; // '1' | '0', дефолт выключен
-const LS_RESUME = 'rcgMusicResume'; // 'same' | 'new', дефолт 'same'
+const LS_RESUME = 'rcgMusicResume'; // 'same' | 'new', дефолт 'new' (v0.87.0)
 const LS_POS = 'rcgMusicPos'; // {"t":индекс трека,"p":секунда} — продолжение после F5
 const LS_MIG = 'rcgMusicMig'; // отметка разовых миграций настроек
 
@@ -104,17 +104,20 @@ const writeLS = (k: string, v: string) => {
   }
 };
 
-/* РАЗОВАЯ МИГРАЦИЯ v0.84.0: режим «где играть» стал по умолчанию
-   «везде, кроме создания игры и подключения» (просил заказчик) —
-   старую сохранённую настройку сбрасываем один раз; дальше каждый
-   волен выбрать своё, и его выбор больше не трогаем. */
-if (readLS(LS_MIG) !== '84') {
+/* РАЗОВАЯ МИГРАЦИЯ v0.87.0 (и раньше — v0.84.0): дефолты музыки приведены
+   к просьбе заказчика — «где играть» = «везде, кроме создания игры и
+   подключения», «после тишины» = ВКЛЮЧАТЬ НОВУЮ МЕЛОДИЮ, «рандомный
+   рандом» = выключен. Старые сохранённые настройки этих трёх пунктов
+   сбрасываем один раз; дальше каждый волен выбрать своё. */
+if (readLS(LS_MIG) !== '86') {
   try {
     localStorage.removeItem(LS_MODE);
+    localStorage.removeItem(LS_RESUME);
+    localStorage.removeItem(LS_WILD);
   } catch {
     /* noop */
   }
-  writeLS(LS_MIG, '84');
+  writeLS(LS_MIG, '86');
 }
 
 /* Восстановление плеера после обновления страницы (F5): читаем, какой
@@ -273,7 +276,7 @@ export const useMusic = create<MusicState>((set) => ({
     return 0.5;
   })(),
   wild: readLS(LS_WILD) === '1',
-  resume: readLS(LS_RESUME) === 'new' ? 'new' : 'same',
+  resume: readLS(LS_RESUME) === 'same' ? 'same' : 'new', // v0.87.0: дефолт «включать новую мелодию»
   status: 'idle',
   error: '',
   track: '',
