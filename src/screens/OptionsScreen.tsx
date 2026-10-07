@@ -310,8 +310,10 @@ export default function OptionsScreen() {
                 </div>
                 <p className="text-[11px] text-faint mt-2 leading-relaxed">
                   Самый простой способ: нажмите «Скачать сервер», запустите <span className="text-paper">retropolia-host.bat</span> — он сам
-                  поставит туннель Cloudflare и <span className="text-paper">скопирует ссылку в буфер</span>. Вставьте её сюда (и передайте друзьям —
-                  они вставят в это же поле). Хаб пересылает весь трафик через компьютер хоста — работает там, где облако PeerJS недоступно.
+                  поставит туннель Cloudflare и <span className="text-paper">скопирует ссылку в буфер</span>. Вставьте её сюда. Затем в лобби
+                  комнаты нажмите <span className="text-paper">«Скопировать ссылку-приглашение»</span> — адрес хаба вложится в ссылку сам, и
+                  друзьям вписывать ничего не придётся: они просто откроют ссылку. Хаб пересылает весь трафик через компьютер хоста — работает
+                  там, где облако PeerJS недоступно.
                 </p>
                 <div className="border-t-2 border-edge pt-3 mt-3">
                 <Field label="Свой реле-сервер (если облако 0.peerjs.com недоступно)">
