@@ -1,13 +1,19 @@
-/* v0.83.0: ФОНОВАЯ МУЗЫКА — плейлист с Яндекс.Диска (по решению заказчика:
-   только Яндекс, без вшитых треков). Музыка играет вне партийного контура:
-   в главном меню и на всех экранах работы с проектом; молчит при создании
-   игры, подключении, в лобби и во время партии, а также в запуске ромов.
+/* v0.83.1: ФОНОВАЯ МУЗЫКА — плейлист с Яндекс.Диска. ИСПРАВЛЕНИЕ: Диск стал
+   отклонять загрузки с чужим Referer (HTTP 403 Invalid Referer) — браузер
+   посылал Referer сайта (github.io) при загрузке трека, и файл «не поддержи-
+   вался» (ошибка «no supported source»). ЛЕКАРСТВО: в index.html добавлен
+   <meta name="referrer" content="no-referrer"> — запросы идут без Referer,
+   Диск отдаёт файл. Дополнительно: плеер стал живучим — при сбое загрузки
+   сам берёт СВЕЖУЮ прямую ссылку (старые протухают) и переходит к следующему
+   треку, «Проверить плейлист» теперь проверяет реальную загрузку, а не только
+   ответ API.
 
    КАК РАБОТАЕТ: треки хранятся на Яндекс.Диске автора (публичные ссылки).
-   По публичной ссылке открытый API Диска (cloud-api.yandex.net) отдаёт
-   прямую ссылку на файл — браузер играет её через один <audio> с Range-
-   стримингом (файл не скачивается целиком). Сайт не весит ни байта больше:
-   музыка не вшивается в бандл и не грузится, пока не включена.
+   По публичной ссылке открытый API Диска (cloud-api.yandex.net) отдаёт пря-
+   мую ссылку на файл — браузер играет её через один <audio> с Range-стрими-
+   нгом (файл не скачивается целиком). Сайт не весит ни байта больше: музыка
+   не вшивается в бандл и не грузится, пока не включена. Прямая ссылка
+   ре-резолвится при каждом старте трека — presigned-адреса недолговечны.
 
    АВТОПЛЕЙ: браузеры запрещают звук до первого действия пользователя —
    музыка стартует после первого клика/клавиши на сайте (initMusic).
@@ -82,7 +88,7 @@ export const useMusic = create<MusicState>((set) => ({
     set({ enabled: on });
     if (!on) {
       pauseAudio();
-      useMusic.setState({ status: 'idle' });
+      useMusic.setState({ status: 'idle', error: '' });
     } else {
       void playCurrent(true);
     }
@@ -110,17 +116,21 @@ let audio: HTMLAudioElement | null = null;
 let curTrack = -1; // индекс текущего трека (-1 = ещё не выбирали)
 let currentScreen = 'menu';
 let gesture = false; // был ли первый жест пользователя (снятие блокировки автоплея)
-let lastTry = 0; // защита от спама ретраев при лежащем Диске
+let lastTry = 0; // защита от спама запросов к Диску при полном отказе
+let failStreak = 0; // подряд не заигравших треков (успех обнуляет)
+let recovering = false; // внутри цепочки авто-переключения (защита от двойного перехода)
 
 function getAudio(): HTMLAudioElement {
   if (audio) return audio;
   audio = new Audio();
   audio.preload = 'none';
+  /* Главное лекарство от 403 Invalid Referer — мета-тег no-referrer
+     в index.html: браузер не посылает Referer на Диск. */
   audio.addEventListener('ended', () => {
     nextTrack();
   });
   audio.addEventListener('error', () => {
-    useMusic.setState({ status: 'error', error: 'файл не проигрался (сеть?)' });
+    handlePlaybackFailure('файл не загрузился с Диска');
   });
   return audio;
 }
@@ -134,7 +144,8 @@ function pauseAudio() {
 }
 
 /** Прямая ссылка на файл по публичной ссылке Диска. Открытый API:
- *  ключ не нужен, вход в аккаунт не нужен, CORS разрешает сайтам. */
+ *  ключ не нужен, вход в аккаунт не нужен, CORS разрешает сайтам.
+ *  Вызывается при КАЖДОМ старте трека: presigned-ссылка недолговечна. */
 async function resolveHref(key: string): Promise<string> {
   const r = await fetch(
     `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(key)}`,
@@ -151,13 +162,38 @@ function allowedNow(): boolean {
   return !SILENT_SCREENS.includes(currentScreen);
 }
 
+/** Сбой загрузки трека: свежий резолв следующего трека; после того как весь
+ *  плейлист подряд не заиграл — внятная ошибка и авто-попытка раз в минуту. */
+function handlePlaybackFailure(reason: string): void {
+  if (recovering) return;
+  const st = useMusic.getState();
+  if (!st.enabled || !allowedNow()) return;
+  failStreak++;
+  if (failStreak >= SOURCES.length) {
+    useMusic.setState({ status: 'error', error: `Яндекс.Диск не отдаёт треки (${reason}). Попробую ещё раз через минуту` });
+    setTimeout(() => {
+      if (useMusic.getState().status === 'error' && useMusic.getState().enabled && allowedNow()) {
+        failStreak = 0;
+        void playCurrent(true);
+      }
+    }, 60000);
+    return;
+  }
+  recovering = true;
+  curTrack = (curTrack + 1) % SOURCES.length;
+  setTimeout(() => {
+    recovering = false;
+    void playCurrent(true);
+  }, 1200);
+}
+
 async function playCurrent(force = false): Promise<void> {
   const st = useMusic.getState();
   if (!st.enabled || !gesture) return;
   if (!allowedNow()) return;
   if (!force && Date.now() - lastTry < 15000) return; // после ошибки не долбим Диск чаще раза в 15 с
   lastTry = Date.now();
-  useMusic.setState({ status: 'resolving' });
+  useMusic.setState({ status: 'resolving', error: '' });
   try {
     if (curTrack < 0) curTrack = Math.floor(Math.random() * SOURCES.length); // первый трек — случайный
     const href = await resolveHref(SOURCES[curTrack].key);
@@ -165,10 +201,16 @@ async function playCurrent(force = false): Promise<void> {
     if (a.src !== href) a.src = href;
     a.volume = useMusic.getState().volume;
     await a.play();
+    failStreak = 0; // успех — счётчик отказов в ноль
     useMusic.setState({ status: 'playing', error: '' });
   } catch (e) {
-    // Отказ play() без жеста или сеть — тихо; статус покажем в Опциях.
-    useMusic.setState({ status: 'error', error: e instanceof Error ? e.message : String(e) });
+    if (e instanceof DOMException && e.name === 'NotAllowedError') {
+      // Браузер ещё не дал звук (нет жеста пользователя) — это не отказ Диска.
+      useMusic.setState({ status: 'paused', error: '' });
+      return;
+    }
+    // Ошибка сети/загрузки — само лечение: свежая ссылка, следующий трек.
+    handlePlaybackFailure(e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -209,16 +251,46 @@ export function initMusic(): void {
   window.addEventListener('keydown', kick);
 }
 
-/** Проверка плейлиста из Опций: сколько источников отвечает. */
+/** Проверка плейлиста из Опций — ЧЕСТНАЯ: для каждого трека резолвим прямую
+ *  ссылку и пробуем прочитать метаданные файла (не только ответ API). */
 export async function probePlaylist(): Promise<{ ok: number; fail: number }> {
   let ok = 0;
   let fail = 0;
   for (const s of SOURCES) {
     try {
       const r = await fetch(
-        `https://cloud-api.yandex.net/v1/disk/public/resources?public_key=${encodeURIComponent(s.key)}`,
+        `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(s.key)}`,
       );
-      if (r.ok) ok++;
+      if (!r.ok) {
+        fail++;
+        continue;
+      }
+      const j = (await r.json()) as { href?: string };
+      if (!j.href) {
+        fail++;
+        continue;
+      }
+      const a = document.createElement('audio');
+      a.preload = 'metadata'; // Referer убран мета-тегом no-referrer (index.html)
+      a.src = j.href;
+      const good = await new Promise<boolean>((res) => {
+        const t = setTimeout(() => {
+          a.src = '';
+          res(false);
+        }, 7000);
+        a.addEventListener('loadedmetadata', () => {
+          clearTimeout(t);
+          a.src = '';
+          res(true);
+        }, { once: true });
+        a.addEventListener('error', () => {
+          clearTimeout(t);
+          a.src = '';
+          res(false);
+        }, { once: true });
+        a.load();
+      });
+      if (good) ok++;
       else fail++;
     } catch {
       fail++;
