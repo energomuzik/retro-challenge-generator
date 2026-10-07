@@ -6,7 +6,7 @@ import { idbDel, idbAll, exportLibrary, importLibrary } from '../db';
 import { STORES } from '../db';
 import { sfx } from '../sound';
 import { downloadHostBat } from '../host/hostPackage';
-import { MUSIC_AUTHOR_URL, MUSIC_TITLES, probePlaylist, useMusic } from '../music';
+import { MUSIC_AUTHOR_URL, MUSIC_AUTHOR_YT, MUSIC_TITLES, probePlaylist, useMusic } from '../music';
 
 const DEL_MODES: { key: 'instant' | 'confirm' | 'hold'; label: string; hint: string }[] = [
   { key: 'instant', label: 'Сразу', hint: 'клик по крестику удаляет сразу, как раньше' },
@@ -34,12 +34,17 @@ export default function OptionsScreen() {
   const mError = useMusic((s) => s.error);
   const mTrack = useMusic((s) => s.track);
   const mWild = useMusic((s) => s.wild);
+  const mResume = useMusic((s) => s.resume);
+  const mCacheCount = useMusic((s) => s.cacheCount);
+  const mCacheBytes = useMusic((s) => s.cacheBytes);
   const mSet = useMusic((s) => s.setEnabled);
   const mSetMode = useMusic((s) => s.setMode);
   const mSetVolume = useMusic((s) => s.setVolume);
   const mSetWild = useMusic((s) => s.setWild);
+  const mSetResume = useMusic((s) => s.setResume);
+  const mClearCache = useMusic((s) => s.clearCache);
   const mNext = useMusic((s) => s.next);
-  const [askAuthor, setAskAuthor] = useState(false);
+  const [askUrl, setAskUrl] = useState(''); // какой внешний адрес собираемся открыть (окно-предупреждение)
 
   // Экспорт всей библиотеки (карты, тайлы, ромы, сохранения, фишки) в один файл
   const doExport = async () => {
@@ -305,7 +310,7 @@ export default function OptionsScreen() {
                 checked={mEnabled}
                 onChange={(v) => mSet(v)}
                 label="Фоновая музыка (Яндекс.Диск)"
-                hint="Ретро-миксы Dj Berto: 7 Dendy minimix + 2 RetroGame MIX. Треки выбираются случайно и не повторяют предыдущий; уходя в тишину — пауза, вернулись — продолжение с того же места. В партии, подключении, создании, запуске ромов и обучении — тишина. Настройки запоминаются."
+                hint="Ретро-миксы Dj Berto: 7 Dendy minimix + 2 RetroGame MIX. Треки выбираются случайно и не повторяют предыдущий; уходя в тишину — пауза, вернулись — продолжение с того же места; после F5 плеер продолжит тот же трек с того же места. Прослушанный трек сохраняется на компьютере и дальше играет локально, без скачиваний. В партии, подключении, создании, запуске ромов и обучении — тишина."
               />
               <div className="flex items-center gap-3 flex-wrap">
                 <span className="font-pixel text-[9px] text-faint">🔉</span>
@@ -338,6 +343,25 @@ export default function OptionsScreen() {
                   ))}
                 </div>
               </div>
+              <div>
+                <div className="tick-label mb-1.5">После тишины</div>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {([
+                    ['same', 'Продолжать ту же мелодию', 'Вернулись из тишины (партия, подключение, обучение) — трек продолжается с того места, где остановился (по умолчанию)'],
+                    ['new', 'Включать новую мелодию', 'Вернулись из тишины — включается случайный новый трек (со случайного места, если включён «рандомный рандом»)'],
+                  ] as ['same' | 'new', string, string][]).map(([r, lbl, hint]) => (
+                    <button
+                      key={r}
+                      onClick={() => { mSetResume(r); sfx.hover(); }}
+                      title={hint}
+                      className={`text-left px-3 py-2 border-2 transition-colors cursor-pointer ${mResume === r ? 'border-teal bg-teal/10' : 'border-edge hover:border-edge2'}`}
+                    >
+                      <div className={`font-display text-[11px] uppercase ${mResume === r ? 'text-teal' : 'text-paper'}`}>{lbl}</div>
+                      <div className="text-[10px] text-dim mt-0.5 leading-snug">{hint}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="flex items-center gap-2.5 flex-wrap">
                 <span className="font-pixel text-[9px] text-teal">▶</span>
                 <span className="font-display text-[11px] text-paper" title={mTrack}>
@@ -360,6 +384,21 @@ export default function OptionsScreen() {
                   {Ic.rotate(13)} Проверить плейлист
                 </PxBtn>
               </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <span
+                  className="tick-label text-faint"
+                  title="Первое прослушивание стримится с Диска и одновременно сохраняется на компьютер; дальше трек играет локально, без скачиваний"
+                >
+                  В кэше компьютера: {mCacheCount} из {MUSIC_TITLES.length} треков ({Math.round(mCacheBytes / 1048576)} МБ)
+                </span>
+                <PxBtn
+                  small
+                  onClick={() => { void mClearCache().then(() => toast('Кэш музыки очищен — треки снова будут скачиваться с Диска', 'ok')); }}
+                  title="Стереть сохранённые на компьютере треки"
+                >
+                  {Ic.trash(13)} Очистить кэш
+                </PxBtn>
+              </div>
               <label className="flex items-start gap-2.5 cursor-pointer select-none">
                 <input
                   type="checkbox" checked={mWild}
@@ -369,22 +408,32 @@ export default function OptionsScreen() {
                 <span>
                   <span className="font-display text-[11px] text-paper uppercase">Совсем рандомный рандом</span>
                   <span className="block text-[10px] text-dim mt-0.5 leading-snug">
-                    каждый новый трек стартует со СЛУЧАЙНОГО места (а не с начала) — треки и так выбираются случайно;
-                    работает при первом старте, кнопке «Следующий трек» и по окончании трека
+                    каждый новый трек стартует со СЛУЧАЙНОГО места (а не с начала), и раз в 3–7 минут мелодия сама
+                    переключается на другой случайный трек в случайном месте — улучшенный рандом
                   </span>
                 </span>
               </label>
               <p className="text-[11px] text-faint leading-relaxed">
-                Треки не вшиты в сайт — они стримятся с Яндекс.Диска напрямую в браузер, поэтому сайт грузится как раньше.
-                Музыка стартует после первого клика/клавиши на сайте (так требует браузер); при переходе в тишину ставится
-                на паузу и продолжается с того же места, треки идут в случайном порядке. Внизу экрана при старте музыки
-                выезжает микро-плеер: название трека, «следующий» и громкость (наведите мышь — не уедет). Автор музыки:{' '}
+                Треки не вшиты в сайт — первый раз они стримятся с Яндекс.Диска и одновременно сохраняются на компьютер
+                (кэш браузера), все следующие разы играют локально, без скачиваний. Музыка стартует после первого
+                клика/клавиши (так требует браузер; если браузер разрешает автоплей — после F5 заиграет сразу, продолжив
+                тот же трек с того же места); при переходе в тишину ставится на паузу и продолжается с того же места,
+                треки идут в случайном порядке. Внизу экрана при старте музыки выезжает микро-плеер: название трека,
+                «следующий» и громкость (наведите мышь — не уедет). Автор музыки:{' '}
                 <button
-                  onClick={() => setAskAuthor(true)}
+                  onClick={() => setAskUrl(MUSIC_AUTHOR_URL)}
                   className="text-teal underline decoration-dotted hover:text-[#7ee7d0] cursor-pointer"
                   title="Открыть сайт автора (с предупреждением)"
                 >
                   Dj Berto — Dendy (NES) minimixes
+                </button>
+                , его{' '}
+                <button
+                  onClick={() => setAskUrl(MUSIC_AUTHOR_YT)}
+                  className="text-teal underline decoration-dotted hover:text-[#7ee7d0] cursor-pointer"
+                  title="Открыть YouTube-канал автора (с предупреждением)"
+                >
+                  YouTube-канал @DJ_Berto
                 </button>{' '}
                 (все {MUSIC_TITLES.length} треков: {MUSIC_TITLES.join(' · ')}). Источник: Яндекс.Диск автора проекта.
               </p>
@@ -506,22 +555,22 @@ export default function OptionsScreen() {
           </div>
         </Modal>
       )}
-      {askAuthor && (
-        <Modal title="Уходим с нашей странички?" icon={Ic.globe(16)} onClose={() => setAskAuthor(false)} w="max-w-md">
+      {askUrl !== '' && (
+        <Modal title="Уходим с нашей странички?" icon={Ic.globe(16)} onClose={() => setAskUrl('')} w="max-w-md">
           <div className="p-4 space-y-4">
             <p className="text-[13px] text-dim leading-relaxed">
-              Сейчас в новой вкладке откроется сайт автора музыки —{' '}
-              <span className="text-paper font-display text-[12px]">promodj.com/berto</span>.
+              Сейчас в новой вкладке откроется {askUrl === MUSIC_AUTHOR_YT ? 'YouTube-канал' : 'сайт'} автора музыки —{' '}
+              <span className="text-paper font-display text-[12px] break-all">{askUrl}</span>.
               Вы покидаете нашу страничку и переходите во ВНЕШНЕЕ место, за содержание которого проект не отвечает.
             </p>
             <div className="flex items-center gap-2 flex-wrap">
               <PxBtn
                 color="teal"
-                onClick={() => { window.open(MUSIC_AUTHOR_URL, '_blank', 'noopener,noreferrer'); setAskAuthor(false); }}
+                onClick={() => { window.open(askUrl, '_blank', 'noopener,noreferrer'); setAskUrl(''); }}
               >
-                {Ic.globe(13)} Открыть сайт автора
+                {Ic.globe(13)} Открыть {askUrl === MUSIC_AUTHOR_YT ? 'YouTube' : 'сайт автора'}
               </PxBtn>
-              <GhostBtn onClick={() => setAskAuthor(false)}>Остаться</GhostBtn>
+              <GhostBtn onClick={() => setAskUrl('')}>Остаться</GhostBtn>
             </div>
           </div>
         </Modal>
