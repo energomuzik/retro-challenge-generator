@@ -117,20 +117,22 @@ canvas { image-rendering: pixelated; }
    лёгкое свечение центра и мягкое затемнение углов). Сам кадр обрабатывается
    ПОПИКСЕЛЬНО внутри эмулятора (SegaBox: RGB→YIQ BT.601 → гауссовы фильтры
    «dot crawl» → YIQ→RGB с мерцанием чёрного уровня) — этот слой только довершает вид. */
+/* v0.92: внешняя виньетка «Композита NES» мягче — двойной прогрев (внутри конвейера + снаружи)
+   и шумное мерцание портили цвета: тёплая заливка 0.045 → 0.018, свечение 0.028 → 0.02, ключи мерцания 0.97/0.98 */
 .crt-ntsc-comp {
   pointer-events: none;
   position: fixed; inset: 0; z-index: 89;
   background:
     radial-gradient(ellipse 115% 88% at 50% 42%, rgba(0,0,0,0) 52%, rgba(1,2,8,0.42) 100%),
-    radial-gradient(ellipse 60% 45% at 50% 45%, rgba(255,244,214,0.028), rgba(255,244,214,0) 70%),
-    linear-gradient(rgba(255,184,120,0.045), rgba(255,184,120,0.045));
+    radial-gradient(ellipse 60% 45% at 50% 45%, rgba(255,244,214,0.02), rgba(255,244,214,0) 70%),
+    linear-gradient(rgba(255,184,120,0.018), rgba(255,184,120,0.018));
   animation: ntsc-flicker 6s infinite steps(55);
 }
 @keyframes ntsc-flicker {
   0%, 100% { opacity: 1; }
-  47% { opacity: 0.93; }
+  47% { opacity: 0.97; }
   48% { opacity: 1; }
-  73% { opacity: 0.95; }
+  73% { opacity: 0.98; }
   74% { opacity: 1; }
 }
 /* v0.56: кино-полосы кат-сцен — классический стиль (выезд сверху и снизу) */

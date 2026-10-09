@@ -13,7 +13,11 @@ import { TRAINING, type TSection, type TSlide } from '../trainingData';
    длительность озвучки слайда: голос рассказывает тот же шаг, что на экране.
    Клик по снимку — следующий кадр вручную. Без mp3 — шаг 2.6 с на кадр.
    v0.80: два КУРСА (игрок / создатель карт), сквозная нумерация слайдов,
-   ползунок громкости (localStorage rcgTrainingVol) — сохранены. */
+   ползунок громкости (localStorage rcgTrainingVol) — сохранены.
+   v0.92: ВЫБОР ГОЛОСА ОЗВУЧКИ в шапке окна слайдов — ДМИТРИЙ / КИНАМАН / БЛОГЕРЫ (заглушка:
+   записи «Кинамана» и «Блогеров» ещё не заведены — играет Дмитрий, у кнопок бейдж «скоро»);
+   выбор запоминается (rcgTrainingVoice), смена голоса перезапускает текущий слайд;
+   файлы принимаются и mp3, и FLAC (<раздел>-<номер>.mp3/.flac в voice-kin/, voice-blog/). */
 
 /* URL кадров: Vite собирает всё из src/assets/training (webp), ключ — имя файла */
 const IMGS = import.meta.glob('../assets/training/*.webp', { eager: true, import: 'default', query: '?url' }) as Record<string, string>;
@@ -22,11 +26,33 @@ const imgOf = (key: string): string | null => {
   return typeof url === 'string' ? url : null;
 };
 
-/* mp3-озвучка: имя файла = `${section.id}-${индексСлайда}.mp3` */
-const VOICES = import.meta.glob('../assets/training/voice/*.mp3', { eager: true, import: 'default', query: '?url' }) as Record<string, string>;
-const voiceOf = (secId: string, idx: number): string | null => {
-  const url = VOICES[`../assets/training/voice/${secId}-${idx}.mp3`];
-  return typeof url === 'string' ? url : null;
+/* Озвучка: имя файла = `${section.id}-${индексСлайда}.mp3` (или .flac).
+   v0.92: голоса — Дмитрий (voice/, пока единственный), Кинаман (voice-kin/) и Ретро блоггеры
+   (voice-blog/) — ЗАГЛУШКА выбора: папки будущих записей уже смотрятся glob'ами (и mp3, и FLAC) —
+   файлы положим в папку, и выбор заработает без правок кода. У выбранного голоса своего файла нет —
+   автоматически играет Дмитрий. ВАЖНО: import.meta.glob — только статические литералы. */
+type TVoiceId = 'dm' | 'kin' | 'blog';
+const VOICE_LABEL: Record<TVoiceId, string> = { dm: 'Дмитрий', kin: 'Кинаман', blog: 'Блогеры' };
+const VOICE_DIR: Record<TVoiceId, string> = { dm: '../assets/training/voice/', kin: '../assets/training/voice-kin/', blog: '../assets/training/voice-blog/' };
+const VOICES: Record<string, string> = {
+  ...(import.meta.glob('../assets/training/voice/*.mp3', { eager: true, import: 'default', query: '?url' }) as Record<string, string>),
+  ...(import.meta.glob('../assets/training/voice/*.flac', { eager: true, import: 'default', query: '?url' }) as Record<string, string>),
+  ...(import.meta.glob('../assets/training/voice-kin/*.mp3', { eager: true, import: 'default', query: '?url' }) as Record<string, string>),
+  ...(import.meta.glob('../assets/training/voice-kin/*.flac', { eager: true, import: 'default', query: '?url' }) as Record<string, string>),
+  ...(import.meta.glob('../assets/training/voice-blog/*.mp3', { eager: true, import: 'default', query: '?url' }) as Record<string, string>),
+  ...(import.meta.glob('../assets/training/voice-blog/*.flac', { eager: true, import: 'default', query: '?url' }) as Record<string, string>),
+};
+/* есть ли у голоса СВОЙ файл этого слайда (для честной подписи внизу) */
+const voiceHas = (v: TVoiceId, secId: string, idx: number): boolean => {
+  const base = `${secId}-${idx}`, d = VOICE_DIR[v];
+  return typeof VOICES[`${d}${base}.mp3`] === 'string' || typeof VOICES[`${d}${base}.flac`] === 'string';
+};
+/* URL озвучки слайда: у выбранного голоса своего файла нет → играет Дмитрий */
+const voiceOf = (v: TVoiceId, secId: string, idx: number): string | null => {
+  const base = `${secId}-${idx}`, d = VOICE_DIR[v] ?? VOICE_DIR.dm;
+  const hit = VOICES[`${d}${base}.mp3`] ?? VOICES[`${d}${base}.flac`];
+  if (typeof hit === 'string') return hit;
+  return v === 'dm' ? null : voiceOf('dm', secId, idx);
 };
 
 interface PlayItem { slide: TSlide; sec: TSection; si: number }
@@ -62,6 +88,18 @@ export default function TrainingScreen() {
   const [play, setPlay] = useState<PlayState | null>(null);
   const [paused, setPaused] = useState(false);
   const [muted, setMuted] = useState(false);
+  /* v0.92: голос озвучки — ДМИТРИЙ / КИНАМАН / БЛОГЕРЫ (заглушка: пока играет Дмитрий),
+     выбор запоминается (rcgTrainingVoice) */
+  const [voice, setVoice] = useState<TVoiceId>(() => {
+    try {
+      const raw = localStorage.getItem('rcgTrainingVoice');
+      if (raw === 'kin' || raw === 'blog' || raw === 'dm') return raw;
+    } catch { /* noop */ }
+    return 'dm';
+  });
+  const voiceRef = useRef<TVoiceId>(voice);
+  voiceRef.current = voice;
+  const [ownVoice, setOwnVoice] = useState(true); // у выбранного голоса есть свой файл текущего слайда
   /* v0.80: громкость озвучки — ползунок в шапке окна слайдов, запоминается */
   const [vol, setVol] = useState<number>(() => {
     try {
@@ -93,6 +131,17 @@ export default function TrainingScreen() {
     volRef.current = nv;
     try { localStorage.setItem('rcgTrainingVol', String(nv)); } catch { /* noop */ }
     try { if (audioRef.current) audioRef.current.volume = nv; } catch { /* noop */ }
+  }, []);
+
+  /* v0.92: смена голоса — как выключение звука: новая эпоха, текущий слайд перезапускается
+     с новой озвучкой (пока у Кинамана/Блогеров файлов нет — играет Дмитрий) */
+  const changeVoice = useCallback((v: TVoiceId) => {
+    if (v === voiceRef.current) return; // тот же голос — слайд не перезапускаем
+    setVoice(v);
+    try { localStorage.setItem('rcgTrainingVoice', v); } catch { /* noop */ }
+    sfx.click();
+    epoch.current += 1;
+    setPlay((p) => (p ? { ...p } : p));
   }, []);
 
   /* ---------- v0.81: проигрывание кадров слайда ----------
@@ -133,7 +182,9 @@ export default function TrainingScreen() {
         setFade(false);
       }, 420);
     };
-    const src = !muted ? voiceOf(it.sec.id, it.si) : null;
+    const v = voiceRef.current;
+    setOwnVoice(voiceHas(v, it.sec.id, it.si));
+    const src = !muted ? voiceOf(v, it.sec.id, it.si) : null;
     setVoiceOk(!!src);
     if (!src) {
       /* mp3 нет (сбой генерации/новый слайд) — листаем по таймеру, подписи остаются */
@@ -255,7 +306,13 @@ export default function TrainingScreen() {
   const curImg = frameKey ? imgOf(frameKey) : null;
   const pct = play ? Math.round(((play.idx + 1) / play.items.length) * 100) : 0;
   const totalSlides = useMemo(() => TRAINING.reduce((n, s) => n + s.slides.length, 0), []);
-  const voiceNote = !voiceOk ? 'Этот слайд без mp3 — таймер' : 'Озвучка: нейроголос Дмитрий (mp3)';
+  const voiceNote = !voiceOk
+    ? 'Этот слайд без озвучки — таймер'
+    : voice === 'dm'
+      ? 'Озвучка: нейроголос Дмитрий (mp3)'
+      : ownVoice
+        ? `Озвучка: голос «${VOICE_LABEL[voice]}»`
+        : `Голос «${VOICE_LABEL[voice]}» скоро появится — пока говорит Дмитрий`;
 
   return (
     <div className="h-full crt-grid-bg relative overflow-hidden">
@@ -267,7 +324,7 @@ export default function TrainingScreen() {
           <h1 className="font-pixel text-gold title-glow text-[16px] sm:text-[20px]">ПОМОЩЬ - ОБУЧЕНИЕ</h1>
         </div>
         <p className="mt-2 text-[11px] text-dim font-display uppercase tracking-wider">
-          кадры-шаги с живым курсором и озвучкой нейроголосом · всего {totalSlides} слайдов
+          кадры-шаги с живым курсором и озвучкой (голос — в шапке слайдов) · всего {totalSlides} слайдов
         </p>
 
         {/* v0.80: два курса — слайды каждого курса идут подряд со сквозной нумерацией */}
@@ -323,6 +380,24 @@ export default function TrainingScreen() {
           {/* шапка окна */}
           <div className="shrink-0 flex items-center gap-2 px-4 py-3 border-b-2 border-edge bg-[rgba(13,18,38,0.8)]">
             <span className="font-pixel text-[10px]" style={{ color: play.color }}>{play.title.toUpperCase()}</span>
+            {/* v0.92: выбор голоса озвучки — ДМИТРИЙ / КИНАМАН / БЛОГЕРЫ (заглушка: у двух последних
+                бейдж «скоро», играет Дмитрий); выбор запоминается, смена перезапускает текущий слайд */}
+            <span className="ml-2 hidden sm:flex items-center gap-1">
+              <span className="font-pixel text-[8px] text-faint">ГОЛОС:</span>
+              {(Object.keys(VOICE_LABEL) as TVoiceId[]).map((v) => (
+                <button
+                  key={v}
+                  title={v === 'dm' ? 'Озвучка Дмитрия (нейроголос)' : `Голос «${VOICE_LABEL[v]}» — записи ещё в работе, пока играет Дмитрий`}
+                  onClick={() => changeVoice(v)}
+                  className={`relative px-1.5 py-0.5 border-2 font-pixel text-[8px] uppercase ${voice === v ? 'text-gold border-gold' : 'text-dim border-edge hover:border-edge2'}`}
+                >
+                  {VOICE_LABEL[v]}
+                  {v !== 'dm' && (
+                    <span className="absolute -top-1.5 -right-1.5 px-0.5 text-[7px] leading-none text-magma bg-[rgba(6,9,20,0.85)] border border-magma/60">скоро</span>
+                  )}
+                </button>
+              ))}
+            </span>
             <span className="ml-auto font-pixel text-[9px] text-faint">{play.idx + 1} / {play.items.length}</span>
             <button title={paused ? 'Продолжить (пробел)' : 'Пауза (пробел)'} onClick={togglePause}
               className={`px-2 py-1 border-2 border-edge font-pixel text-[10px] ${paused ? 'text-gold border-gold' : 'text-dim'}`}>

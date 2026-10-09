@@ -160,7 +160,7 @@ export default function SegaBox({
   const chaosJson = JSON.stringify(chaos ?? []);
   const chaosJsonRef = useRef(chaosJson);
   chaosJsonRef.current = chaosJson;
-  /* v0.57: выбранный в опциях NTSC-режим (0/1/2) — живо применяется к эмулятору:
+  /* v0.57: выбранный в опциях NTSC-режим (0/1/2/3) — живо применяется к эмулятору:
      «Мягкий CRT» (2) размывает сам кадр внутри iframe, режим зашивается в HTML
      при пересборке и меняется на лету через postMessage set-crt */
   const ntscMode = useApp((st) => st.options.ntscMode ?? 0);
@@ -253,6 +253,11 @@ export default function SegaBox({
         );
       } else if (d.type === 'ejs-settings-failed') {
         onSettingsFailRef.current?.();
+      } else if (d.type === 'ntsc-fallback') {
+        // v0.92: конвейеру «Композит NES» не хватило производительности — эмулятор сам откатился
+        // на «Мягкий CRT»; синхронизируем опции (выбор сохранится) и объясняем игроку тостом
+        useApp.getState().setOptions({ ntscMode: 2 });
+        useApp.getState().toast('«Композит NES» выключился сам — компьютеру тяжело. Включён «Мягкий CRT»', 'info');
       } else if (d.type === 'ejs-error') {
         setStatus((prev) => (prev === 'ready' ? prev : 'error'));
       } else if ((d.type === 'ejs-state' || d.type === 'ejs-frame') && d.reqId) {
@@ -811,12 +816,15 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     // v0.57: NTSC-режим внутри эмулятора. 0 — ничего; 2 — «Мягкий CRT»:
     // фильтр на canvas (#game) + внутренний оверлей .crti-soft. Режим 1 («Полосатый»)
     // рисуется слоем снаружи (App.tsx) — тут его дублировать не нужно.
-    // v0.91: режим 3 «Композит NES» — честная имитация композитного видеовыхода NES:
-    // попиксельный конвейер ~60 fps (RGB → YIQ BT.601 → горизонтальные гауссовы фильтры:
-    // широкий по яркости Y / узкий по цвету I,Q — «dot crawl» → YIQ → RGB + ЭЛТ-искажения:
-    // мерцание чёрного уровня, тёплый тон), результат — на canvas поверх кадра, оригинал скрыт.
+    // v0.91→v0.92: режим 3 «Композит NES» — честная имитация композитного видеовыхода NES.
+    // v0.92 УСКОРЕНИЕ И ЦВЕТА: конвейер считает в родном разрешении приставки (буфер ≤ ~320×240,
+    // дальше до размера окна растягивает сам CSS), фильтр — по предвычисленной таблице индексов
+    // без ветвлений, геометрия оверлея — по ResizeObserver (никакого reflow в кадре), ограничитель
+    // ~65 fps (на мониторах 120/144 Гц rAF стреляет чаще), аварийный автосоткат на «Мягкий CRT»
+    // при нехватке мощности (ntscFail → postMessage ntsc-fallback наружу). Цвета исправлены:
+    // убраны оранжевая прибавка +0.008 и перегрев R×1.035/B×0.955, мерцание ослаблено до ±0.004.
     'var CRT0=' + JSON.stringify(ntscMode) + ';var CRT=CRT0;',
-    'var NT={on:false,raf:0,W:0,H:0,tmp:null,tctx:null,out:null,octx:null,Y:null,I:null,Q:null,Y2:null,I2:null,Q2:null,img:null,yK:null,iqK:null};',
+    'var NT={on:false,raf:0,W:0,H:0,cv:null,tmp:null,tctx:null,out:null,octx:null,Y:null,I:null,Q:null,Y2:null,I2:null,Q2:null,img:null,yK:null,cK:null,IT:null,L:0,T:0,CW:0,CH:0,dirty:true,bound:false,ro:null,last:0,stat:{n:0,t:0}};',
     'function ntscKernel(sigma,rad){var k=[],i,s=0;for(i=-rad;i<=rad;i++){var w=Math.exp(-(i*i)/(2*sigma*sigma));k.push(w);s+=w;}for(i=0;i<k.length;i++)k[i]/=s;return k;}',
     'function ntscEnsure(w,h){',
     '  if(NT.W===w&&NT.H===h&&NT.tmp)return;',
@@ -829,56 +837,93 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     '  NT.Y=new Float32Array(w*h);NT.I=new Float32Array(w*h);NT.Q=new Float32Array(w*h);',
     '  NT.Y2=new Float32Array(w*h);NT.I2=new Float32Array(w*h);NT.Q2=new Float32Array(w*h);',
     '  NT.img=NT.octx.createImageData(w,h);',
-    '  NT.yK=ntscKernel(1.05,3);NT.iqK=ntscKernel(0.45,2);',
+    '  NT.yK=ntscKernel(0.8,2);NT.cK=ntscKernel(0.5,2);',
+    // v0.92: индексная таблица фильтра — для каждого x пять зажатых соседей, считается ОДИН раз;
+    // в кадре ни одного ветвления (в v0.91 ветвистые циклы с клампингом на каждый тап ели миллисекунды)
+    '  NT.IT=new Int32Array(w*5);',
+    '  var x,j,xi;for(x=0;x<w;x++){for(j=0;j<5;j++){xi=x+j-2;if(xi<0)xi=0;else if(xi>=w)xi=w-1;NT.IT[x*5+j]=xi;}}',
     '  NT.out.style.cssText="position:absolute;pointer-events:none;z-index:2;image-rendering:pixelated;display:none;";',
     '  document.body.appendChild(NT.out);',
+    '  if(!NT.bound){NT.bound=true;window.addEventListener("resize",function(){NT.dirty=true;});}',
+    '  NT.dirty=true;',
+    '}',
+    // v0.92: геометрия оверлея измеряется ТОЛЬКО по сигналу «изменилось» (ResizeObserver/resize):
+    // чтения offsetLeft/offsetWidth в каждом кадре форсировали reflow всего документа 60 раз в секунду —
+    // главная причина «жутких лагов» v0.91
+    'function ntscGeom(cv){',
+    '  var p=cv.parentElement;if(!p)return;',
+    '  if(NT.out.parentElement!==p){if(getComputedStyle(p).position==="static")p.style.position="relative";p.appendChild(NT.out);}',
+    '  NT.L=cv.offsetLeft;NT.T=cv.offsetTop;NT.CW=cv.offsetWidth;NT.CH=cv.offsetHeight;',
     '}',
     'function ntscStartStop(on){',
-    '  if(on){NT.on=true;document.querySelectorAll("#game canvas,#game video").forEach(function(el){el.style.visibility="hidden";});if(!NT.raf)NT.raf=requestAnimationFrame(ntscFrame);}',
+    '  if(on){NT.on=true;NT.dirty=true;document.querySelectorAll("#game canvas,#game video").forEach(function(el){el.style.visibility="hidden";});if(!NT.raf)NT.raf=requestAnimationFrame(ntscFrame);}',
     '  else{NT.on=false;if(NT.raf){cancelAnimationFrame(NT.raf);NT.raf=0;}if(NT.out)NT.out.style.display="none";document.querySelectorAll("#game canvas,#game video").forEach(function(el){el.style.visibility="";});}',
     '}',
-    'function ntscFrame(){',
+    'function ntscFrame(t){',
     '  NT.raf=0;',
     '  if(!NT.on)return;',
+    // v0.92: ограничитель частоты — не чаще ~65 раз в секунду; на мониторах 120/144 Гц rAF
+    // стреляет вдвое-втрое чаще, и конвейер v0.91 молотил вхолостую наперегонки с ядром эмулятора
+    '  if(t-NT.last<15){NT.raf=requestAnimationFrame(ntscFrame);return;}',
+    '  NT.last=t;',
     '  try{',
     '    var cv=document.querySelector("#game canvas")||document.querySelector("#game video");',
-    '    if(cv&&cv.style.visibility!=="hidden")cv.style.visibility="hidden";',
-    '    if(cv){',
-    '      var w=cv.videoWidth||cv.width,h=cv.videoHeight||cv.height;',
-    '      if(w&&h){',
-    '        ntscEnsure(w,h);',
-    '        NT.tctx.drawImage(cv,0,0,w,h);',
-    '        var src=NT.tctx.getImageData(0,0,w,h).data,Y=NT.Y,I=NT.I,Q=NT.Q,n=w*h,i,xi,j,y,row,x,ay,ai,aq;',
+    '    if(!cv){NT.raf=requestAnimationFrame(ntscFrame);return;}',
+    '    if(cv!==NT.cv){NT.cv=cv;NT.dirty=true;if(cv.style.visibility!=="hidden")cv.style.visibility="hidden";if(window.ResizeObserver){if(!NT.ro)NT.ro=new ResizeObserver(function(){NT.dirty=true;});NT.ro.disconnect();NT.ro.observe(cv);}}',
+    '    var w0=cv.videoWidth||cv.width,h0=cv.videoHeight||cv.height;',
+    '    if(!w0||!h0){NT.raf=requestAnimationFrame(ntscFrame);return;}',
+    // v0.92: работаем в РОДНОМ разрешении приставки — буфер не крупнее ~320×240 (NES 256×240 и
+    // Sega 320×224 идут как есть, увеличенное ядром сжимается обратно); вся математика живёт на
+    // этом шаге, до размера окна картинку растягивает сам CSS (image-rendering: pixelated)
+    '    var f=Math.sqrt(w0*h0/76800);if(f<1)f=1;',
+    '    var w=Math.max(32,Math.round(w0/f)),h=Math.max(32,Math.round(h0/f));',
+    '    ntscEnsure(w,h);',
+    '    if(NT.dirty){ntscGeom(cv);NT.dirty=false;}',
+    '    var t0=performance.now();',
+    '    NT.tctx.drawImage(cv,0,0,w,h);',
+    '    var src=NT.tctx.getImageData(0,0,w,h).data,Y=NT.Y,I=NT.I,Q=NT.Q,n=w*h,i,i4;',
     // 1) RGB → YIQ (ITU-R BT.601)
-    '        for(i=0;i<n;i++){var r=src[i*4]/255,g=src[i*4+1]/255,b=src[i*4+2]/255;Y[i]=0.299*r+0.587*g+0.114*b;I[i]=0.596*r-0.274*g-0.322*b;Q[i]=0.211*r-0.523*g+0.312*b;}',
-    // 2) горизонтальные гауссовы фильтры: широкий по Y, узкий по I/Q (края — репликой)
-    '        var yk=NT.yK,iqk=NT.iqK,yr=(yk.length-1)/2,iqr=(iqk.length-1)/2,Y2=NT.Y2,I2=NT.I2,Q2=NT.Q2;',
-    '        for(y=row=0;y<h;y++,row+=w){',
-    '          for(x=0;x<w;x++){',
-    '            ay=0;for(j=-yr;j<=yr;j++){xi=x+j;if(xi<0)xi=0;else if(xi>=w)xi=w-1;ay+=Y[row+xi]*yk[j+yr];}',
-    '            ai=0;aq=0;for(j=-iqr;j<=iqr;j++){xi=x+j;if(xi<0)xi=0;else if(xi>=w)xi=w-1;ai+=I[row+xi]*iqk[j+iqr];aq+=Q[row+xi]*iqk[j+iqr];}',
-    '            Y2[row+x]=ay;I2[row+x]=ai;Q2[row+x]=aq;',
-    '          }',
-    '        }',
-    '        NT.Y=Y2;NT.I=I2;NT.Q=Q2;NT.Y2=Y;NT.I2=I;NT.Q2=Q;Y=NT.Y;I=NT.I;Q=NT.Q;',
-    // 3) YIQ → RGB + ЭЛТ-искажения (мерцание чёрного уровня, тёплый тон)
-    '        var d=NT.img.data,fl=(Math.random()*2-1)*0.012;',
-    '        for(i=0;i<n;i++){',
-    '          var yy=Y[i]+fl,ii=I[i],qq=Q[i];',
-    '          var rr=yy+0.956*ii+0.621*qq,gg=yy-0.272*ii-0.647*qq,bb=yy-1.106*ii-1.703*qq;',
-    '          rr=rr*1.035+0.008;gg=gg*1.0;bb=bb*0.955;',
-    '          d[i*4]=rr<=0?0:rr>=1?255:(rr*255)|0;d[i*4+1]=gg<=0?0:gg>=1?255:(gg*255)|0;d[i*4+2]=bb<=0?0:bb>=1?255:(bb*255)|0;d[i*4+3]=src[i*4+3];',
-    '        }',
-    '        NT.octx.putImageData(NT.img,0,0);',
-    // 4) оверлей — брат кадра (выше картинки, ниже меню EJS), геометрия = прямоугольник кадра
-    '        var p=cv.parentElement;',
-    '        if(p&&NT.out.parentElement!==p){if(getComputedStyle(p).position==="static")p.style.position="relative";p.appendChild(NT.out);}',
-    '        var s=NT.out.style;',
-    '        s.display="block";s.left=cv.offsetLeft+"px";s.top=cv.offsetTop+"px";s.width=cv.offsetWidth+"px";s.height=cv.offsetHeight+"px";',
+    '    for(i=0;i<n;i++){i4=i*4;var r=src[i4]/255,g=src[i4+1]/255,b=src[i4+2]/255;Y[i]=0.299*r+0.587*g+0.114*b;I[i]=0.596*r-0.274*g-0.322*b;Q[i]=0.211*r-0.523*g+0.312*b;}',
+    // 2) горизонтальные гауссовы фильтры: широкий по яркости, узкий по цвету (края — репликой;
+    //    таблица индексов одна для Y и I/Q — радиусы равны) — один проход, без ветвлений
+    '    var it=NT.IT,ky=NT.yK,kc=NT.cK,Y2=NT.Y2,I2=NT.I2,Q2=NT.Q2,row,x,i5;',
+    '    for(row=0;row<n;row+=w){',
+    '      i5=0;',
+    '      for(x=0;x<w;x++,i5+=5){',
+    '        var a0=row+it[i5],a1=row+it[i5+1],a2=row+it[i5+2],a3=row+it[i5+3],a4=row+it[i5+4];',
+    '        Y2[row+x]=Y[a0]*ky[0]+Y[a1]*ky[1]+Y[a2]*ky[2]+Y[a3]*ky[3]+Y[a4]*ky[4];',
+    '        I2[row+x]=I[a0]*kc[0]+I[a1]*kc[1]+I[a2]*kc[2]+I[a3]*kc[3]+I[a4]*kc[4];',
+    '        Q2[row+x]=Q[a0]*kc[0]+Q[a1]*kc[1]+Q[a2]*kc[2]+Q[a3]*kc[3]+Q[a4]*kc[4];',
     '      }',
     '    }',
-    '  }catch(e){NT.on=false;}',
+    // 3) YIQ → RGB (Uint8ClampedArray зажимает диапазон сам) — цвета v0.92: БЕЗ оранжевой прибавки
+    //    +0.008 и перегрева ×1.035/×0.955 (они и портили цвета), только лёгкий тёплый тон,
+    //    компенсация насыщенности ×1.06 после узкого фильтра цвета и мерцание чёрного ±0.004
+    '    var d=NT.img.data,fl=(Math.random()-0.5)*0.008;',
+    '    for(i=0;i<n;i++){',
+    '      var yy=Y2[i]+fl,ii=I2[i]*1.06,qq=Q2[i]*1.06;',
+    '      var rr=(yy+0.956*ii+0.621*qq)*1.015,gg=yy-0.272*ii-0.647*qq,bb=(yy-1.106*ii-1.703*qq)*0.985;',
+    '      i4=i*4;d[i4]=rr*255;d[i4+1]=gg*255;d[i4+2]=bb*255;d[i4+3]=255;',
+    '    }',
+    '    NT.octx.putImageData(NT.img,0,0);',
+    // 4) оверлей — брат кадра (выше картинки, ниже меню EJS): геометрия из кеша, без чтений layout
+    '    var s=NT.out.style;',
+    '    s.display="block";s.left=NT.L+"px";s.top=NT.T+"px";s.width=NT.CW+"px";s.height=NT.CH+"px";',
+    // 5) v0.92: контроль производительности — среднее время обработки 60 кадров; не успеваем (~22 мс)
+    '    NT.stat.t+=performance.now()-t0;NT.stat.n++;',
+    '    if(NT.stat.n>=60){if(NT.stat.t/NT.stat.n>22){ntscFail();return;}NT.stat.n=0;NT.stat.t=0;}',
+    '  }catch(e){ntscFail();return;}',
     '  if(NT.on)NT.raf=requestAnimationFrame(ntscFrame);',
+    '}',
+    // v0.92: аварийный откат — конвейеру не хватает мощности или он сломался: тихо включаем
+    // «Мягкий CRT» и сообщаем наружу, чтобы Опции показали актуальный режим
+    'function ntscFail(){',
+    '  NT.on=false;if(NT.raf){cancelAnimationFrame(NT.raf);NT.raf=0;}',
+    '  if(NT.ro){try{NT.ro.disconnect();}catch(e2){}NT.ro=null;}',
+    '  if(NT.out)NT.out.style.display="none";',
+    '  document.querySelectorAll("#game canvas,#game video").forEach(function(el){el.style.visibility="";});',
+    '  CRT=2;applyCrt();',
+    '  try{window.parent.postMessage({type:"ntsc-fallback",m:2},"*");}catch(e3){}',
     '}',
     'function applyCrt(){',
     '  var st=document.getElementById("crt-cfstyle");',
