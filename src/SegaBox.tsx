@@ -817,14 +817,23 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     // фильтр на canvas (#game) + внутренний оверлей .crti-soft. Режим 1 («Полосатый»)
     // рисуется слоем снаружи (App.tsx) — тут его дублировать не нужно.
     // v0.91→v0.92: режим 3 «Композит NES» — честная имитация композитного видеовыхода NES.
-    // v0.92 УСКОРЕНИЕ И ЦВЕТА: конвейер считает в родном разрешении приставки (буфер ≤ ~320×240,
-    // дальше до размера окна растягивает сам CSS), фильтр — по предвычисленной таблице индексов
-    // без ветвлений, геометрия оверлея — по ResizeObserver (никакого reflow в кадре), ограничитель
-    // ~65 fps (на мониторах 120/144 Гц rAF стреляет чаще), аварийный автосоткат на «Мягкий CRT»
-    // при нехватке мощности (ntscFail → postMessage ntsc-fallback наружу). Цвета исправлены:
-    // убраны оранжевая прибавка +0.008 и перегрев R×1.035/B×0.955, мерцание ослаблено до ±0.004.
+    // v0.92→v0.93 ЦВЕТА КАК НА ТЕЛЕВИЗОРЕ: найден главный враг цветов — в обратной матрице
+    // YIQ→RGB у синего канала стоял минус при Q вместо плюса (B=Y−1.106I−1.703Q вместо
+    // B=Y−1.106I+1.703Q): зелёный превращался в голубой, фиолетовые оттенки уезжали в красноту.
+    // Конвейер теперь честный композитный — как у приставки, подключённой к телевизору (и как
+    // NTSCx2 в fceux): RGB→YIQ → МОДУЛЯЦИЯ на поднесущую (фаза 240° на пиксель — такт PPU
+    // 5.37 МГц против поднесущей 3.58 МГц — и +120° на строку: 341 такт в строке; отсюда
+    // фирменные радужные кромки NES на границах цветов) → ДЕМОДУЛЯЦИЯ окном 3 пикселя,
+    // накрывающим ровно один период несущей (для постоянного цвета — математически ТОЧНЫЙ
+    // возврат Y/I/Q, оттенок не плывёт) → аналоговые гауссовы маски (шире по яркости, уже по
+    // цвету = полоса частот телевизора, dot crawl на переходах) → YIQ→RGB с ПРАВИЛЬНОЙ обратной
+    // матрицей и БЕЗ тёплых множителей/компенсаций — палитра ровно та, что выдаёт приставка.
+    // Скорость v0.92 сохранена: родное разрешение приставки (буфер ≤ ~320×240), предвычисленные
+    // таблицы индексов и фаз (COS/SIN), геометрия оверлея по ResizeObserver (никакого reflow в
+    // кадре), ограничитель ~65 fps, аварийный автосоткат на «Мягкий CRT» при нехватке мощности
+    // (ntscFail → postMessage ntsc-fallback наружу).
     'var CRT0=' + JSON.stringify(ntscMode) + ';var CRT=CRT0;',
-    'var NT={on:false,raf:0,W:0,H:0,cv:null,tmp:null,tctx:null,out:null,octx:null,Y:null,I:null,Q:null,Y2:null,I2:null,Q2:null,img:null,yK:null,cK:null,IT:null,L:0,T:0,CW:0,CH:0,dirty:true,bound:false,ro:null,last:0,stat:{n:0,t:0}};',
+    'var NT={on:false,raf:0,W:0,H:0,cv:null,tmp:null,tctx:null,out:null,octx:null,Y:null,I:null,Q:null,Y2:null,I2:null,Q2:null,img:null,yK:null,cK:null,IT:null,IT3:null,COS:null,SIN:null,L:0,T:0,CW:0,CH:0,dirty:true,bound:false,ro:null,last:0,stat:{n:0,t:0}};',
     'function ntscKernel(sigma,rad){var k=[],i,s=0;for(i=-rad;i<=rad;i++){var w=Math.exp(-(i*i)/(2*sigma*sigma));k.push(w);s+=w;}for(i=0;i<k.length;i++)k[i]/=s;return k;}',
     'function ntscEnsure(w,h){',
     '  if(NT.W===w&&NT.H===h&&NT.tmp)return;',
@@ -842,6 +851,16 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     // в кадре ни одного ветвления (в v0.91 ветвистые циклы с клампингом на каждый тап ели миллисекунды)
     '  NT.IT=new Int32Array(w*5);',
     '  var x,j,xi;for(x=0;x<w;x++){for(j=0;j<5;j++){xi=x+j-2;if(xi<0)xi=0;else if(xi>=w)xi=w-1;NT.IT[x*5+j]=xi;}}',
+    // v0.93: окно демодуляции — 3 соседних пикселя = ровно один период несущей (3 фазы); у краёв
+    // окно сдвигается внутрь, чтобы три фазы оставались различными, — иначе на крайних столбцах
+    // демодуляция теряла бы точность
+    '  NT.IT3=new Int32Array(w*3);',
+    '  for(x=0;x<w;x++){var a1=x-1,a3=x+1;if(x===0){a1=1;a3=2;}else if(x===w-1){a1=w-3;a3=w-2;}NT.IT3[x*3]=a1;NT.IT3[x*3+1]=x;NT.IT3[x*3+2]=a3;}',
+    // v0.93: фаза поднесущей для каждого пикселя: 240° на пиксель (такт PPU = тактовая/4,
+    // поднесущая = тактовая/6) плюс 120° на строку (341 такт в строке) — те самые фазовые сдвиги,
+    // что рисуют радужные кромки на границах цветов у NES, подключённой к телевизору
+    '  NT.COS=new Float32Array(w*h);NT.SIN=new Float32Array(w*h);',
+    '  var py,px,ph;for(py=0;py<h;py++){var base=py*w,pr=py*2.0943951;for(px=0;px<w;px++){ph=px*4.1887902+pr;NT.COS[base+px]=Math.cos(ph);NT.SIN[base+px]=Math.sin(ph);}}',
     '  NT.out.style.cssText="position:absolute;pointer-events:none;z-index:2;image-rendering:pixelated;display:none;";',
     '  document.body.appendChild(NT.out);',
     '  if(!NT.bound){NT.bound=true;window.addEventListener("resize",function(){NT.dirty=true;});}',
@@ -882,27 +901,47 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     '    var t0=performance.now();',
     '    NT.tctx.drawImage(cv,0,0,w,h);',
     '    var src=NT.tctx.getImageData(0,0,w,h).data,Y=NT.Y,I=NT.I,Q=NT.Q,n=w*h,i,i4;',
-    // 1) RGB → YIQ (ITU-R BT.601)
+    // 1) RGB → YIQ (ITU-R BT.601): палитра приставки → яркость + две цветоразностные оси
     '    for(i=0;i<n;i++){i4=i*4;var r=src[i4]/255,g=src[i4+1]/255,b=src[i4+2]/255;Y[i]=0.299*r+0.587*g+0.114*b;I[i]=0.596*r-0.274*g-0.322*b;Q[i]=0.211*r-0.523*g+0.312*b;}',
-    // 2) горизонтальные гауссовы фильтры: широкий по яркости, узкий по цвету (края — репликой;
-    //    таблица индексов одна для Y и I/Q — радиусы равны) — один проход, без ветвлений
-    '    var it=NT.IT,ky=NT.yK,kc=NT.cK,Y2=NT.Y2,I2=NT.I2,Q2=NT.Q2,row,x,i5;',
+    // 2) МОДУЛЯЦИЯ — цвет едет на поднесущей, как в реальном композитном сигнале:
+    //    s = Y + I·cosφ + Q·sinφ (φ — предвычисленная фазовая таблица из ntscEnsure)
+    '    var COS=NT.COS,SIN=NT.SIN,Y2=NT.Y2,I2=NT.I2,Q2=NT.Q2;',
+    '    for(i=0;i<n;i++){Y2[i]=Y[i]+I[i]*COS[i]+Q[i]*SIN[i];}',
+    // 3) ДЕМОДУЛЯЦИЯ — телевизор отделяет цвет от яркости: окно из 3 пикселей накрывает ровно
+    //    один период несущей (3 фазы): сумма даёт Y точно, произведения на cos/sin — I и Q точно;
+    //    для постоянного цвета это ПОЛНЫЙ roundtrip — оттенок не плывёт
+    '    var it3=NT.IT3,row,x,i3;',
+    '    for(row=0;row<n;row+=w){',
+    '      i3=0;',
+    '      for(x=0;x<w;x++,i3+=3){',
+    '        var b0=row+it3[i3],b1=row+it3[i3+1],b2=row+it3[i3+2];',
+    '        var s0=Y2[b0],s1=Y2[b1],s2=Y2[b2];',
+    '        Y[row+x]=(s0+s1+s2)/3;',
+    '        I2[row+x]=(s0*COS[b0]+s1*COS[b1]+s2*COS[b2])*2/3;',
+    '        Q2[row+x]=(s0*SIN[b0]+s1*SIN[b1]+s2*SIN[b2])*2/3;',
+    '      }',
+    '    }',
+    // 4) аналоговые маски — полоса частот телевизора: по яркости шире (σ0.8), по цвету уже (σ0.5)
+    //    → мягкое смешение соседних цветов и характерный dot crawl; края — репликой; таблица
+    //    индексов одна для Y и I/Q — радиусы равны — один проход, без ветвлений
+    '    var it=NT.IT,ky=NT.yK,kc=NT.cK,i5;',
     '    for(row=0;row<n;row+=w){',
     '      i5=0;',
     '      for(x=0;x<w;x++,i5+=5){',
     '        var a0=row+it[i5],a1=row+it[i5+1],a2=row+it[i5+2],a3=row+it[i5+3],a4=row+it[i5+4];',
     '        Y2[row+x]=Y[a0]*ky[0]+Y[a1]*ky[1]+Y[a2]*ky[2]+Y[a3]*ky[3]+Y[a4]*ky[4];',
-    '        I2[row+x]=I[a0]*kc[0]+I[a1]*kc[1]+I[a2]*kc[2]+I[a3]*kc[3]+I[a4]*kc[4];',
-    '        Q2[row+x]=Q[a0]*kc[0]+Q[a1]*kc[1]+Q[a2]*kc[2]+Q[a3]*kc[3]+Q[a4]*kc[4];',
+    '        I[row+x]=I2[a0]*kc[0]+I2[a1]*kc[1]+I2[a2]*kc[2]+I2[a3]*kc[3]+I2[a4]*kc[4];',
+    '        Q[row+x]=Q2[a0]*kc[0]+Q2[a1]*kc[1]+Q2[a2]*kc[2]+Q2[a3]*kc[3]+Q2[a4]*kc[4];',
     '      }',
     '    }',
-    // 3) YIQ → RGB (Uint8ClampedArray зажимает диапазон сам) — цвета v0.92: БЕЗ оранжевой прибавки
-    //    +0.008 и перегрева ×1.035/×0.955 (они и портили цвета), только лёгкий тёплый тон,
-    //    компенсация насыщенности ×1.06 после узкого фильтра цвета и мерцание чёрного ±0.004
-    '    var d=NT.img.data,fl=(Math.random()-0.5)*0.008;',
+    // 5) YIQ → RGB — ОБРАТНАЯ матрица BT.601 (Uint8ClampedArray зажимает диапазон сам).
+    //    В v0.92 у синего канала стоял минус при Q (−1.703·Q вместо +1.703·Q) — это и ломало
+    //    цвета: зелёный становился голубым, фиолетовые оттенки уезжали в красноту. Теперь знаки
+    //    по учебнику и БЕЗ тёплых множителей/компенсаций — палитра ровно та, что даёт приставка
+    '    var d=NT.img.data;',
     '    for(i=0;i<n;i++){',
-    '      var yy=Y2[i]+fl,ii=I2[i]*1.06,qq=Q2[i]*1.06;',
-    '      var rr=(yy+0.956*ii+0.621*qq)*1.015,gg=yy-0.272*ii-0.647*qq,bb=(yy-1.106*ii-1.703*qq)*0.985;',
+    '      var yy=Y2[i],ii=I[i],qq=Q[i];',
+    '      var rr=yy+0.956*ii+0.621*qq,gg=yy-0.272*ii-0.647*qq,bb=yy-1.106*ii+1.703*qq;',
     '      i4=i*4;d[i4]=rr*255;d[i4+1]=gg*255;d[i4+2]=bb*255;d[i4+3]=255;',
     '    }',
     '    NT.octx.putImageData(NT.img,0,0);',
