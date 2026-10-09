@@ -412,7 +412,7 @@ export function DialogueGraph({ dialog, endings, selId, onSelect, pos, onPos, op
   const zoomRef = useRef(1);
   const vtRef = useRef<VtRef>({ x: 0, y: 0, z: 1, svg: null });
   const layout = useMemo<DlgPosMap>(() => ({ ...layoutDialog(dialog), ...(pos ?? {}) }), [dialog, pos]);
-  const dragRef = useRef<{ id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const dragRef = useRef<{ id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean; el?: Element; pid?: number; cap?: boolean } | null>(null);
   const linkRef = useRef<{ nodeId: string; optIdx: number; x: number; y: number } | null>(null);
   const [, bump] = useState(0); // перерисовка при перетаскивании узла/нити
   /* v0.52: правка текста ПРЯМО В ОКНЕ УЗЛА — что правим и текущая высота поля реплики */
@@ -473,14 +473,19 @@ export function DialogueGraph({ dialog, endings, selId, onSelect, pos, onPos, op
     e.stopPropagation();
     const p = layout[id];
     if (!p) return;
-    dragRef.current = { id, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
-    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    /* v0.95 ФИКС: захват указателя раньше убивал клики и двойные клики по узлу
+       (dblclick ретаргетился на <g> и не доходил до поля реплики/варианта) —
+       захват включается только когда началось настоящее перетаскивание (>2px) */
+    dragRef.current = { id, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false, el: e.currentTarget as Element, pid: e.pointerId, cap: false };
   };
   const nodeMove = (e: React.PointerEvent) => {
     const d = dragRef.current;
     if (!d) return;
     const dx = (e.clientX - d.sx) / zoomRef.current, dy = (e.clientY - d.sy) / zoomRef.current;
-    if (Math.abs(dx) + Math.abs(dy) > 2) d.moved = true;
+    if (Math.abs(dx) + Math.abs(dy) > 2) {
+      d.moved = true;
+      if (!d.cap && d.el && d.pid !== undefined) { try { d.el.setPointerCapture(d.pid); } catch { /* уже потерян */ } d.cap = true; }
+    }
     layout[d.id] = { x: d.ox + dx, y: d.oy + dy };
     bump((n) => n + 1);
   };
@@ -825,7 +830,7 @@ export function QuestMapGraph({ map, pos, onPos, onSelectNpc, onSelectEnding, se
 }) {
   const zoomRef = useRef(1);
   const vtRef = useRef<VtRef>({ x: 0, y: 0, z: 1, svg: null });
-  const dragRef = useRef<{ key: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const dragRef = useRef<{ key: string; sx: number; sy: number; ox: number; oy: number; moved: boolean; el?: Element; pid?: number; cap?: boolean } | null>(null);
   const linkRef = useRef<{ npcId: string; nodeId: string; optIdx: number; x: number; y: number } | null>(null);
   const [, bump] = useState(0);
   /* v0.52: правка текста прямо на узлах общей схемы */
@@ -880,14 +885,17 @@ export function QuestMapGraph({ map, pos, onPos, onSelectNpc, onSelectEnding, se
     e.stopPropagation();
     const p = layout[key];
     if (!p) return;
-    dragRef.current = { key, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
-    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    /* v0.95: захват указателя — только при реальном перетаскивании (см. nodeDown) */
+    dragRef.current = { key, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false, el: e.currentTarget as Element, pid: e.pointerId, cap: false };
   };
   const keyMove = (e: React.PointerEvent) => {
     const d = dragRef.current;
     if (!d) return;
     const dx = (e.clientX - d.sx) / zoomRef.current, dy = (e.clientY - d.sy) / zoomRef.current;
-    if (Math.abs(dx) + Math.abs(dy) > 2) d.moved = true;
+    if (Math.abs(dx) + Math.abs(dy) > 2) {
+      d.moved = true;
+      if (!d.cap && d.el && d.pid !== undefined) { try { d.el.setPointerCapture(d.pid); } catch { /* уже потерян */ } d.cap = true; }
+    }
     layout[d.key] = { x: d.ox + dx, y: d.oy + dy };
     bump((n) => n + 1);
   };

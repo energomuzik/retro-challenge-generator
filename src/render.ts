@@ -846,7 +846,8 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       const ci = map.cells[i];
       const legacyTag = (ci as CellDef & { nextTag?: 'in' | 'out' }).nextTag;
       const nxt = ci.next;
-      if (nxt !== undefined && nxt >= 0 && nxt < N && nxt !== i) {
+      /* v0.95: != null — старые карты хранят hop/next = null (JSON), null >= 0 даёт ложную стрелку в (0,0) */
+      if (nxt != null && nxt >= 0 && nxt < N && nxt !== i) {
         const st = legacyTag ? TAG_STYLES[legacyTag] : null;
         const nst = ci.nextStyle;
         const col = nst?.col ?? (st ? st.c : GOLD);
@@ -856,7 +857,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       }
       const h = ci.hop;
       const hs = ci.hopStyle;
-      if (h !== undefined && h >= 0 && h < N && h !== i) seg(i, h, hs?.col ?? HOP, hs?.col ?? HOP_H, hs?.dash ?? false, 'ПЕРЕХОД', hs?.w ?? 8, hs?.head ?? true, true, hs?.over ?? true);
+      if (h != null && h >= 0 && h < N && h !== i) seg(i, h, hs?.col ?? HOP, hs?.col ?? HOP_H, hs?.dash ?? false, 'ПЕРЕХОД', hs?.w ?? 8, hs?.head ?? true, true, hs?.over ?? true);
     }
   }
 
