@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store';
-import { AnimPreview, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin } from '../ui';
+import { AnimPreview, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin, Toggle } from '../ui';
 import { DialogTreeEditor } from './DialogTreeEditor';
 import { TradeShopEditor } from './TradeEditor';
 import { allDlgFlags, ensureQuestDialog, ensureShopDialog } from '../dialogHubs';
@@ -13,6 +13,7 @@ import { extractTilesFromImage, scaleTileImg } from '../tilecut';
 import type { ExtractInfo } from '../tilecut';
 import { idbDel, idbGet, idbPut, uid } from '../db';
 import type { AnimDef, BossAnimDef, CellDef, CellType, CustomChallenge, CutsceneDef, GameMap, MapEnding, MapTileInfo, NpcAnimDef, NpcLibEntry, NpcQuest, NpcShopOffer, PatrolDef, PlacedAnim, PlacedBoss, PlacedNpc, PlateBg, PortalZone, QuestGoal, QuestGoalKind, RubgItemKind, Stamp, TileGrid, TilePlay, TokenDef, TileGroup, TileImg, WallRect } from '../types';
+import { frameWallsOf } from '../types';
 import { baseModeOf, bossLibEntryOf, challengeSummaryLines, coinsStr, doorKeyHex, isJourneyLike, isQuestMode, isSoloMode, mapModeModified, MAP_MODES, MAP_MODES_TOP, MAX_FIELD, MODE_PRESETS, normResMode, npcLibEntryOf, PLATE_SIZES, questGoalText, soloVariantOf, tileGridDims, tileRectOf, tilePlayOf, TILE_PLAY_OPTS, DOOR_KEYS, RUBG_ITEMS, RUBG_ZONE_PHASES, rubgFmtZone } from '../types';
 import type { MapMode } from '../types';
 import { HoldDeleteButton, rememberDeleted, TileSizeBtns, useKeyDelete } from '../delGuard';
@@ -461,6 +462,10 @@ export default function MapEditor() {
   const [map, setMap] = useState<GameMap | null>(null);
   const [tool, setTool] = useState<Tool>('select');
   const [tileId, setTileId] = useState('');
+  /* v0.97: БОРТА У НОВЫХ ТАЙЛОВ — галочка в палитре: поставленный тайл обводится
+     невидимой рамкой-коллайдером (frameWallsOf). По умолчанию ВЫКЛ — обычный тайл без границ. */
+  const [tileFrame, setTileFrame] = useState(false);
+  const tileFrameRef = useRef(false); // зеркало для асинхронного placeStamp (img.onload)
   const [view, setView] = useState({ x: 0, y: 0, zoom: 1 });
   const [hoverW, setHoverW] = useState<{ x: number; y: number } | null>(null);
   const [nameModal, setNameModal] = useState(false);
@@ -495,6 +500,8 @@ export default function MapEditor() {
   const [placeBossId, setPlaceBossId] = useState(''); // вшитый босс, выбранный для размещения
   const [selBoss, setSelBoss] = useState<string | null>(null); // выбранный размещённый босс
   const [selWall, setSelWall] = useState<number | null>(null); // выбранная стена (индекс)
+  /* v0.97: переименование стены/двери ПРЯМО НА КАРТЕ — двойной клик по стене открывает окошко */
+  const [wallRename, setWallRename] = useState<{ idx: number; value: string } | null>(null);
   const [selPortal, setSelPortal] = useState<number | null>(null); // выбранный портал (индекс)
   const [pickTargetFor, setPickTargetFor] = useState<number | null>(null); // портал, для которого указываем точку перехода (следующий клик по канве = точка)
   /* v0.56: КАТ-СЦЕНЫ — спойлер, выбранная кат-сцена и рисование ЗОНЫ-триггера */
@@ -884,7 +891,36 @@ export default function MapEditor() {
     setSelWall(null);
     dirtyRef.current = true;
     sfx.fail();
-    toast(`Удалены все стены (${cnt}) — вернуть можно кнопкой «Вернуть»`, 'err');
+    toast(m && (m.stamps ?? []).some((st) => st.frame) ? `Удалены все стены (${cnt}) — вернуть можно кнопкой «Вернуть». Рамки-борта тайлов НЕ тронуты: это свойство самих тайлов (галочка в панели тайла)` : `Удалены все стены (${cnt}) — вернуть можно кнопкой «Вернуть»`, 'err');
+  };
+
+  /* ---------- v0.97: ИМЯ СТЕНЫ/ДВЕРИ + переименование ПРЯМО НА КАРТЕ ----------
+     Двойной клик по стене на канве (любым инструментом) — окошко переименования.
+     Имя видно подписью на карте (в редакторе) и в списках «Снять стены при выполнении»
+     — среди десятка дверей видно, какая есть какая. */
+  const saveWallName = () => {
+    if (!wallRename) return;
+    const nm = wallRename.value.trim();
+    updWall(wallRename.idx, { name: nm || undefined });
+    dirtyRef.current = true;
+    setWallRename(null);
+    sfx.coin();
+    toast(nm ? `Название сохранено: «${nm}»` : 'Имя стены убрано', 'ok');
+  };
+  const onCanvasDblClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const m = mapRef.current;
+    if (!m) return;
+    const w = toWorld(e);
+    const wi = wallAtPoint(m, w.x, w.y);
+    if (wi < 0) return;
+    setSelWall(wi);
+    setSelCell(null);
+    setSelStamp(null);
+    setSelAnim(null);
+    setSelBoss(null);
+    setSelNpc(null);
+    setWallRename({ idx: wi, value: (m.walls ?? [])[wi]?.name ?? '' });
+    sfx.hover();
   };
 
   /* ---------- ПОРТАЛЫ: зоны-телепорты между плитками ----------
@@ -1742,12 +1778,13 @@ export default function MapEditor() {
       const maxSide = Math.max(natW, natH);
       const k = maxSide < 64 ? 64 / maxSide : maxSide > 128 ? 128 / maxSide : 1;
       const p = snapPt(wx, wy);
-      const st: Stamp = { id: uid('st'), tid: tileId, x: Math.round(p.x), y: Math.round(p.y), w: Math.round(natW * k), h: Math.round(natH * k), rot: 0, ...(activeLayerRef.current > 0 ? { layer: activeLayerRef.current } : {}) };
+      const st: Stamp = { id: uid('st'), tid: tileId, x: Math.round(p.x), y: Math.round(p.y), w: Math.round(natW * k), h: Math.round(natH * k), rot: 0, ...(activeLayerRef.current > 0 ? { layer: activeLayerRef.current } : {}), ...(tileFrameRef.current ? { frame: true } : {}) };
       setMap((mm) => (mm ? { ...mm, stamps: [...(mm.stamps ?? []), st] } : mm));
       setSelStamp(st.id);
       setSelCell(null);
       dirtyRef.current = true;
       sfx.step();
+      if (tileFrameRef.current) toast('Тайл с БОРТАМИ: вокруг него невидимая рамка — фишки ходят внутри и не выходят наружу (снять/поставить — галочка в панели тайла)', 'ok');
     };
     img.src = t.dataUrl;
   };
@@ -2721,9 +2758,41 @@ export default function MapEditor() {
           ctx.lineWidth = (selected ? 3 : 2) / v.zoom;
           ctx.strokeRect(x, y, w, h);
         };
+        /* v0.97: рамка-борта тайла — пунктирный коралловый контур (выводится из штампа, в игре не видна) */
+        const drawFrameRect = (x: number, y: number, w: number, h: number) => {
+          ctx.save();
+          ctx.fillStyle = 'rgba(255,93,115,0.10)';
+          ctx.fillRect(x, y, w, h);
+          ctx.setLineDash([6 / v.zoom, 5 / v.zoom]);
+          ctx.strokeStyle = 'rgba(255,93,115,0.85)';
+          ctx.lineWidth = 1.6 / v.zoom;
+          ctx.strokeRect(x, y, w, h);
+          ctx.restore();
+        };
         for (let wi = 0; wi < (m.walls ?? []).length; wi++) {
           const wl = m.walls![wi];
           drawWallRect(wl.x, wl.y, wl.w, wl.h, selWall === wi, wl.key);
+          /* v0.97: подпись имени стены/двери НАД прямоугольником — среди десятка дверей видно, какая есть какая */
+          if (wl.name) {
+            ctx.save();
+            ctx.font = `${Math.max(11, 12 / v.zoom)}px monospace`;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'bottom';
+            const label = wl.key ? `🚪 ${wl.name}` : wl.name;
+            const lx = wl.x + 2;
+            const ly = wl.y - 4 / v.zoom;
+            const tw = ctx.measureText(label).width;
+            ctx.fillStyle = 'rgba(4,6,14,0.78)';
+            ctx.fillRect(lx - 2 / v.zoom, ly - Math.max(11, 12 / v.zoom), tw + 6 / v.zoom, Math.max(11, 12 / v.zoom) + 4 / v.zoom);
+            ctx.fillStyle = wl.key ? doorKeyHex(wl.key) : 'rgba(255,150,160,0.95)';
+            ctx.fillText(label, lx, ly);
+            ctx.restore();
+          }
+        }
+        /* v0.97: БОРТА ТАЙЛОВ — пунктирные рамки вокруг штампов с галочкой «борта» */
+        for (const st of m.stamps ?? []) {
+          if (!st.frame) continue;
+          for (const fw of frameWallsOf(st)) drawFrameRect(fw.x, fw.y, fw.w, fw.h);
         }
         if (wallDragRef.current) {
           const wd = wallDragRef.current;
@@ -3481,6 +3550,17 @@ export default function MapEditor() {
                   <GhostBtn small className="flex-1" onClick={() => { folderRef.current?.click(); }}>{Ic.upload(12)} Папка</GhostBtn>
                   <GhostBtn small className="flex-1" onClick={() => { extRef.current?.click(); }}>✂ Нарезать</GhostBtn>
                 </div>
+                {/* v0.97: БОРТА У НОВЫХ ТАЙЛОВ — по умолчанию тайл ставится БЕЗ границ;
+                    галочка включает авто-рамку-коллайдер вокруг каждого поставленного тайла.
+                    Анимации (инструмент «Анимация») рамок не имеют — они не про проходы. */}
+                <div className="border-2 border-edge px-2 py-1.5 mb-2">
+                  <Toggle
+                    checked={tileFrame}
+                    onChange={(vv) => { setTileFrame(vv); tileFrameRef.current = vv; sfx.hover(); }}
+                    label="🧱 Борта у новых тайлов"
+                    hint="Поставленный тайл обводится НЕВИДИМОЙ РАМКОЙ-КОЛЛАЙДЕРОМ: фишки ходят ВНУТРИ тайла и не могут выйти наружу, снаружи не могут войти. Положите тайл корабля, стартуйте внутри — и фишки «на корабле», без ручных невидимых стен. По умолчанию ВЫКЛ — обычный тайл без границ. Для уже стоящего тайла — галочка «Борта-коллайдеры» в его панели; рамка следует за тайлом (двигается, ресайзится, поворачивается) и исчезает вместе с ним."
+                  />
+                </div>
                 {/* палитра: спойлеры-группы (папки, файлы, вырезки) */}
                 {(map.tileGroups ?? []).map((g) => {
                   const inG = g.tids.map((tid) => tileImgById.get(tid)).filter(Boolean) as TileImg[];
@@ -3834,13 +3914,26 @@ export default function MapEditor() {
                     </p>
                     {(map.walls ?? []).length > 0 && (
                       <>
-                        <p className="text-[10px] text-dim leading-tight">Клик по стене — выбрать и тянуть, Delete — удалить выбранную. Можно убрать все стены одной кнопкой:</p>
+                        <p className="text-[10px] text-dim leading-tight">Клик по стене — выбрать и тянуть, ДВОЙНОЙ КЛИК по стене на карте — переименовать (имя видно подписью на карте и в списках квестов), Delete — удалить выбранную. Можно убрать все стены одной кнопкой:</p>
                         <PxBtn color="coral" small className="w-full" onClick={removeAllWalls}>{Ic.trash(12)} Удалить все стены разом</PxBtn>
                         {/* v0.55: ДВЕРЬ — выбранной стене назначается цвет замка; NPC выдаёт ключ этого цвета (в диалоге или наградой квеста), и фишка проходит сквозь */}
                         {selWall !== null && (map.walls ?? [])[selWall] && (
                           <div className="space-y-1 border-2 border-[rgba(255,207,63,0.4)] px-2 py-1.5">
                             <div className="tick-label text-[#ffcf3f]">🚪 Дверь выбранной стены</div>
                             <p className="text-[9px] text-dim leading-tight">Стена с замком = ДВЕРЬ: в игре она видна цветной зоной, и пройти её можно только с КЛЮЧОМ того же цвета. Выдать ключ: панель NPC → диалог «🔑 дать ключ» или награда квеста.</p>
+                            {/* v0.97: ИМЯ стены/двери — видно на карте и в списках «Снять стены» */}
+                            <div className="flex items-center gap-1">
+                              <input
+                                className="field-in flex-1 min-w-0 px-1.5 py-1 text-[10px]"
+                                placeholder="название (напр. Склад, Каюта)"
+                                maxLength={40}
+                                value={(map.walls ?? [])[selWall]!.name ?? ''}
+                                title="Имя стены/двери: подпись на карте и в списках квестов. Двойной клик по стене на карте — то же самое"
+                                onChange={(ev) => updWall(selWall!, { name: ev.target.value || undefined })}
+                                onBlur={(ev) => { const vv = ev.target.value.trim(); if (vv !== ev.target.value) updWall(selWall!, { name: vv || undefined }); }}
+                              />
+                              <GhostBtn small onClick={() => setWallRename({ idx: selWall!, value: (map.walls ?? [])[selWall!]!.name ?? '' })} title="Окно переименования (как двойной клик по стене)">✏</GhostBtn>
+                            </div>
                             <div className="flex items-center gap-1 flex-wrap">
                               <button
                                 onClick={() => updWall(selWall, { key: undefined })}
@@ -4566,6 +4659,7 @@ export default function MapEditor() {
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
+                onDoubleClick={onCanvasDblClick}
                 onPointerLeave={() => { setHoverW(null); onPointerUp(); }}
                 onContextMenu={(e) => e.preventDefault()}
                 onWheel={onWheel}
@@ -4613,7 +4707,8 @@ export default function MapEditor() {
                 {tool === 'link' && <div className="text-gold font-pixel text-[8px]">СТРЕЛКА: клик по ячейке А, затем по Б · Esc — отмена{linkFrom !== null ? ' · выбрана А, жмите Б' : ''}</div>}
                 {tool === 'hop' && <div className="text-coral font-pixel text-[8px]">ПЕРЕХОД: клик по ячейке А, затем по Б — при остановке на А фишка прыгнет на Б · Esc — отмена{linkFrom !== null ? ' · выбрана А, жмите Б' : ''}</div>}
                 {tool === 'erase' && <div className="text-coral font-pixel text-[8px]">ЛАСТИК: клик или тяните с кнопкой — стирает ТАЙЛЫ под курсором · ячейки не трогает</div>}
-                {tool === 'wall' && <div className="text-coral font-pixel text-[8px]">СТЕНА: протяните прямоугольник — фишка не зайдёт внутрь (работает ТОЛЬКО в JOURNEY, в игре невидима) · клик по стене — выбрать и тянуть · Delete — удалить</div>}
+                {tool === 'tile' && <div className="text-sky font-pixel text-[8px]">ТАЙЛ: клик — поставить{tileFrame ? ' · 🧱 БОРТА ВКЛ (рамка-коллайдер вокруг нового тайла — галочка в панели «Тайлы карты»)' : ' · без границ (борта — галочка «🧱 Борта у новых тайлов» в панели «Тайлы карты»)'}</div>}
+                {tool === 'wall' && <div className="text-coral font-pixel text-[8px]">СТЕНА: протяните прямоугольник — фишка не зайдёт внутрь (в игре невидима) · клик по стене — выбрать и тянуть · ДВОЙНОЙ КЛИК — переименовать · Delete — удалить</div>}
                 {tool === 'portal' && <div className="text-[rgb(192,122,255)] font-pixel text-[8px]">{pickTargetFor !== null ? `ПОРТАЛ ${pickTargetFor + 1}: кликните по карте — КУДА переносить (плитку переключите в панели «Плитки и порталы») · Esc — отмена` : 'ПОРТАЛ: протяните зону входа · после этого кликните по карте — куда переносить · клик по порталу — выбрать и тянуть · Delete — удалить'}</div>}
               </div>
               {/* подсказки мыши (v0.46.0: фон + лимит ширины; скрыта, пока открыта правая панель, — раньше текст НАКЛАДЫВАЛСЯ на панель и на статус) */}
@@ -4868,6 +4963,17 @@ export default function MapEditor() {
                     <div className="flex items-center justify-between"><span className="text-[10px] text-dim">Высота</span><Stepper value={Math.round(selStampDef.h)} onChange={(v) => { updStamp(selStampIdx, { h: v }); dirtyRef.current = true; }} min={8} max={2048} step={8} /></div>
                   </div>
                   <p className="text-[10px] text-gold leading-tight">Тяните жёлтый УГОЛОК рамки на карте — меняете размер мышью. Центр не двигается.</p>
+
+                  {/* v0.97: БОРТА-КОЛЛАЙДЕРЫ выбранного тайла */}
+                  <div className="border-2 border-edge px-2 py-1.5">
+                    <Toggle
+                      checked={!!selStampDef.frame}
+                      onChange={(vv) => { updStamp(selStampIdx, { frame: vv || undefined }); dirtyRef.current = true; sfx.hover(); }}
+                      label="🧱 Борта-коллайдеры"
+                      hint="Вокруг тайла невидимая рамка: фишки ходят ВНУТРИ и не могут выйти, снаружи не могут войти. Рамка следует за тайлом (двигается, ресайзится, поворачивается вместе с ним) и исчезает вместе с ним; квесты её не снимают, ключом не открыть. В игре не видна."
+                    />
+                    <p className="text-[9px] text-faint leading-tight mt-1">Корабль, остров, комната — без ручных невидимых стен: стартуйте внутри — фишки «на корабле».</p>
+                  </div>
 
                   <div className="grid grid-cols-2 gap-1.5">
                     <GhostBtn small onClick={() => { updStamp(selStampIdx, { rot: (selStampDef.rot + 1) % 4 }); dirtyRef.current = true; sfx.hover(); }}>Повернуть 90°</GhostBtn>
@@ -5207,7 +5313,7 @@ export default function MapEditor() {
                                   checked={(q.removeWalls ?? []).includes(w.id!)}
                                   onChange={(ev) => updNpcQuest(q.id, { removeWalls: ev.target.checked ? [...(q.removeWalls ?? []), w.id!] : (q.removeWalls ?? []).filter((x) => x !== w.id) })}
                                 />
-                                стена №{wi + 1} ({Math.round(w.w)}×{Math.round(w.h)})
+                                стена/дверь №{wi + 1}{w.name ? ` «${w.name}»` : ''}{w.key ? ` · ${DOOR_KEYS.find((x) => x.id === w.key)?.name ?? ''}` : ''} ({Math.round(w.w)}×{Math.round(w.h)})
                               </label>
                             ))}
                           </div>
@@ -5284,6 +5390,38 @@ export default function MapEditor() {
 
       {/* окошко подтверждения / полоска удержания для Delete-клавиши (режим из Опций) */}
       {keyDel.node}
+
+      {/* v0.97: окно переименования стены/двери — открывается ДВОЙНЫМ КЛИКОМ по стене на карте */}
+      {wallRename && (
+        <Modal
+          title={(map?.walls ?? [])[wallRename.idx]?.key ? 'Переименовать дверь' : 'Переименовать стену'}
+          icon="✏"
+          onClose={() => setWallRename(null)}
+          w="max-w-md"
+        >
+          <div className="space-y-3">
+            <input
+              autoFocus
+              className="field-in w-full px-2 py-1.5 text-[12px]"
+              placeholder="Название: Склад, Каюта, Бункер…"
+              maxLength={40}
+              value={wallRename.value}
+              onChange={(e) => setWallRename({ ...wallRename, value: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); saveWallName(); }
+                if (e.key === 'Escape') { e.preventDefault(); setWallRename(null); }
+              }}
+            />
+            <p className="text-[10px] text-faint leading-tight">
+              Имя видно ПОДПИСЬЮ на карте (у двери — её цвет) и в списках «Снять стены при выполнении квеста» — среди десятка дверей видно, какая есть какая. Пустое поле — убрать имя. Enter — сохранить, Esc — отмена.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <GhostBtn onClick={() => setWallRename(null)}>Отмена</GhostBtn>
+              <PxBtn color="teal" onClick={saveWallName}>Сохранить</PxBtn>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {extract && (
         <Modal title="Нарезка тайлов из картинки" icon={Ic.map(16)} onClose={closeExtract} w="max-w-2xl">

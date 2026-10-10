@@ -1,5 +1,5 @@
 import type { CardDef, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
-import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName } from './types';
+import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
 import { CELL, cellAtPoint, cellCenter, hopTargetOf, prevCellOf, startCellIdx, stepNext, stepPrev, clampMoveSpeed, DEF_MOVE_SPEED } from './render';
@@ -136,6 +136,14 @@ function pointInWall(map: GameMap, x: number, y: number, removed?: string[], key
     if (w.id && removed?.includes(w.id)) continue; // стена СНЯТА выполнением квеста NPC
     if (w.key && keys?.includes(w.key)) continue; // v0.55: дверь открыта КЛЮЧОМ того же цвета
     if (x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h) return true;
+  }
+  /* v0.97: БОРТА ТАЙЛОВ — невидимые рамки штампов с пометкой «борта» (frameWallsOf):
+     без id (квесты не снимают) и без замка (ключом не открываются) — всегда сплошные. */
+  for (const st of map.stamps ?? []) {
+    if (!st.frame) continue;
+    for (const w of frameWallsOf(st)) {
+      if (x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h) return true;
+    }
   }
   return false;
 }

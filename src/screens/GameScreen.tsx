@@ -19,7 +19,7 @@ import {
 import { saveSessionSnapshot } from './Lobby';
 import QuizOverlay from './QuizOverlay';
 import { AnimPreview, EmuVolumeChip, Field, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin, CoinRow } from '../ui';
-import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBossCatchMode, isSoloMode, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName } from '../types';
+import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBossCatchMode, isSoloMode, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, frameWallsOf } from '../types';
 import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem } from '../types';
 import Randomizer from './Randomizer';
 import TradeWindow from './TradeWindow';
@@ -34,24 +34,43 @@ const DIRV: Record<TokenDir, [number, number]> = { up: [0, -1], down: [0, 1], le
 /* НЕВИДИМЫЕ СТЕНЫ (JOURNEY): точка (центр фишки) внутри прямоугольника стены?
    Стены в игре НЕ рисуются — фишка просто не проходит сквозь них, скользя по краю. */
 /* v0.55: у стены может быть key (ДВЕРЬ цвета) — с ключом того же цвета она открыта */
-const inWall = (m: GameMap, x: number, y: number, removed?: string[], keys?: string[]): boolean =>
-  (m.walls ?? []).some((w) => {
-    if (w.id && removed?.includes(w.id)) return false; // снята квестом
-    if (w.key && keys?.includes(w.key)) return false; // дверь открыта ключом
-    return x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h;
-  });
+const inWall = (m: GameMap, x: number, y: number, removed?: string[], keys?: string[]): boolean => {
+  for (const w of m.walls ?? []) {
+    if (w.id && removed?.includes(w.id)) continue; // снята квестом
+    if (w.key && keys?.includes(w.key)) continue; // дверь открыта ключом
+    if (x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h) return true;
+  }
+  /* v0.97: БОРТА ТАЙЛОВ — рамки штампов с пометкой «борта» (всегда сплошные) */
+  for (const st of m.stamps ?? []) {
+    if (!st.frame) continue;
+    for (const w of frameWallsOf(st)) {
+      if (x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h) return true;
+    }
+  }
+  return false;
+};
 
 /* v0.57: КОРОБКА ФИШКИ — нельзя войти ВНУТРЬ стены. Раньше проверялся только ЦЕНТР фишки:
    она визуально «утопала» в стене, пока центр не касался её края (пройти насквозь было
    нельзя, а внутрь — можно). Теперь блокируется пересечение стены с коробкой вокруг
    центра: радиус считается от размера спрайта фишки (34px → ~14px, 64px → ~27px),
    скольжение по стене сохранено (оси X и Y проверяются отдельно). */
-const inWallBox = (m: GameMap, x: number, y: number, r: number, removed?: string[], keys?: string[]): boolean =>
-  (m.walls ?? []).some((w) => {
-    if (w.id && removed?.includes(w.id)) return false; // снята квестом
-    if (w.key && keys?.includes(w.key)) return false; // дверь открыта ключом
-    return x + r > w.x && x - r < w.x + w.w && y + r > w.y && y - r < w.y + w.h;
-  });
+const inWallBox = (m: GameMap, x: number, y: number, r: number, removed?: string[], keys?: string[]): boolean => {
+  for (const w of m.walls ?? []) {
+    if (w.id && removed?.includes(w.id)) continue; // снята квестом
+    if (w.key && keys?.includes(w.key)) continue; // дверь открыта ключом
+    if (x + r > w.x && x - r < w.x + w.w && y + r > w.y && y - r < w.y + w.h) return true;
+  }
+  /* v0.97: БОРТА ТАЙЛОВ — рамки штампов с пометкой «борта» (всегда сплошные):
+     фишка внутри тайла прижимается спрайтом к его границе, но центр остаётся в тайле */
+  for (const st of m.stamps ?? []) {
+    if (!st.frame) continue;
+    for (const w of frameWallsOf(st)) {
+      if (x + r > w.x && x - r < w.x + w.w && y + r > w.y && y - r < w.y + w.h) return true;
+    }
+  }
+  return false;
+};
 
 const colRadiusOf = (p: PlayerState, toks: TokenDef[]): number => {
   const tok = p.tokenKey ? toks.find((t) => t.id === p.tokenKey) : null;

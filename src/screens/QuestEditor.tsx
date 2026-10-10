@@ -329,7 +329,7 @@ export default function QuestEditor() {
                                   checked={(q.removeWalls ?? []).includes(w.id!)}
                                   onChange={(ev) => updQuest(selIdx, q.id, { removeWalls: ev.target.checked ? [...(q.removeWalls ?? []), w.id!] : (q.removeWalls ?? []).filter((x) => x !== w.id) })}
                                 />
-                                стена №{wi + 1} ({Math.round(w.w)}×{Math.round(w.h)})
+                                {w.key ? 'дверь' : 'стена'} №{wi + 1}{w.name ? ` «${w.name}»` : ''}{w.key ? ` · ${DOOR_KEYS.find((x) => x.id === w.key)?.name ?? ''}` : ''} ({Math.round(w.w)}×{Math.round(w.h)})
                               </label>
                             ))}
                           </div>
