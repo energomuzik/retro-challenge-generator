@@ -787,6 +787,8 @@ export function DialogueGraph({ dialog, endings, selId, onSelect, pos, onPos, op
                   pointerEvents="none» — значок никогда не перехватывает клики */}
               {orphan && <text x={p.x + 44} y={p.y + h - 4} fontSize={9} fill="#ff5d73" pointerEvents="none">⚠ не связан</text>}
               {(hasSet || hasReq) && <text x={p.x + NW - 40} y={p.y + h - 4} fontSize={8}>{hasSet ? '🚩' : ''}{hasReq ? '🔒' : ''}</text>}
+              {/* v0.96: 🎙 — у узла есть озвучка реплики (mp3/flac, вшита в карту) */}
+              {n.voice && <text x={p.x + NW - 56} y={p.y + h - 4} fontSize={8.5} pointerEvents="none">🎙</text>}
             </g>
           );
         })}
@@ -1210,6 +1212,8 @@ export function QuestMapGraph({ map, pos, onPos, onSelectNpc, onSelectEnding, se
                 {orphan && <text x={p.x + 44} y={p.y + h - 4} fontSize={9} fill="#ff5d73" pointerEvents="none">⚠ не связан</text>}
                 {opts.some((o) => o.setFlag) && <text x={p.x + NW - 44} y={p.y + h - 4} fontSize={8.5}>🚩</text>}
                 {opts.some((o) => o.reqFlag || o.reqNotFlag) && <text x={p.x + NW - 26} y={p.y + h - 4} fontSize={8.5}>🔒</text>}
+                {/* v0.96: 🎙 — у реплики есть озвучка (mp3/flac, вшита в карту) */}
+                {n.voice && <text x={p.x + NW - 60} y={p.y + h - 4} fontSize={8.5} pointerEvents="none">🎙</text>}
               </g>
             );
           });

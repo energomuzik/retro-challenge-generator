@@ -740,6 +740,34 @@ export default function GameScreen() {
     sfx.click();
   };
   const closeDialog = () => { setDlgNpcId(null); setDlgNode(null); setTradeNpcId(null); dlgOpenIdRef.current = null; };
+  /* ---------- v0.96: ОЗВУЧКА РЕПЛИК ДИАЛОГА ----------
+     Когда диалог открывается или переходит к следующему узлу, играет озвучка текущей
+     реплики (node.voice — mp3/flac, вшитый автором карты в узел; едет к игрокам вместе
+     с картой). Окно диалога у каждого игрока своё — озвучка слышна только тому, кто
+     разговаривает. Предыдущая озвучка останавливается при переходе и при закрытии окна.
+     Громкость — общая из Опций (options.volume); key-guard не даёт перезапускать файл
+     на посторонних ререндерах (карта приходит новым объектом на каждый dispatch). */
+  const dlgVoiceRef = useRef<HTMLAudioElement | null>(null);
+  const dlgVoiceFor = useRef('');
+  useEffect(() => {
+    let voice: string | undefined;
+    if (dlgNpcId && map) {
+      const n = (map.npcs ?? []).find((x) => x.id === dlgNpcId);
+      const dlg = n?.dialog;
+      const node = dlg ? dlg.nodes.find((x) => x.id === (dlgNode ?? dlg.root)) : null;
+      voice = node?.voice;
+    }
+    const key = voice ? `${dlgNpcId ?? ''}/${dlgNode ?? ''}` : '';
+    if (dlgVoiceFor.current === key && (!key || !!dlgVoiceRef.current)) return; // ререндер без смены узла
+    dlgVoiceFor.current = key;
+    if (dlgVoiceRef.current) { dlgVoiceRef.current.pause(); dlgVoiceRef.current = null; }
+    if (voice) {
+      const a = new Audio(voice);
+      a.volume = Math.max(0, Math.min(1, useApp.getState().options.volume));
+      dlgVoiceRef.current = a;
+      a.play().catch(() => { /* диалог открыт кликом — автоплей уже разрешён; на всякий случай молчим */ });
+    }
+  }, [dlgNpcId, dlgNode, map]);
   /* клавиша E — поговорить с NPC в радиусе; ESC — закрыть диалог / пропуск кат-сцены
      (v0.62: НЕ мгновенно — нажатие плавно показывает подсказку, ПРОДОЛЖИТЕЛЬНОЕ
      удержание пропускает; см. CUT_ESC_HOLD_MS) */

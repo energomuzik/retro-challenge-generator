@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { uid } from '../db';
 import { sfx } from '../sound';
 import type { DialogNode, DialogOption, MapEnding, NpcDialog } from '../types';
@@ -43,6 +43,55 @@ export function DialogTreeEditor({ dialog, endings, onChange, posStore, onPosSto
 }) {
   const [selRaw, setSel] = useState<string>('');
   const nodes = dialog.nodes;
+
+  /* ---------- v0.96: ОЗВУЧКА РЕПЛИКИ — mp3/flac с компьютера, вшивается в узел ----------
+     Файл читается в data:audio и пишется в поле voice узла — то есть хранится ВНУТРИ карты:
+     при создании партии карта уходит всем игрокам целиком (sendBig 'map'), экспортируется
+     в .retrochallenge.json и автосейвится — на сервер НИЧЕГО не отправляется.
+     FLAC иногда отдаётся браузером как application/octet-stream — тогда пересобираем
+     data-URL с правильным mime по расширению, иначе <audio> не заведётся. */
+  const fileIn = useRef<HTMLInputElement>(null);
+  const previewRef = useRef<HTMLAudioElement | null>(null);
+  const VOICE_MAX_MB = 25; // мягкий предел: карта передаётся игрокам целиком, гигантские файлы тормозят подключение
+  const voiceSizeLabel = (dataUrl: string) => {
+    const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+    const kb = Math.round(b64.length * 0.75 / 1024);
+    return kb >= 1024 ? `${(kb / 1024).toFixed(1)} МБ` : `${kb} КБ`;
+  };
+  const stopPreview = () => { if (previewRef.current) { previewRef.current.pause(); previewRef.current = null; } };
+  const onVoiceFile = (ev: React.ChangeEvent<HTMLInputElement>) => {
+    const f = ev.target.files?.[0];
+    ev.target.value = ''; // повторный выбор того же файла тоже срабатывает
+    if (!f || !selNode) return;
+    if (f.size > VOICE_MAX_MB * 1024 * 1024) {
+      sfx.fail();
+      alert(`Файл слишком большой (${(f.size / 1048576).toFixed(1)} МБ) — максимум ${VOICE_MAX_MB} МБ. Карта передаётся игрокам целиком, для длинных реплик используйте mp3 вместо flac.`);
+      return;
+    }
+    const r = new FileReader();
+    r.onload = () => {
+      let url = typeof r.result === 'string' ? r.result : '';
+      if (url && !url.startsWith('data:audio')) {
+        const b64 = url.slice(url.indexOf(',') + 1);
+        const mime = /\.flac$/i.test(f.name) ? 'audio/flac' : 'audio/mpeg';
+        url = `data:${mime};base64,${b64}`;
+      }
+      if (!url) { sfx.fail(); return; }
+      updNode(selNode.id, { voice: url });
+      sfx.coin();
+    };
+    r.readAsDataURL(f);
+  };
+  const previewVoice = () => {
+    if (!selNode?.voice) return;
+    if (previewRef.current) { stopPreview(); return; }
+    const a = new Audio(selNode.voice);
+    a.volume = 0.9;
+    a.onended = () => { previewRef.current = null; };
+    previewRef.current = a;
+    a.play().catch(() => { /* автоплей до первого клика — кнопка и так нажата */ });
+  };
+  const removeVoice = () => { stopPreview(); if (selNode) updNode(selNode.id, { voice: undefined }); sfx.fail(); };
   const selFrom = selId !== undefined ? selId : selRaw;
   /* выбранная нода; сбрасывается на стартовую, если удалили текущую */
   const selIdEff = nodes.some((n) => n.id === selFrom) ? selFrom : dialog.root;
@@ -50,6 +99,7 @@ export function DialogTreeEditor({ dialog, endings, onChange, posStore, onPosSto
   const selNode = nodes[selIdx];
 
   const setSelNode = (id: string) => {
+    stopPreview();
     if (selId !== undefined) onSelect?.(id);
     else setSel(id);
     sfx.hover();
@@ -217,6 +267,37 @@ export function DialogTreeEditor({ dialog, endings, onChange, posStore, onPosSto
               <span className="text-[9px] text-faint" title="Стартовое сообщение NPC считается виденным, но пишется ВСЕГДА — пин на нём не действует.">🌱 стартовая реплика пишется всегда</span>
             )}
           </div>
+
+          {/* v0.96: ОЗВУЧКА РЕПЛИКИ — mp3/flac с компьютера автора; вшивается в узел,
+              уезжает всем игрокам вместе с картой, на сервер ничего не грузится */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="tick-label text-teal shrink-0" title="Озвучка этой реплики: файл mp3 или flac с вашего компьютера. Файл вшивается в карту и передаётся всем игрокам вместе с ней — на сервер ничего не отправляется. В игре играет, когда диалог дойдёт до этой реплики.">🎙 Озвучка реплики:</span>
+            {selNode.voice ? (
+              <>
+                <span className="text-[9px] text-teal font-display uppercase" title="Размер файла озвучки (вшит в карту)">🎧 {voiceSizeLabel(selNode.voice)}</span>
+                <button
+                  onClick={previewVoice}
+                  className="text-[10px] text-teal hover:text-paper cursor-pointer px-1"
+                  title="Послушать / остановить озвучку этой реплики"
+                >▶ послушать</button>
+                <button
+                  onClick={removeVoice}
+                  className="text-[10px] text-faint hover:text-coral cursor-pointer px-1"
+                  title="Убрать озвучку из узла"
+                >✕ убрать</button>
+              </>
+            ) : (
+              <button
+                onClick={() => fileIn.current?.click()}
+                className="px-1.5 py-0.5 border-2 border-teal/50 text-teal font-display text-[9px] uppercase hover:bg-teal/10 cursor-pointer"
+                title="Выбрать файл озвучки (mp3 или flac) с компьютера"
+              >＋ выбрать файл mp3/flac</button>
+            )}
+            <input ref={fileIn} type="file" accept=".mp3,.flac,audio/mpeg,audio/flac,audio/x-flac" hidden onChange={onVoiceFile} />
+          </div>
+          {!selNode.voice && (
+            <p className="text-[8.5px] text-faint leading-tight">Файл вшивается в карту и поедет всем игрокам вместе с ней — на сервер ничего не грузится. В игре озвучка играет, когда диалог дойдёт до этой реплики. MP3 заметно легче FLAC — для длинных реплик берите mp3.</p>
+          )}
 
           <div className="flex items-center justify-between gap-1">
             <span className="tick-label text-gold">Варианты ответа ({(selNode.opts ?? []).length})</span>
