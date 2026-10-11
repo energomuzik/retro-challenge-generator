@@ -531,7 +531,8 @@ export function Modal({ title, icon, onClose, children, w = 'max-w-2xl', locked 
   );
 }
 
-export function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange: (v: boolean) => void; label: string; hint?: string }) {
+export function Toggle({ checked, onChange, label, hint, hintSpoiler }: { checked: boolean; onChange: (v: boolean) => void; label: string; hint?: string; hintSpoiler?: boolean }) {
+  const [spoiler, setSpoiler] = useState(false); // v0.98: длинное описание прячется под «▸ подробнее»
   return (
     <button
       onClick={() => { sfx.click(); onChange(!checked); }}
@@ -542,7 +543,19 @@ export function Toggle({ checked, onChange, label, hint }: { checked: boolean; o
       </span>
       <span>
         <span className="block font-display text-sm uppercase tracking-wide text-paper group-hover:text-gold transition-colors">{label}</span>
-        {hint && <span className="block text-[11px] text-dim leading-tight mt-0.5">{hint}</span>}
+        {hint && !hintSpoiler && <span className="block text-[11px] text-dim leading-tight mt-0.5">{hint}</span>}
+        {hint && hintSpoiler && (
+          <span className="block mt-0.5">
+            <span
+              role="button"
+              tabIndex={-1}
+              onClick={(e) => { e.stopPropagation(); e.preventDefault(); setSpoiler((v) => !v); sfx.hover(); }}
+              className="inline-block text-[9px] font-pixel text-faint hover:text-sky cursor-pointer select-none"
+              title={spoiler ? 'Скрыть описание' : 'Показать описание'}
+            >{spoiler ? '▾ свернуть' : '▸ подробнее'}</span>
+            {spoiler && <span className="block text-[11px] text-dim leading-tight mt-1">{hint}</span>}
+          </span>
+        )}
       </span>
     </button>
   );

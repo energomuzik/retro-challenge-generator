@@ -10,6 +10,7 @@ import {
   renumberByPath, normCellsLegacy, fixLinksAfterDelete, startCellIdx, tileContentShift,
 } from '../render';
 import { extractTilesFromImage, scaleTileImg } from '../tilecut';
+import { METHOD_HINTS, METHOD_LABELS, methodFactors, runUpscale, upscaleWarn, type ScaleMethod } from '../upscaler'; // v0.98: апскейлер пиксель-картинок
 import type { ExtractInfo } from '../tilecut';
 import { idbDel, idbGet, idbPut, uid } from '../db';
 import type { AnimDef, BossAnimDef, CellDef, CellType, CustomChallenge, CutsceneDef, GameMap, MapEnding, MapTileInfo, NpcAnimDef, NpcLibEntry, NpcQuest, NpcShopOffer, PatrolDef, PlacedAnim, PlacedBoss, PlacedNpc, PlateBg, PortalZone, QuestGoal, QuestGoalKind, RubgItemKind, Stamp, TileGrid, TilePlay, TokenDef, TileGroup, TileImg, WallRect } from '../types';
@@ -1744,6 +1745,122 @@ export default function MapEditor() {
     exRunRef.current++;
     if (extract) URL.revokeObjectURL(extract.src);
     setExtract(null);
+  };
+
+  /* ---------- v0.98: АПСКЕЙЛЕР пиксель-картинок (xBRZ / Scale2x / Ближний сосед) ----------
+     Всё локально: картинка с компа (или выбранный тайл) → пиксели → скейл полосами с прогрессом
+     → PNG. Результат: скачать, поставить ФОНОМ ВСЕЙ КАРТЫ или добавить в палитру (спойлер «Апскейл»). */
+  type UpState = {
+    fileUrl: string; fileName: string; fileW: number; fileH: number;
+    method: ScaleMethod; factor: number;
+    busy: boolean; progress: number;
+    outUrl: string | null; outW: number; outH: number; ms: number;
+    error: string | null;
+  };
+  const [up, setUp] = useState<UpState | null>(null);
+  const upFileRef = useRef<HTMLInputElement>(null);
+  const upRunRef = useRef(0);
+  const upImgRef = useRef<HTMLImageElement | null>(null);
+
+  const openUpscale = () => {
+    upRunRef.current++;
+    upImgRef.current = null;
+    setUp({ fileUrl: '', fileName: '', fileW: 0, fileH: 0, method: 'xbrz', factor: 4, busy: false, progress: 0, outUrl: null, outW: 0, outH: 0, ms: 0, error: null });
+    sfx.hover();
+  };
+
+  const closeUpscale = () => {
+    upRunRef.current++;
+    if (up && up.fileUrl.startsWith('blob:')) URL.revokeObjectURL(up.fileUrl);
+    setUp(null);
+    sfx.hover();
+  };
+
+  const takeUpscaleFile = async (f: File | null | undefined) => {
+    if (!f || !f.type.startsWith('image/')) { toast('Это не картинка', 'err'); return; }
+    const url = URL.createObjectURL(f);
+    try {
+      const img = await new Promise<HTMLImageElement>((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = url; });
+      if (!img.naturalWidth || !img.naturalHeight) throw new Error('пустая картинка');
+      upImgRef.current = img;
+      setUp((u) => {
+        if (u && u.fileUrl.startsWith('blob:')) URL.revokeObjectURL(u.fileUrl);
+        return u && { ...u, fileUrl: url, fileName: f.name, fileW: img.naturalWidth, fileH: img.naturalHeight, outUrl: null, error: null };
+      });
+      sfx.hover();
+    } catch {
+      URL.revokeObjectURL(url);
+      toast('Не удалось прочитать картинку', 'err');
+    }
+  };
+
+  /* источник — выбранный в палитре тайл (апскейл «выбранных тайлов») */
+  const takeUpscaleTile = () => {
+    const t = tileImgById.get(tileId);
+    if (!t) { toast('Сначала выберите тайл в палитре', 'err'); return; }
+    const img = new Image();
+    img.onload = () => {
+      upImgRef.current = img;
+      setUp((u) => {
+        if (u && u.fileUrl.startsWith('blob:')) URL.revokeObjectURL(u.fileUrl);
+        return u && { ...u, fileUrl: t.dataUrl, fileName: `${t.name}.png`, fileW: img.naturalWidth || img.width, fileH: img.naturalHeight || img.height, outUrl: null, error: null };
+      });
+      sfx.hover();
+    };
+    img.src = t.dataUrl;
+  };
+
+  const upWarn = up && up.fileW ? upscaleWarn(up.fileW, up.fileH, up.factor) : null;
+
+  const runUpscaleNow = async () => {
+    if (!up || !up.fileUrl || up.busy || !upImgRef.current) return;
+    const warn = upscaleWarn(up.fileW, up.fileH, up.factor);
+    if (warn) { toast(warn, 'err'); return; }
+    const run = ++upRunRef.current;
+    setUp((u) => (u ? { ...u, busy: true, progress: 0, outUrl: null, error: null } : u));
+    await new Promise((r) => setTimeout(r, 30)); // даём прогрессу отрисоваться до тяжёлой работы
+    try {
+      const r = await runUpscale(upImgRef.current, up.factor, up.method, (p) => { if (upRunRef.current === run) setUp((u) => (u ? { ...u, progress: p } : u)); });
+      if (upRunRef.current !== run) return;
+      setUp((u) => (u ? { ...u, busy: false, progress: 1, outUrl: r.url, outW: r.w, outH: r.h, ms: r.ms } : u));
+      sfx.coin();
+    } catch (e) {
+      if (upRunRef.current !== run) return;
+      setUp((u) => (u ? { ...u, busy: false, error: 'Не получилось: ' + ((e as Error).message || 'ошибка') } : u));
+      sfx.fail();
+    }
+  };
+
+  const downloadUpscale = () => {
+    if (!up?.outUrl) return;
+    const a = document.createElement('a');
+    a.href = up.outUrl;
+    a.download = `${(up.fileName || 'upscale').replace(/\.[a-z0-9]+$/i, '').slice(0, 40) || 'upscale'}-${up.method}-x${up.factor}.png`;
+    document.body.appendChild(a); a.click(); a.remove();
+    sfx.hover();
+  };
+
+  /* результат ФОНОМ ВСЕЙ КАРТЫ (как «Фон → на всё поле»), PNG без потерь */
+  const bgUpscale = () => {
+    if (!up?.outUrl || !map) return;
+    updMap({ bg: up.outUrl, bgMode: 'stretch' } as Partial<GameMap>);
+    sfx.coin();
+    toast(`Апскейл ${up.outW}×${up.outH} поставлен ФОНОМ ВСЕЙ КАРТЫ — увеличенные кромки не «размазались»`, 'ok');
+  };
+
+  /* результат в палитру: спойлер «Апскейл» — ставить штампом или резать вырезателем */
+  const tilesetUpscale = () => {
+    if (!up?.outUrl || !map) return;
+    const t: TileImg = { id: uid('timg'), name: `${(up.fileName || 'апскейл').replace(/\.[a-z0-9]+$/i, '').slice(0, 20) || 'апскейл'} ${up.factor}x`, dataUrl: up.outUrl };
+    setMap((mm) => {
+      if (!mm) return mm;
+      const groups = [...(mm.tileGroups ?? [])];
+      const g = groups.find((x) => x.name === 'Апскейл' && x.kind === 'files');
+      const tileGroups = g ? groups.map((x) => (x.id === g.id ? { ...x, tids: [...x.tids, t.id] } : x)) : [...groups, { id: uid('tg'), name: 'Апскейл', tids: [t.id], kind: 'files' } as TileGroup];
+      return { ...mm, tileset: [...(mm.tileset ?? []), t], tileGroups };
+    });
+    sfx.coin();
+    toast(`Апскейл ${up.outW}×${up.outH} добавлен в палитру (спойлер «Апскейл»)`, 'ok');
   };
 
   const addExtractToPalette = () => {
@@ -3549,6 +3666,7 @@ export default function MapEditor() {
                 <div className="flex gap-1.5 mb-2">
                   <GhostBtn small className="flex-1" onClick={() => { folderRef.current?.click(); }}>{Ic.upload(12)} Папка</GhostBtn>
                   <GhostBtn small className="flex-1" onClick={() => { extRef.current?.click(); }}>✂ Нарезать</GhostBtn>
+                  <GhostBtn small className="flex-1" onClick={openUpscale} title="Апскейл пиксель-картинок без размазывания: xBRZ / Scale2x / Ближний сосед — результат можно скачать, поставить фоном карты или в палитру">⬆ Апскейл</GhostBtn>
                 </div>
                 {/* v0.97: БОРТА У НОВЫХ ТАЙЛОВ — по умолчанию тайл ставится БЕЗ границ;
                     галочка включает авто-рамку-коллайдер вокруг каждого поставленного тайла.
@@ -3557,6 +3675,7 @@ export default function MapEditor() {
                   <Toggle
                     checked={tileFrame}
                     onChange={(vv) => { setTileFrame(vv); tileFrameRef.current = vv; sfx.hover(); }}
+                    hintSpoiler
                     label="🧱 Борта у новых тайлов"
                     hint="Поставленный тайл обводится НЕВИДИМОЙ РАМКОЙ-КОЛЛАЙДЕРОМ: фишки ходят ВНУТРИ тайла и не могут выйти наружу, снаружи не могут войти. Положите тайл корабля, стартуйте внутри — и фишки «на корабле», без ручных невидимых стен. По умолчанию ВЫКЛ — обычный тайл без границ. Для уже стоящего тайла — галочка «Борта-коллайдеры» в его панели; рамка следует за тайлом (двигается, ресайзится, поворачивается) и исчезает вместе с ним."
                   />
@@ -4969,10 +5088,10 @@ export default function MapEditor() {
                     <Toggle
                       checked={!!selStampDef.frame}
                       onChange={(vv) => { updStamp(selStampIdx, { frame: vv || undefined }); dirtyRef.current = true; sfx.hover(); }}
+                      hintSpoiler
                       label="🧱 Борта-коллайдеры"
-                      hint="Вокруг тайла невидимая рамка: фишки ходят ВНУТРИ и не могут выйти, снаружи не могут войти. Рамка следует за тайлом (двигается, ресайзится, поворачивается вместе с ним) и исчезает вместе с ним; квесты её не снимают, ключом не открыть. В игре не видна."
+                      hint="Вокруг тайла невидимая рамка: фишки ходят ВНУТРИ и не могут выйти, снаружи не могут войти. Рамка следует за тайлом (двигается, ресайзится, поворачивается вместе с ним) и исчезает вместе с ним; квесты её не снимают, ключом не открыть. В игре не видна. Корабль, остров, комната — без ручных невидимых стен: стартуйте внутри — фишки «на корабле»."
                     />
-                    <p className="text-[9px] text-faint leading-tight mt-1">Корабль, остров, комната — без ручных невидимых стен: стартуйте внутри — фишки «на корабле».</p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-1.5">
@@ -5387,6 +5506,7 @@ export default function MapEditor() {
       <input ref={filesRef} type="file" multiple accept="image/*" style={{ display: 'none' }} onChange={(e) => { void addTileFiles(e.target.files, 'files'); e.currentTarget.value = ''; }} />
       <input ref={bgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { void setBg(e.target.files); e.currentTarget.value = ''; }} />
       <input ref={extRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { void openExtract(e.target.files?.[0]); e.currentTarget.value = ''; }} />
+      <input ref={upFileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { void takeUpscaleFile(e.target.files?.[0]); e.currentTarget.value = ''; }} />
 
       {/* окошко подтверждения / полоска удержания для Delete-клавиши (режим из Опций) */}
       {keyDel.node}
@@ -5514,6 +5634,92 @@ export default function MapEditor() {
             <PxBtn color="teal" onClick={addExtractToPalette} disabled={!extract.tiles.length || extract.busy}>
               {Ic.plus(12)} В палитру ({extract.tiles.length})
             </PxBtn>
+          </div>
+        </Modal>
+      )}
+
+      {/* v0.98: окно апскейлера — увеличить пиксель-картинку (xBRZ / Scale2x / Ближний сосед) и скачать / фоном карты / в палитру */}
+      {up && (
+        <Modal title="Апскейл пиксель-картинки" icon="⬆" onClose={closeUpscale} w="max-w-2xl">
+          <p className="text-[12px] text-dim mb-3">
+            Увеличение ретро-картинок БЕЗ «размазывания»: найдите картинку (например, карту мира из Супер Марио),
+            увеличьте её здесь и поставьте фоном карты — получится готовое поле с чёткими пиксельными кромками.
+            Всё считается прямо в браузере, ничего никуда не отправляется.
+          </p>
+          <div className="flex gap-3 mb-3">
+            <div className="w-36 h-36 shrink-0 border-2 border-edge bg-[repeating-conic-gradient(#141833_0_25%,#0b0e1c_0_50%)_0_0/12px_12px] flex items-center justify-center overflow-hidden">
+              {up.fileUrl
+                ? <img src={up.fileUrl} alt="исходник" className="max-w-full max-h-full" style={{ imageRendering: 'pixelated' }} />
+                : <span className="text-[10px] text-faint px-3 text-center leading-tight">выберите картинку с компьютера</span>}
+            </div>
+            <div className="flex-1 min-w-0 space-y-2">
+              <div className="flex gap-1.5 flex-wrap">
+                <GhostBtn small onClick={() => upFileRef.current?.click()}>＋ выбрать картинку</GhostBtn>
+                {tileImgById.get(tileId) && <GhostBtn small onClick={takeUpscaleTile} title="Апскейл выбранного в палитре тайла">взять выбранный тайл</GhostBtn>}
+              </div>
+              <div className="text-[10px] text-faint truncate">{up.fileUrl ? `${up.fileName} · ${up.fileW}×${up.fileH}px` : 'источник не выбран'}</div>
+              <div>
+                <div className="text-[10px] text-dim mb-1">Метод:</div>
+                <div className="flex gap-1.5 flex-wrap">
+                  {(['xbrz', 'scale2x', 'nearest'] as ScaleMethod[]).map((m) => (
+                    <button
+                      key={m}
+                      disabled={up.busy}
+                      onClick={() => { setUp((u) => (u ? { ...u, method: m, factor: methodFactors(m).includes(up.factor) ? up.factor : 4, outUrl: null, progress: 0 } : u)); sfx.hover(); }}
+                      className={`px-2 py-1 text-[9px] font-pixel border-2 cursor-pointer disabled:opacity-40 ${up.method === m ? 'border-gold text-gold' : 'border-edge text-faint hover:text-dim'}`}
+                      title={METHOD_HINTS[m]}
+                    >{METHOD_LABELS[m]}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] text-dim mb-1">Кратность:</div>
+                <div className="flex gap-1.5">
+                  {[2, 3, 4, 5, 6, 8].map((f) => {
+                    const okF = methodFactors(up.method).includes(f);
+                    return (
+                      <button
+                        key={f}
+                        disabled={!okF || up.busy}
+                        onClick={() => { setUp((u) => (u ? { ...u, factor: f, outUrl: null, progress: 0 } : u)); sfx.hover(); }}
+                        className={`px-2 py-1 text-[9px] font-pixel border-2 cursor-pointer disabled:opacity-25 disabled:cursor-not-allowed ${up.factor === f ? 'border-gold text-gold' : 'border-edge text-faint hover:text-dim'}`}
+                        title={okF ? `Увеличить в ${f} раза` : `${METHOD_LABELS[up.method]} не умеет ${f}× — возьмите другой метод`}
+                      >{f}×</button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="text-[10px] text-faint">
+                Результат: {up.fileW ? `${up.fileW * up.factor}×${up.fileH * up.factor}px` : '—'}
+                {upWarn && <span className="text-coral"> · НЕ ВЫЙДЕТ: {upWarn}</span>}
+              </div>
+              {up.busy && (
+                <div>
+                  <div className="h-2 border-2 border-edge bg-[#0d1226]"><div className="h-full bg-teal transition-all" style={{ width: `${Math.max(3, Math.round(up.progress * 100))}%` }} /></div>
+                  <div className="text-[9px] font-pixel text-gold mt-0.5">Считаю… {Math.round(up.progress * 100)}%</div>
+                </div>
+              )}
+              {up.error && <div className="text-[10px] text-coral leading-tight">{up.error}</div>}
+            </div>
+          </div>
+          {up.outUrl && (
+            <div className="mb-3">
+              <div className="border-2 border-edge p-1.5 bg-[repeating-conic-gradient(#141833_0_25%,#0b0e1c_0_50%)_0_0/12px_12px] max-h-56 flex items-center justify-center overflow-hidden">
+                <img src={up.outUrl} alt="результат" className="max-w-full max-h-52 object-contain" style={{ imageRendering: 'pixelated' }} />
+              </div>
+              <div className="text-[9px] font-pixel text-teal mt-1">ГОТОВО: {up.outW}×{up.outH}px за {(up.ms / 1000).toFixed(1)} с</div>
+            </div>
+          )}
+          <div className="flex flex-wrap justify-end gap-2">
+            <GhostBtn onClick={closeUpscale}>Закрыть</GhostBtn>
+            {up.outUrl && (
+              <>
+                <GhostBtn onClick={downloadUpscale}>💾 Скачать PNG</GhostBtn>
+                <PxBtn color="teal" small onClick={bgUpscale} title="Сделать результат общим фоном всей карты (как «Фон → на всё поле»)">🖼 Фоном карты</PxBtn>
+                <PxBtn color="teal" small onClick={tilesetUpscale} title="Добавить результат в палитру тайлов (спойлер «Апскейл»)">＋ В тайлсет</PxBtn>
+              </>
+            )}
+            <PxBtn color="gold" onClick={runUpscaleNow} disabled={!up.fileUrl || up.busy || !!upWarn}>⬆ Апскейлить</PxBtn>
           </div>
         </Modal>
       )}
