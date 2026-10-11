@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store';
-import { Coin, Field, GhostBtn, Ic, Panel, PxBtn, Stepper } from '../ui';
+import { Coin, Field, GhostBtn, Ic, Panel, PxBtn, Stepper, Toggle } from '../ui';
 import { cellAtPoint, drawBoard, fitView } from '../render';
 import { idbGet, idbPut, uid } from '../db';
 import { cartridgeArt, cardArt, fileToDataUrl } from '../assets';
@@ -89,6 +89,7 @@ export default function TaskEditor() {
   const [vLabel, setVLabel] = useState('');
   const [vColor, setVColor] = useState('');
   const [vImg, setVImg] = useState('');
+  const [vHide, setVHide] = useState(false); // v0.99: скрыть ром/задание до первого прихода фишки
   /* v0.68 ЗАЧЁТ ПО КОДУ: условие по памяти эмулятора (код из CodeSearch) */
   const [fCond, setFCond] = useState<MemCond | null>(null);
   const [codeIn, setCodeIn] = useState('');
@@ -135,6 +136,7 @@ export default function TaskEditor() {
     setVLabel(cell.label ?? '');
     setVColor(cell.color ?? '');
     setVImg(cell.imageId ?? '');
+    setVHide(cell.hideInfo ?? false);
     setFCond(cell.task?.code ?? null);
     setCodeIn(cell.task?.code ? formatCond(cell.task.code) : '');
     setCodeErr('');
@@ -152,6 +154,7 @@ export default function TaskEditor() {
     nextMap.cells[selCell].label = vLabel.trim() || undefined;
     nextMap.cells[selCell].color = vColor || undefined;
     nextMap.cells[selCell].imageId = vImg || undefined;
+    nextMap.cells[selCell].hideInfo = vHide || undefined; // v0.99: скрыть ром/задание до прихода
     setMap(nextMap);
     await persist(nextMap);
     sfx.coin();
@@ -822,6 +825,13 @@ export default function TaskEditor() {
                       {vImg && <GhostBtn small onClick={() => setVImg('')}>{Ic.trash(12)}</GhostBtn>}
                     </div>
                   </Field>
+                  {/* v0.99: СКРЫТЬ РОМ И ЗАДАНИЕ ДО ПРИХОДА — та же галочка, что в редакторе карт */}
+                  <Toggle
+                    checked={vHide}
+                    onChange={(v) => { setVHide(v); sfx.hover(); }}
+                    label="🕵️ Скрыть ром/задание до прихода"
+                    hint="В игре название, картинка и задание этой ячейки будут «???» (и в подробностях ячейки), пока фишка ВПЕРВЫЕ не вступит на неё. Общий экран (трансляция) — откроется для всех; в QUEST каждый открывает личным приходом. Не забудьте «Сохранить оформление»."
+                  />
                   <PxBtn className="w-full" onClick={() => void saveVisuals()}>{Ic.check(14)} Сохранить оформление</PxBtn>
                 </div>
               </Panel>

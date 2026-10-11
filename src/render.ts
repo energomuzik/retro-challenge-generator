@@ -388,6 +388,9 @@ export interface BoardDrawOpts {
   time: number;
   hoverCell: number | null;
   mystery?: Set<number>; // ячейки, которые ещё не «открыты» — рисуем как «?»
+  hush?: Set<number>; // v0.99 СКРЫТЫЕ РОМЫ/ЗАДАНИЯ (cell.hideInfo, ещё не открытые): ячейка рисуется
+  // как обычно (тип/иконка/номер видны), но название «рома», картинка и подпись задания — «???»
+  // (и сама картинка задания/рома не рисуется — она тоже выдала бы содержимое до прихода)
   sndRadii?: boolean; // пунктирные круги радиуса звука у анимаций со звуком (только редактор карт; в игре не рисуем)
   broken?: Record<number, { left: number }>; // разбитые ячейки: трещины + счётчик ходов до восстановления
   brokenAt?: Record<number, number>; // ЛОКАЛЬНЫЙ момент появления разбития (Date.now() клиента) — короткая анимация разлёта осколков после разбития
@@ -869,6 +872,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     const owner = o.captured[i];
     const isCur = o.currentCell === i;
     const isMystery = !!o.mystery?.has(i);
+    const isHush = !isMystery && !!o.hush?.has(i); // v0.99: скрытый ром/задание — тип виден, содержимое «???»
     const isStart = cell.type === 'start';
     // малая ячейка (до 68px) рисуется схематично фиксированным размером, крупная — во всю площадь
     const small = box.w <= 68 && box.h <= 68;
@@ -936,7 +940,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
         ctx.textAlign = 'center';
         ctx.fillText('СТАРТ', 0, H / 2 - 8);
       } else if (cell.type === 'task') {
-        const imgSrc = cell.task?.imageId || cell.imageId;
+        const imgSrc = isHush ? null : (cell.task?.imageId || cell.imageId); // скрыто — картинку не рисуем (выдала бы задание)
         const img = imgSrc ? getImage(imgSrc) : null;
         const areaTop = -H / 2 + (cell.color ? 20 : 5);
         const areaH = H - (cell.color ? 20 : 5) - 16;
@@ -952,7 +956,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
           ctx.drawImage(img, -dw / 2, areaTop + (areaH - dh) / 2, dw, dh);
           ctx.restore();
         }
-        const title = (cell.label || cell.task?.title || '').toUpperCase();
+        const title = isHush ? '???' : (cell.label || cell.task?.title || '').toUpperCase();
         if (title && W >= CELL * 1.6) {
           ctx.fillStyle = 'rgba(7,9,18,0.75)';
           ctx.fillRect(-W / 2 + 3, H / 2 - 15, W - 6, 12);
@@ -971,7 +975,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       } else {
         const icon = cell.type === 'bonus' ? STAR : cell.type === 'trap' ? SKULL : cell.type === 'rest' ? REST : cell.type === 'loot' ? BOX : QUIZ;
         const iconColor = cell.type === 'bonus' ? '#2ee6a8' : cell.type === 'trap' ? '#ff5d73' : cell.type === 'rest' ? '#7c86b8' : cell.type === 'loot' ? '#ff8b3f' : '#5aa9ff';
-        const cimg = cell.imageId ? getImage(cell.imageId) : null;
+        const cimg = !isHush && cell.imageId ? getImage(cell.imageId) : null;
         if (cimg) {
           // картинка на бонусе/ловушке/квизе — как на заданиях; иконка типа в углу, чтобы ячейка читалась
           const areaTop2 = -H / 2 + (cell.color ? 20 : 5);
@@ -999,7 +1003,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
         ctx.fillStyle = '#e9ecff';
         ctx.font = '8px "Press Start 2P", monospace';
         ctx.textAlign = 'center';
-        const name = cell.label || (cell.type === 'bonus' ? 'БОНУС' : cell.type === 'trap' ? 'ЛОВУШКА' : cell.type === 'rest' ? 'ОТДЫХ' : cell.type === 'loot' ? 'ЯЩИК' : 'КВИЗ');
+        const name = isHush && cell.label ? '???' : (cell.label || (cell.type === 'bonus' ? 'БОНУС' : cell.type === 'trap' ? 'ЛОВУШКА' : cell.type === 'rest' ? 'ОТДЫХ' : cell.type === 'loot' ? 'ЯЩИК' : 'КВИЗ'));
         ctx.fillText(name.slice(0, Math.floor((W - 10) / 8)).toUpperCase(), 0, H / 2 - 8);
       }
       if (o.showNumbers && cell.n > 0 && !cell.nonumber) {
@@ -1023,7 +1027,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       ctx.lineWidth = 2;
       ctx.strokeRect(-W / 2 + 3, -H / 2 + 3, W - 6, H - 6);
 
-      const cellImg = cell.imageId ? getImage(cell.imageId) : null;
+      const cellImg = !isHush && cell.imageId ? getImage(cell.imageId) : null; // v0.99: скрыто — картинку не рисуем
       if (isStart) {
         flagIcon(ctx, 4, '#ffcf3f');
       } else if (cellImg) {
@@ -1043,7 +1047,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
         ctx.fillStyle = '#e9ecff';
         ctx.font = '7px "Press Start 2P", monospace';
         ctx.textAlign = 'center';
-        ctx.fillText(cell.label.slice(0, 9).toUpperCase(), 0, 8);
+        ctx.fillText((isHush ? '???' : cell.label).slice(0, 9).toUpperCase(), 0, 8); // v0.99: скрытый ром — «???»
       }
       if (cell.type === 'task' && !cell.task) {
         ctx.strokeStyle = 'rgba(255,139,63,0.85)';

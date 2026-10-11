@@ -402,18 +402,44 @@ export async function scaleTileImg(dataUrl: string, dir: 1 | -1): Promise<string
   return cv.toDataURL('image/png');
 }
 
-/* Положение (для кадров анимаций): сдвиг картинки внутри кадра БЕЗ смены самого
-   тайла. sx/sy — направление (-1/0/1), шаг — ~1/32 большей стороны (мин. 1 px).
-   Холст кадра не меняется: что вышло за край — срезается. */
-export async function shiftTileImg(dataUrl: string, sx: -1 | 0 | 1, sy: -1 | 0 | 1): Promise<string> {
+/* Размер кадра в пикселях (для расчёта шага стрелок и коэффициента драга мыши). */
+export async function frameSize(dataUrl: string): Promise<{ w: number; h: number } | null> {
   const img = await loadImg(dataUrl);
-  if (!img || (!sx && !sy)) return dataUrl;
-  const w = img.width || 1, h = img.height || 1;
-  const step = Math.max(1, Math.round(Math.max(w, h) / 32));
-  const cv = document.createElement('canvas');
-  cv.width = w; cv.height = h;
-  const cx = cv.getContext('2d')!;
-  cx.imageSmoothingEnabled = false;
-  cx.drawImage(img, sx * step, sy * step);
-  return cv.toDataURL('image/png');
+  return img ? { w: img.width || 1, h: img.height || 1 } : null;
+}
+
+/* v0.99 СДВИГ КАДРА БЕЗ ПОТЕРЬ (редактор анимаций фишек): раньше shiftTileImg сдвигал
+   картинку внутри НЕПОДВИЖНОГО холста — всё, что выходило за край, срезалось НАСОВСЕМ
+   (тайл, ушедший за «окошко», исчезал — нормальные анимации с переездами собрать было
+   нельзя). Теперь канва ВСЕХ кадров клипа вырастает ровно настолько, чтобы сдвигаемая
+   картинка поместилась ЦЕЛИКОМ; остальные кадры перекладываются на новую канву без
+   изменения своих позиций — выравнивание кадров между собой сохраняется. Ничего не
+   срезается никогда: тайл может уезжать за «окошко» и оставаться в кадре.
+   dx/dy — сдвиг в ПИКСЕЛЯХ канвы (может быть любым числом — драг мыши даёт произвольные).
+   Возвращает НОВЫЙ массив кадров (или null, если сдвиг нулевой/картинка не прочиталась). */
+export async function shiftFramesExpand(frames: string[], i: number, dx: number, dy: number): Promise<string[] | null> {
+  if (!dx && !dy) return null;
+  const base = frames[i];
+  if (!base) return null;
+  const imgs = await Promise.all(frames.map((f) => loadImg(f)));
+  if (!imgs[i]) return null;
+  let maxW = imgs[i]!.width || 1, maxH = imgs[i]!.height || 1;
+  for (const im of imgs) { if (im) { maxW = Math.max(maxW, im.width || 1); maxH = Math.max(maxH, im.height || 1); } }
+  const W = maxW + Math.abs(dx), H = maxH + Math.abs(dy);
+  const out: string[] = [];
+  for (let k = 0; k < frames.length; k++) {
+    const im = imgs[k];
+    if (!im) { out.push(frames[k]); continue; } // не прочитался — оставляем как было
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const cx = cv.getContext('2d')!;
+    cx.imageSmoothingEnabled = false;
+    /* сдвигаемый кадр едет на (dx,dy); остальные стоят на месте — им добавляется
+       отступ, компенсирующий рост канвы в сторону, ОТКУДА уехала картинка */
+    const ox = k === i ? Math.max(0, dx) : Math.max(0, -dx);
+    const oy = k === i ? Math.max(0, dy) : Math.max(0, -dy);
+    cx.drawImage(im, ox, oy);
+    out.push(cv.toDataURL('image/png'));
+  }
+  return out;
 }

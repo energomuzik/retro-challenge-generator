@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useApp } from '../store';
 import { AnimPreview, Field, GhostBtn, Ic, Modal, PxBtn, Stepper } from '../ui';
 import PixelPaint, { emptyGrid, gridToDataUrl, imageToGrid } from '../PixelPaint';
-import { extractTilesFromImage, scaleTileImg, shiftTileImg } from '../tilecut';
+import { extractTilesFromImage, frameSize, scaleTileImg, shiftFramesExpand } from '../tilecut';
 import type { ExtractInfo } from '../tilecut';
 import { idbAll, idbDel, idbGet, idbPut, uid } from '../db';
 import type { AnimClip, AnimDef, BossAnimDef, BossLibEntry, GameMap, NpcAnimDef, SoundDef, TokenAnim, TokenDef, TileGroup, TileImg } from '../types';
@@ -116,9 +116,11 @@ const checker = { background: 'repeating-conic-gradient(#1a2244 0 25%, #10142a 0
 /* +/− ВНИЗУ ТАЙЛА теперь ОБЩИЙ компонент из delGuard.tsx — ОДНИ правила с крестиком
    удаления (режим из Опций: сразу / с окошком / удержанием). */
 
-/* Лента кадров: перестановка стрелками, удаление; СДВИГ ПОЛОЖЕНИЯ — крохотные
-   стрелки ВОКРУГ тайла (спрайт может падать/переезжать, не меняясь сам);
-   рядом — скорость клипа */
+/* Лента кадров: перестановка стрелками, удаление; СДВИГ ПОЛОЖЕНИЯ — стрелки ВОКРУГ тайла
+   ИЛИ ДРАГ МЫШЬЮ прямо по кадру (v0.99). Сдвиг идёт «с расширением» (tilecut.shiftFramesExpand):
+   канва ВСЕХ кадров клипа вырастает ровно настолько, чтобы картинка поместилась целиком —
+   тайл, ушедший за «окошко», НЕ обрезается и не исчезает (можно собирать нормальные
+   анимации с переездами спрайта за край кадра); рядом — скорость клипа */
 function FrameStrip({ clip, onFrames, size = 52 }: {
   clip: ClipDraft;
   onFrames: (frames: string[]) => void;
@@ -132,16 +134,51 @@ function FrameStrip({ clip, onFrames, size = 52 }: {
     onFrames(arr);
     sfx.hover();
   };
-  /* сдвиг картинки внутри кадра (не меняя сам тайл): целочисленно, без сглаживания */
+  /* сдвиг стрелками (шаг ~1/32 большей стороны, как раньше) — теперь БЕЗ обрезки:
+     канва растёт, ушедший за край пиксель остаётся в кадре */
   const shift = (i: number, sx: -1 | 0 | 1, sy: -1 | 0 | 1) => {
     const f = clip.frames[i];
+    if (!f || (!sx && !sy)) return;
+    void (async () => {
+      const sz = await frameSize(f);
+      const step = sz ? Math.max(1, Math.round(Math.max(sz.w, sz.h) / 32)) : 1;
+      const next = await shiftFramesExpand(clip.frames, i, sx * step, sy * step);
+      if (next) { onFrames(next); sfx.hover(); }
+    })();
+  };
+  /* ДРАГ МЫШЬЮ: тянешь картинку в кадре — она едет 1:1 (в пикселях канвы). Во время тяги
+     показываем живое превью сдвига, отпустил — сдвиг фиксируется на ВСЕХ кадрах клипа
+     (канва вырастает у всех одинаково — выравнивание кадров сохраняется) */
+  const dragRef = useRef<{ i: number; x0: number; y0: number; base: string; k: number; dx: number; dy: number; run: number } | null>(null);
+  const [dragPrev, setDragPrev] = useState<{ i: number; src: string } | null>(null);
+  const dragStart = (i: number, e: RPointerEvent) => {
+    if (e.button !== 0) return;
+    const f = clip.frames[i];
     if (!f) return;
-    void shiftTileImg(f, sx, sy).then((nf) => {
-      if (nf === f) return;
-      const arr = [...clip.frames];
-      arr[i] = nf;
-      onFrames(arr);
-      sfx.hover();
+    e.preventDefault();
+    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* noop */ }
+    void frameSize(f).then((sz) => {
+      dragRef.current = { i, x0: e.clientX, y0: e.clientY, base: f, k: sz ? Math.max(sz.w, sz.h) / size : 1, dx: 0, dy: 0, run: 0 };
+    });
+  };
+  const dragMove = (i: number, e: RPointerEvent) => {
+    const d = dragRef.current;
+    if (!d || d.i !== i) return;
+    const tx = Math.round((e.clientX - d.x0) * d.k), ty = Math.round((e.clientY - d.y0) * d.k);
+    if (tx === d.dx && ty === d.dy) return;
+    d.dx = tx; d.dy = ty;
+    const run = ++d.run;
+    void shiftFramesExpand([d.base], 0, tx, ty).then((nf) => {
+      if (nf && nf[0] && run === d.run) setDragPrev({ i, src: nf[0] });
+    });
+  };
+  const dragEnd = (i: number) => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    setDragPrev(null);
+    if (!d || d.i !== i || (!d.dx && !d.dy)) return; // клик без тяги — ничего не меняем
+    void shiftFramesExpand(clip.frames, i, d.dx, d.dy).then((next) => {
+      if (next) { onFrames(next); sfx.hover(); }
     });
   };
   const shBtn = 'absolute w-4 h-4 font-pixel text-[8px] leading-none text-faint hover:text-gold cursor-pointer select-none';
@@ -149,13 +186,21 @@ function FrameStrip({ clip, onFrames, size = 52 }: {
     <div className="flex gap-1.5 flex-wrap items-start">
       {clip.frames.map((f, i) => (
         <div key={`${i}-${f.slice(-16)}`} className="border-2 border-edge p-0.5" style={checker}>
-          <div className="relative mx-auto" style={{ width: size, height: size }}>
-            <img src={f} alt={`кадр ${i + 1}`} style={{ width: size, height: size, objectFit: 'contain', imageRendering: 'pixelated' }} />
-            {/* крохотные стрелки сдвига ВОКРУГ тайла */}
-            <button onClick={() => shift(i, 0, -1)} title="Сдвинуть картинку кадра ВВЕРХ" className={`${shBtn} -top-3 left-1/2 -translate-x-1/2`}>▲</button>
-            <button onClick={() => shift(i, -1, 0)} title="Сдвинуть картинку кадра ВЛЕВО" className={`${shBtn} -left-4 top-1/2 -translate-y-1/2`}>◀</button>
-            <button onClick={() => shift(i, 1, 0)} title="Сдвинуть картинку кадра ВПРАВО" className={`${shBtn} -right-4 top-1/2 -translate-y-1/2`}>▶</button>
-            <button onClick={() => shift(i, 0, 1)} title="Сдвинуть картинку кадра ВНИЗ" className={`${shBtn} -bottom-3 left-1/2 -translate-x-1/2`}>▼</button>
+          <div
+            className="relative mx-auto cursor-grab active:cursor-grabbing"
+            style={{ width: size, height: size, touchAction: 'none' }}
+            title="Тяните картинку МЫШЬЮ — кадр сдвинется 1:1 (стрелки вокруг — мелкий шаг). Ушедший за край окошка тайл НЕ пропадает: канва кадра растёт"
+            onPointerDown={(e) => dragStart(i, e)}
+            onPointerMove={(e) => dragMove(i, e)}
+            onPointerUp={() => dragEnd(i)}
+            onPointerCancel={() => dragEnd(i)}
+          >
+            <img src={dragPrev?.i === i ? dragPrev.src : f} alt={`кадр ${i + 1}`} draggable={false} style={{ width: size, height: size, objectFit: 'contain', imageRendering: 'pixelated' }} />
+            {/* стрелки мелкого шага ВОКРУГ тайла (драг мышью — основной способ) */}
+            <button onPointerDown={(e) => e.stopPropagation()} onClick={() => shift(i, 0, -1)} title="Сдвинуть картинку кадра ВВЕРХ" className={`${shBtn} -top-3 left-1/2 -translate-x-1/2`}>▲</button>
+            <button onPointerDown={(e) => e.stopPropagation()} onClick={() => shift(i, -1, 0)} title="Сдвинуть картинку кадра ВЛЕВО" className={`${shBtn} -left-4 top-1/2 -translate-y-1/2`}>◀</button>
+            <button onPointerDown={(e) => e.stopPropagation()} onClick={() => shift(i, 1, 0)} title="Сдвинуть картинку кадра ВПРАВО" className={`${shBtn} -right-4 top-1/2 -translate-y-1/2`}>▶</button>
+            <button onPointerDown={(e) => e.stopPropagation()} onClick={() => shift(i, 0, 1)} title="Сдвинуть картинку кадра ВНИЗ" className={`${shBtn} -bottom-3 left-1/2 -translate-x-1/2`}>▼</button>
           </div>
           <div className="flex justify-center gap-0.5 mt-0.5">
             <button onClick={() => move(i, -1)} title="Раньше" className="px-1 text-[9px] text-dim hover:text-gold cursor-pointer">←</button>
@@ -166,6 +211,9 @@ function FrameStrip({ clip, onFrames, size = 52 }: {
       ))}
       {clip.frames.length === 0 && (
         <div className="text-[10px] text-faint self-center py-3">Кадров пока нет — кликайте тайлы в ЛЕВОЙ панели</div>
+      )}
+      {clip.frames.length > 0 && (
+        <div className="w-full text-[9.5px] text-faint leading-tight mt-0.5">Кадр можно тянуть МЫШЬЮ (1:1) или стрелками вокруг него. Канва растёт, когда картинка уходит за край, — тайл из кадра НЕ исчезает, собирайте переезды и падения как угодно.</div>
       )}
     </div>
   );

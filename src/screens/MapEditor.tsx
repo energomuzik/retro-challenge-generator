@@ -1660,23 +1660,43 @@ export default function MapEditor() {
     if (!f || !map) return;
     const r = await importImage(f, 2000, true);
     if (!r) { toast('Это не картинка', 'err'); return; }
+    applyBgUrl(r.url, 'загружен');
+  };
+
+  /* v0.99: выбор фона из УЖЕ ГОТОВЫХ тайлов карты (например, из спойлера «Апскейл» —
+     найденную карту мира сначала апскейлим, потом берём её фоном ПРЯМО ИЗ ПАЛИТРЫ,
+     без повторного выбора файла с компьютера). Картинка НЕ пережимается — в фон уходит
+     ровно тот PNG, что лежит в тайлсете (со всеми честными пикселями апскейла). */
+  const applyBgUrl = (url: string, verb: string) => {
+    if (!map) return;
     if (map.tileGrid && bgScope === 'plate') {
       const t = activeTile ?? map.tileGrid.tiles[0];
       if (!t) return;
-      setTileBg(t.id, { bg: r.url, bgMode: 'stretch' });
+      setTileBg(t.id, { bg: url, bgMode: 'stretch' });
       sfx.coin();
-      toast(`Фон загружен на КАРТУ-ПЛИТКУ №${map.tileGrid.tiles.findIndex((x) => x.id === t.id) + 1} — остальные карты не тронуты (другим — свой фон через схему плиток)`, 'ok');
+      toast(`Фон ${verb} на КАРТУ-ПЛИТКУ №${map.tileGrid.tiles.findIndex((x) => x.id === t.id) + 1} — остальные карты не тронуты`, 'ok');
     } else if (map.plateSize && bgScope === 'plate') {
-      const n = curPlateIdx + 1; // плитка, на которую сейчас смотрит камера
-      setPlateBg(n, { bg: r.url, bgMode: 'stretch' });
+      const n = curPlateIdx + 1;
+      setPlateBg(n, { bg: url, bgMode: 'stretch' });
       sfx.coin();
-      toast(`Фон загружен на ПЛИТКУ ${n} — остальные плитки не тронуты (другим плиткам — свой фон через навигатор)`, 'ok');
+      toast(`Фон ${verb} на ПЛИТКУ ${n} — остальные плитки не тронуты`, 'ok');
     } else {
-      updMap({ bg: r.url, bgMode: 'stretch' });
+      updMap({ bg: url, bgMode: 'stretch' } as Partial<GameMap>);
       sfx.coin();
-      toast('Общий фон карты загружен (на всё поле)', 'ok');
+      toast(`Общий фон карты ${verb} (на всё поле)`, 'ok');
     }
+    setBgPick(false);
   };
+  /* МОДАЛКА «ФОН ИЗ ТАЙЛОВ»: спойлер «Апскейл» — первым, дальше весь тайлсет по группам */
+  const [bgPick, setBgPick] = useState(false);
+  const bgPickList = useMemo(() => {
+    const upFirst = new Set<string>();
+    (map?.tileGroups ?? []).forEach((g) => { if (g.name === 'Апскейл') g.tids.forEach((tid) => upFirst.add(tid)); });
+    const seen = new Set<string>();
+    const out: TileImg[] = [];
+    for (const t of tileset) { if (!seen.has(t.id)) { seen.add(t.id); out.push(t); } }
+    return out.sort((a, b) => Number(upFirst.has(b.id)) - Number(upFirst.has(a.id)) || a.name.localeCompare(b.name));
+  }, [tileset, map?.tileGroups]);
 
   /* ---------- ЭКСТРАКТОР: нарезка тайлов из картинки с однотонным фоном ---------- */
   const exInfoRef = useRef<{ W: number; H: number; data: Uint8ClampedArray } | null>(null); // пиксели превью для пипетки
@@ -3583,6 +3603,8 @@ export default function MapEditor() {
                     <p className="text-[9px] text-faint leading-tight">Общий фон будет разрезан на куски по картам и станет ИХ фонами — после этого фон каждой карты переезжает вместе с ней. Картинка на экране не изменится.</p>
                   </div>
                 )}
+                {/* v0.99: фон можно взять ИЗ ТАЙЛОВ карты — например, уже заапскейленную карту мира из спойлера «Апскейл» */}
+                <GhostBtn small className="w-full mt-1.5" onClick={() => { setBgPick(true); sfx.hover(); }} title="Выбрать картинку фона из тайлов этой карты — например, из спойлера «Апскейл» (заапскейленная карта мира)">🖼 Взять фон из тайлов карты</GhostBtn>
               </div>
 
               {/* СЛОИ: фон — самый низ, тайловые слои (выбор + добавление), ячейки и стрелки — всегда самый верх */}
@@ -3663,11 +3685,13 @@ export default function MapEditor() {
                   <div className="tick-label">Тайлы карты · {tileset.length}</div>
                   <button onClick={() => { filesRef.current?.click(); }} className="text-[10px] text-sky hover:text-paper cursor-pointer">+ файлы</button>
                 </div>
-                <div className="flex gap-1.5 mb-2">
+                <div className="flex gap-1.5 mb-1.5">
                   <GhostBtn small className="flex-1" onClick={() => { folderRef.current?.click(); }}>{Ic.upload(12)} Папка</GhostBtn>
                   <GhostBtn small className="flex-1" onClick={() => { extRef.current?.click(); }}>✂ Нарезать</GhostBtn>
-                  <GhostBtn small className="flex-1" onClick={openUpscale} title="Апскейл пиксель-картинок без размазывания: xBRZ / Scale2x / Ближний сосед — результат можно скачать, поставить фоном карты или в палитру">⬆ Апскейл</GhostBtn>
                 </div>
+                {/* v0.99: «Апскейл» переехал на СВОЙ РЯД под «Папка/Нарезать» — втроём в одной строке
+                    кнопка вылезала за край панели и обрезалась */}
+                <GhostBtn small className="w-full mb-2" onClick={openUpscale} title="Апскейл пиксель-картинок без размазывания: xBRZ / Scale2x / Ближний сосед — результат можно скачать, поставить фоном карты или в палитру">⬆ Апскейл пиксель-картинок</GhostBtn>
                 {/* v0.97: БОРТА У НОВЫХ ТАЙЛОВ — по умолчанию тайл ставится БЕЗ границ;
                     галочка включает авто-рамку-коллайдер вокруг каждого поставленного тайла.
                     Анимации (инструмент «Анимация») рамок не имеют — они не про проходы. */}
@@ -4325,23 +4349,30 @@ export default function MapEditor() {
                             </div>
                             {cutPtArm && <p className="text-[9px] text-gold leading-tight mb-1">📍 Тыкайте по карте — каждая точка встаёт в конец маршрута (ждать 1 с, зум 1× — правится ниже). Точки таскаются инструментом «Выбор». Esc — закончить.</p>}
                             {(c.pts ?? []).length === 0 && <p className="text-[10px] text-coral leading-tight">Добавьте хотя бы одну точку — камера прилетит туда и покажет карту.</p>}
-                            <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
+                            <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
                               {(c.pts ?? []).map((p, pi) => (
-                                <div key={pi} className="flex items-center gap-1 border-2 border-edge px-1.5 py-1">
-                                  <span className="font-pixel text-[9px] text-magma w-4 shrink-0">{pi + 1}</span>
-                                  <span className="text-[10px] text-faint w-24 shrink-0">x:{Math.round(p.x)} y:{Math.round(p.y)}</span>
-                                  <div className="flex items-center gap-1 flex-1 min-w-0">
-                                    <span className="text-[9px] text-faint shrink-0" title="Сколько секунд камера стоит в точке">ждать</span>
-                                    <Stepper value={p.wait ?? 1} onChange={(v) => updCut(selCutIdx!, { pts: c.pts.map((pp, i2) => (i2 === pi ? { ...pp, wait: v } : pp)) })} min={0} max={30} step={1} suffix="с" />
+                                /* v0.99: точка — ДВУХЭТАЖНАЯ карточка: вверху № и координаты + КРУПНЫЕ
+                                   разнесённые кнопки (порядок ↑↓ и удаление ✕), внизу — «ждать» и «зум».
+                                   Прежний однострочный ряд был нечитаем: все кнопки слиплись в 20px. */
+                                <div key={pi} className="border-2 border-edge px-2 py-1.5 space-y-1.5">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-pixel text-[9px] text-magma w-6 shrink-0" title={`Точка маршрута №${pi + 1}`}>№{pi + 1}</span>
+                                    <span className="text-[10px] text-faint flex-1 min-w-0 truncate" title="Координаты точки на карте">x:{Math.round(p.x)} · y:{Math.round(p.y)}</span>
+                                    <div className="flex items-center gap-1.5 shrink-0" role="group" aria-label="Управление точкой">
+                                      <button disabled={pi === 0} onClick={() => { const pts = [...c.pts]; [pts[pi - 1], pts[pi]] = [pts[pi], pts[pi - 1]]; updCut(selCutIdx!, { pts }); sfx.hover(); }} title={pi === 0 ? 'Это первая точка — выше некуда' : 'Сдвинуть точку РАНЬШЕ по маршруту (поменять с предыдущей)'} aria-label="Точка раньше" className={`w-8 h-7 border-2 font-pixel text-[10px] cursor-pointer transition-colors ${pi === 0 ? 'border-edge text-faint/30 cursor-not-allowed' : 'border-edge text-paper hover:border-gold hover:text-gold'}`}>▲</button>
+                                      <button disabled={pi === c.pts.length - 1} onClick={() => { const pts = [...c.pts]; [pts[pi + 1], pts[pi]] = [pts[pi], pts[pi + 1]]; updCut(selCutIdx!, { pts }); sfx.hover(); }} title={pi === c.pts.length - 1 ? 'Это последняя точка — ниже некуда' : 'Сдвинуть точку ПОЗЖЕ по маршруту (поменять со следующей)'} aria-label="Точка позже" className={`w-8 h-7 border-2 font-pixel text-[10px] cursor-pointer transition-colors ${pi === c.pts.length - 1 ? 'border-edge text-faint/30 cursor-not-allowed' : 'border-edge text-paper hover:border-gold hover:text-gold'}`}>▼</button>
+                                      <HoldDeleteButton onFire={() => { updCut(selCutIdx!, { pts: c.pts.filter((_, i2) => i2 !== pi) }); }} label={`точку №${pi + 1}`} ariaLabel="Удалить точку" title="Удалить точку из маршрута" className="w-8 h-7 border-2 border-edge font-pixel text-[10px] text-faint hover:text-coral hover:border-coral cursor-pointer">✕</HoldDeleteButton>
+                                    </div>
                                   </div>
-                                  <div className="flex items-center gap-1 flex-1 min-w-0">
-                                    <span className="text-[9px] text-faint shrink-0" title="Зум в точке: 1 — обычный, 2 — вдвое ближе, 0.5 — дальше">зум</span>
-                                    <Stepper value={p.zoom ?? 1} onChange={(v) => updCut(selCutIdx!, { pts: c.pts.map((pp, i2) => (i2 === pi ? { ...pp, zoom: Math.round(v * 10) / 10 } : pp)) })} min={0.4} max={3} step={0.1} suffix="×" />
-                                  </div>
-                                  <div className="flex gap-0.5 shrink-0">
-                                    <button disabled={pi === 0} onClick={() => { const pts = [...c.pts]; [pts[pi - 1], pts[pi]] = [pts[pi], pts[pi - 1]]; updCut(selCutIdx!, { pts }); sfx.hover(); }} className={`w-5 h-5 border font-pixel text-[8px] cursor-pointer ${pi === 0 ? 'border-edge text-faint/30' : 'border-edge text-dim hover:text-paper'}`}>↑</button>
-                                    <button disabled={pi === c.pts.length - 1} onClick={() => { const pts = [...c.pts]; [pts[pi + 1], pts[pi]] = [pts[pi], pts[pi + 1]]; updCut(selCutIdx!, { pts }); sfx.hover(); }} className={`w-5 h-5 border font-pixel text-[8px] cursor-pointer ${pi === c.pts.length - 1 ? 'border-edge text-faint/30' : 'border-edge text-dim hover:text-paper'}`}>↓</button>
-                                    <HoldDeleteButton onFire={() => { updCut(selCutIdx!, { pts: c.pts.filter((_, i2) => i2 !== pi) }); }} label={`точку №${pi + 1}`} ariaLabel="Удалить точку" title="Удалить точку" className="w-5 h-5 font-pixel text-[8px] text-faint hover:text-coral cursor-pointer">✕</HoldDeleteButton>
+                                  <div className="flex items-center gap-3">
+                                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                                      <span className="text-[9px] text-faint shrink-0" title="Сколько секунд камера стоит в точке">ждать</span>
+                                      <Stepper value={p.wait ?? 1} onChange={(v) => updCut(selCutIdx!, { pts: c.pts.map((pp, i2) => (i2 === pi ? { ...pp, wait: v } : pp)) })} min={0} max={30} step={1} suffix="с" />
+                                    </div>
+                                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                                      <span className="text-[9px] text-faint shrink-0" title="Зум в точке: 1 — обычный, 2 — вдвое ближе, 0.5 — дальше">зум</span>
+                                      <Stepper value={p.zoom ?? 1} onChange={(v) => updCut(selCutIdx!, { pts: c.pts.map((pp, i2) => (i2 === pi ? { ...pp, zoom: Math.round(v * 10) / 10 } : pp)) })} min={0.4} max={3} step={0.1} suffix="×" />
+                                    </div>
                                   </div>
                                 </div>
                               ))}
@@ -5057,6 +5088,18 @@ export default function MapEditor() {
                     />
                   </div>
 
+                  {/* v0.99: СКРЫТЬ РОМ И ЗАДАНИЕ ДО ПРИХОДА — в игре название, картинка и задание
+                      этой ячейки показываются «???» (и в подробностях), пока фишка впервые не вступит.
+                      Общий экран — открытие для всех; QUEST — личное открытие у каждого. */}
+                  <div className="border-2 border-edge px-2 py-1.5">
+                    <Toggle
+                      checked={!!selCellDef.hideInfo}
+                      onChange={(v) => { updCell(selCell, { hideInfo: v || undefined }); dirtyRef.current = true; sfx.hover(); }}
+                      label="🕵️ Скрыть ром/задание до прихода"
+                      hint="В игре название, картинка и задание этой ячейки будут «???» (и в подробностях ячейки тоже), пока фишка ВПЕРВЫЕ не вступит на неё. Общий экран (трансляция) — откроется для всех; в QUEST каждый открывает личным приходом. Захваченная ячейка открыта всегда."
+                    />
+                  </div>
+
                   <HoldDeleteButton
                     onFire={() => deleteCell(selCell)}
                     label="ячейку маршрута"
@@ -5720,6 +5763,39 @@ export default function MapEditor() {
               </>
             )}
             <PxBtn color="gold" onClick={runUpscaleNow} disabled={!up.fileUrl || up.busy || !!upWarn}>⬆ Апскейлить</PxBtn>
+          </div>
+        </Modal>
+      )}
+
+      {/* v0.99: ВЫБОР ФОНА ИЗ ТАЙЛОВ карты — спойлер «Апскейл» первым (готовый апскейл —
+          один клик до фона), дальше весь тайлсет. Картинка уходит в фон КАК ЕСТЬ, без пережатия. */}
+      {bgPick && (
+        <Modal title="Фон из тайлов карты" icon="🖼" onClose={() => setBgPick(false)} w="max-w-2xl">
+          <p className="text-[11px] text-dim leading-snug mb-3">
+            Кликните по картинке — она станет фоном ({bgScope === 'plate' ? (map?.tileGrid ? 'текущей карты-плитки' : 'текущей плитки') : 'всей карты'}).
+            Заапскейленные картинки (спойлер «Апскейл») показаны ПЕРВЫМИ: карта мира из интернета → «⬆ Апскейл» → «＋ В тайлсет» → здесь один клик — и фон без «размазывания».
+          </p>
+          {bgPickList.length === 0 ? (
+            <p className="text-[12px] text-faint py-6 text-center">В тайлсете карты пока пусто — загрузите папку, нарежьте тайлы или заапскейльте картинку.</p>
+          ) : (
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-[52vh] overflow-y-auto pr-1">
+              {bgPickList.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => { applyBgUrl(t.dataUrl, 'взят из тайлов'); }}
+                  className="group border-2 border-edge hover:border-gold p-1 cursor-pointer text-left"
+                  title={`${t.name} — сделать фоном`}
+                >
+                  <div className="border border-edge bg-[repeating-conic-gradient(#141833_0_25%,#0b0e1c_0_50%)_0_0/10px_10px] h-20 flex items-center justify-center overflow-hidden">
+                    <img src={t.dataUrl} alt={t.name} className="max-w-full max-h-full object-contain" style={{ imageRendering: 'pixelated' }} />
+                  </div>
+                  <div className="text-[9px] font-pixel text-faint group-hover:text-gold mt-1 truncate">{t.name}</div>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex justify-end gap-3 mt-4">
+            <GhostBtn onClick={() => setBgPick(false)}>Закрыть</GhostBtn>
           </div>
         </Modal>
       )}

@@ -3,7 +3,7 @@ import { useApp, getRomData, useBlobImage } from '../store';
 import { dispatch, streamBus, type StreamPacket } from '../useGame';
 import { CELL, cellAtPoint, cellCenter, drawBoard, drawRubgOverlay, fitView, mapSize, plateMetrics, plateNumAt, plateRectOf, smoothPxPerFrame, jumpFrameFactor, DEF_MOVE_SPEED, clampMoveSpeed } from '../render';
 import { patrolPos } from '../patrol';
-import { cellRectOf, cellTaskOf, fmtClock, spentInfo } from '../engine';
+import { cellHushed, cellRectOf, cellTaskOf, fmtClock, spentInfo } from '../engine';
 import { effectLabel } from './TaskEditor';
 import { cardArt, cartridgeArt } from '../assets';
 import SegaBox, { type SegaApi } from '../SegaBox';
@@ -1783,7 +1783,10 @@ export default function GameScreen() {
           const followId = journeyMode && journeyFree ? me : act?.id;
           const followP = followId ? dispRef.current[followId] : undefined;
           const baseZx = Math.min(2.1, Math.max(0.7, Math.min(w, h) / (CELL * 7.2)));
-          const focus = anyoneMoving ? 1.5 : 1.0; // приближаемся, пока фишку передвигают
+          /* v0.99: приближение при движении — ТОЛЬКО по опции followZoom (по умолчанию ВЫКЛ:
+             карта не «наезжает», камера просто едет за фишкой). ВКЛ — прежнее поведение:
+             во время движения зум ×1.5. Слежение (жёсткость догоняния ниже) не тронуто. */
+          const focus = options.followZoom && anyoneMoving ? 1.5 : 1.0;
           const zx = Math.min(2.6, baseZx * focus);
           const msz = mapSize(m);
           let gx = (followP?.x ?? msz.w / 2) + lookPanRef.current.x;
@@ -2014,6 +2017,7 @@ export default function GameScreen() {
           showNumbers: options.showCellNumbers,
           tokens, time: t, hoverCell: null,
           mystery: mysteryRef.current,
+          hush: hushRef.current,
           broken: sess.broken,
           brokenAt: brokenAtRef.current,
           bossDown: bossDownMerged,
@@ -2087,7 +2091,7 @@ export default function GameScreen() {
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [viewMode, peekMap, worldZoom, me, options.showCellNumbers]);
+  }, [viewMode, peekMap, worldZoom, me, options.showCellNumbers, options.followZoom]);
 
   const tileMapRef = useRef(new Map<string, never>());
   useEffect(() => {
@@ -2394,6 +2398,20 @@ export default function GameScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options.hideUnrevealed, s?.revealed, s?.captured, map?.id]);
   useEffect(() => { mysteryRef.current = mystery; }, [mystery]);
+  /* v0.99 СКРЫТЫЕ РОМЫ/ЗАДАНИЯ: ячейки с галочкой «скрыть до прихода», ещё не открытые
+     ДЛЯ ЭТОГО ЭКРАНА. Общий экран (Ретрополия/RUBG/JOURNEY) — открытие по глобальному
+     s.revealed (пришёл один — все увидели, экран-то общий); индивидуальная игра (QUEST /
+     QUEST SOLO) — каждый открывает ЛИЧНО своим приходом (s.qRevealed[me]). На карте такие
+     ячейки рисуются с «???» вместо названия/картинки (render hush), в подробностях — скрыто. */
+  const hushRef = useRef<Set<number> | undefined>(undefined);
+  const hush = useMemo(() => {
+    if (!s || !map) return undefined;
+    const set = new Set<number>();
+    map.cells.forEach((_, i) => { if (cellHushed(map, s, i, me)) set.add(i); });
+    return set.size ? set : undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s?.revealed, s?.qRevealed, s?.captured, map?.id, map?.cells, me]);
+  useEffect(() => { hushRef.current = hush; }, [hush]);
   const ownerName = owner ? s.players.find((p) => p.id === owner)?.name : undefined;
   const others = s.players.filter((p) => p.alive && p.id !== active?.id);
   const aliveCount = s.players.filter((p) => p.alive).length;
@@ -4964,6 +4982,10 @@ function InventoryModal({ onClose }: { onClose: () => void }) {
   const cellTitle = (idx: number): string => {
     const cell = map?.cells[idx];
     if (!cell) return `Ячейка №${idx + 1}`;
+    /* v0.99: скрытый ром/задание — в списках (карточки, телепорты) название не светится */
+    if (map && s && cellHushed(map, s, idx, me)) {
+      return `Ячейка ${cell.nonumber || cell.n === 0 ? 'без номера' : '№' + cell.n} · 🔒 скрыта до прихода`;
+    }
     const t = cell.task?.title ? ` · ${cell.task.title}` : '';
     return `Ячейка ${cell.nonumber || cell.n === 0 ? 'без номера' : '№' + cell.n}${cell.label ? ` «${cell.label}»` : ''}${t}`;
   };
@@ -5396,13 +5418,22 @@ function CellInspectModal({ idx, onClose }: { idx: number; onClose: () => void }
   const owner = ownerId ? s.players.find((p) => p.id === ownerId) : null;
   const revealed = (s.revealed ?? []).includes(idx) || !!ownerId;
   const hidden = !!st.options.hideUnrevealed && !revealed;
+  /* v0.99: СОЗДАТЕЛЬ СКРЫЛ ром и задание — открыто только после первого прихода фишки
+     (общий экран — приход любого; QUEST — личный приход зрителя этой камеры) */
+  const hushed = cellHushed(map!, s!, idx, st.selfId);
   const rom = task ? st.roms.find((r) => r.id === task.romId) : undefined;
   const typeLabel = cell.type === 'task' ? 'Задание' : cell.type === 'rest' ? 'Передышка' : cell.type === 'bonus' ? 'Бонус (шанс)' : cell.type === 'trap' ? 'Ловушка' : cell.type === 'loot' ? 'ЯЩИК С ЛУТОМ' : 'Квиз';
   const typeColor = cell.type === 'task' ? 'text-gold' : cell.type === 'rest' ? 'text-dim' : cell.type === 'bonus' ? 'text-teal' : cell.type === 'trap' ? 'text-coral' : cell.type === 'loot' ? 'text-[#ff8b3f]' : 'text-sky';
   const joyMeta = task?.joy ? JOY_LIST.find((j) => j.id === task.joy) : null;
   return (
-    <Modal title={`${cell.nonumber || cell.n === 0 ? 'Ячейка без номера' : `Ячейка №${cell.n}`}${cell.label ? ` · ${cell.label}` : ''}`} icon={Ic.target(16)} w="max-w-md" onClose={onClose}>
-      {hidden ? (
+    <Modal title={`${cell.nonumber || cell.n === 0 ? 'Ячейка без номера' : `Ячейка №${cell.n}`}${cell.label && !hushed ? ` · ${cell.label}` : ''}${hushed ? ' · 🔒' : ''}`} icon={Ic.target(16)} w="max-w-md" onClose={onClose}>
+      {hushed && !hidden ? (
+        <p className="text-[12px] text-dim text-center py-6 leading-relaxed">
+          🔒 Создатель карты скрыл «ром» и задание на этой ячейке.<br />
+          Содержимое откроется, когда фишка ВПЕРВЫЕ вступит сюда
+          {isQuestMode(map.mode) ? ' — у каждого своё открытие (кто пришёл, тот и увидел)' : ' — и увидят все, кто смотрит экран'}.
+        </p>
+      ) : hidden ? (
         <p className="text-[12px] text-dim text-center py-6">
           Ячейка ещё не открывалась в партии — содержимое скрыто опцией «скрывать непосещённые ячейки».
         </p>

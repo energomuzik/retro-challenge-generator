@@ -162,6 +162,28 @@ export function newSession(code: string, mapId: string, hostId: string, hostName
 export const cellTaskOf = (s: GameSession, map: GameMap, idx: number): TaskDef | null =>
   s.sessionTasks[idx] ?? map.cells[idx]?.task ?? null;
 
+/* v0.99 СКРЫТЫЕ РОМЫ/ЗАДАНИЯ (cell.hideInfo): ОТКРЫТА ЛИ ячейка ДЛЯ ЭТОГО ЗРИТЕЛЯ.
+   Общий экран (Ретрополия/RUBG/JOURNEY — «трансляция»): работает глобальный s.revealed —
+   пришёл один, открылось всем (экран общий). Индивидуальная игра (QUEST/QUEST SOLO):
+   каждый открывает ЛИЧНО своим приходом — личный список s.qRevealed[pid]. Захваченная
+   ячейка (captured) открыта всегда — хозяин её уже видел. */
+export const revealCell = (s: GameSession, pid: string | undefined, idx: number) => {
+  if (!s.revealed.includes(idx)) s.revealed.push(idx);
+  if (pid) {
+    s.qRevealed = s.qRevealed ?? {};
+    const arr = s.qRevealed[pid] ?? [];
+    if (!arr.includes(idx)) { arr.push(idx); s.qRevealed[pid] = arr; }
+  }
+};
+
+export const cellHushed = (map: GameMap, s: GameSession, idx: number, pid?: string): boolean => {
+  const c = map.cells[idx];
+  if (!c?.hideInfo) return false;
+  if ((s.captured ?? {})[idx]) return false;
+  if (isQuestMode(map.mode)) return !(pid ? (s.qRevealed?.[pid] ?? []) : []).includes(idx);
+  return !(s.revealed ?? []).includes(idx);
+};
+
 export function spentInfo(ch: NonNullable<GameSession['challenge']>, nowMs: number) {
   const running = ch.mode === 'time' && ch.started && !ch.paused && ch.startedAt > 0;
   const ms = ch.accMs + (running ? nowMs - ch.startedAt : 0);
@@ -463,7 +485,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const landIdx = cellAtPoint(map, p0.x, p0.y);
     if (landIdx >= 0) {
       p.pos = landIdx;
-      if (!s.revealed.includes(landIdx)) s.revealed.push(landIdx);
+      revealCell(s, p.id, landIdx);
       s.qCaptureCell = s.qCaptureCell ?? {};
       s.qCaptureCell[p.id] = landIdx;
     }
@@ -478,7 +500,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (br) {
         s.journeyPos[p.id] = { x: br.x + br.w / 2, y: br.y + br.h / 2, ts: now, mv: false };
         p.pos = bossCell;
-        if (!s.revealed.includes(bossCell)) s.revealed.push(bossCell);
+        revealCell(s, p.id, bossCell);
         if (s.qCaptureCell) s.qCaptureCell[p.id] = bossCell;
       }
     }
@@ -839,7 +861,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         if (!r) continue;
         if (!(pp.x >= r.x && pp.x < r.x + r.w && pp.y >= r.y && pp.y < r.y + r.h)) continue;
         pl.pos = i;
-        if (!s.revealed.includes(i)) s.revealed.push(i);
+        revealCell(s, pl.id, i);
         rubgTryJob(pl, i, true);
         break;
       }
@@ -1740,7 +1762,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (p.id !== a.id) break;
       p.pos = s.moving.path[s.moving.path.length - 1];
       s.moving = null;
-      if (!s.revealed.includes(p.pos)) s.revealed.push(p.pos);
+      revealCell(s, p.id, p.pos);
       resolveLanding();
       break;
     }
@@ -1800,7 +1822,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           const inOld = !!prev && prev.x >= r.x && prev.x < r.x + r.w && prev.y >= r.y && prev.y < r.y + r.h;
           if (inOld) continue; // уже стоял в ней — вход был раньше
           p.pos = i;
-          if (!s.revealed.includes(i)) s.revealed.push(i);
+          revealCell(s, p.id, i);
           if (c.type === 'task') {
             rubgTryJob(p, i, true); // ОДНА ячейка — ОДИН игрок: занятая другим — отказ с пояснением
           }
@@ -1829,7 +1851,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           if (inOld) continue; // уже стоял в ней — вход был раньше
           if (s.qCaptureCell?.[p.id] === i) continue; // v0.55: только что был оттащен боссом сюда — не срабатывает проходом
           p.pos = i;
-          if (!s.revealed.includes(i)) s.revealed.push(i);
+          revealCell(s, p.id, i);
           if (c.type === 'task') {
             if ((s.qDone?.[p.id] ?? []).includes(i)) continue; // это задание игрок УЖЕ победил
             if (s.qJobs?.[p.id]) continue; // уже играешь личное задание
@@ -1868,7 +1890,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           if (s.captured[i] === p.id) continue; // своя ячейка — отдых
           if (!cellTaskOf(s, map, i)) continue; // задания нет — обычная ячейка
           p.pos = i;
-          if (!s.revealed.includes(i)) s.revealed.push(i);
+          revealCell(s, p.id, i);
           s.turn = Math.max(0, s.players.indexOf(p)); // игрок задания — «текущий»: камера/боссы/окно на нём
           /* v0.55 SKILL «СЛУЧАЙНЫЕ ЗАДАНИЯ»: запускется задание СЛУЧАЙНОЙ ячейки карты */
           let chIdx = i;
@@ -1955,7 +1977,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const p = host;
       p.pos = a.cellIdx;
       s.turn = Math.max(0, s.players.indexOf(p));
-      if (!s.revealed.includes(a.cellIdx)) s.revealed.push(a.cellIdx);
+      revealCell(s, p.id, a.cellIdx);
       s.notice = null;
       s.challenge = {
         cellIdx: a.cellIdx, mode: null, started: false, paused: false, startedAt: 0, accMs: 0, loads: 0, reloadId: 0,
@@ -2424,7 +2446,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         if (s.challenge || s.moving || s.pendingCard || s.quiz || s.awaitPost) break;
         if ((s.fxs ?? []).some((f) => f.gate)) break;
         p.pos = bossCell;
-        if (!s.revealed.includes(bossCell)) s.revealed.push(bossCell);
+        revealCell(s, p.id, bossCell);
         s.turn = Math.max(0, s.players.indexOf(p));
         s.challenge = {
           cellIdx: bossCell, mode: null, started: false, paused: false, startedAt: 0, accMs: 0, loads: 0, reloadId: 0,
