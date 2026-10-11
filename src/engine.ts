@@ -76,7 +76,7 @@ export type Action =
   | { t: 'rubgStealth'; id: string } // RUBG: активировать стелс (сгорает карта стелса)
   | { t: 'rubgBelt'; id: string; itemId: string; on: boolean } // RUBG: надеть/снять предмет с ПОЯСА (на поясе макс. 3 — только они имеют кнопки действий; пояс не воруется)
   | { t: 'qJobDone'; id: string; cellIdx: number; win: boolean; byCode?: boolean } // QUEST: игрок закрыл ЛИЧНОЕ задание (доверие): победа — награда и прогресс, поражение — плата и счётчик провалов; v0.68 byCode — зачтено по памяти (условие CodeSearch)
-  | { t: 'qJobLeave'; id: string; cellIdx: number } // QUEST: игрок ушёл из личного задания без последствий
+  | { t: 'qJobLeave'; id: string; cellIdx: number } // QUEST: игрок ушёл из личного задания — v0.101: УЙТИ = ПОРАЖЕНИЕ (те же последствия, что win:false)
   | { t: 'qCardAck'; id: string } // QUEST: игрок подтвердил выпавшую карточку бонуса/ловушки
   | { t: 'dialogPick'; id: string; npcId: string; nodeId: string; optIdx: number } // QUEST: выбор игрока в диалоге NPC (награда/флаг/переход/концовка)
   | { t: 'npcClaim'; id: string; npcId: string; questId: string } // QUEST: сдача квеста NPC — награда + снятие стен
@@ -536,6 +536,49 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       winH: tk?.winHp !== undefined ? Math.max(0, Math.floor(tk.winHp)) : RUBG_WIN_HP,
       loseH: tk?.loseHp !== undefined ? Math.max(0, Math.floor(tk.loseHp)) : RUBG_LOSE_HP,
     };
+  };
+  /* ---------- v0.101: ПОРАЖЕНИЕ ЛИЧНОГО ЗАДАНИЯ — общий код (заказчик: «уйти = поражение») ----------
+     questSpendResources — списание РЕСУРСОВ за задание (время по факту + попытка; монетные карты не тратят).
+     questDefeatApply — последствия ПОРАЖЕНИЯ: счётчик провалов, босс на ячейке снова патрулирует
+     (v0.54), списание HP (v0.55), куллдаун захвата 8 с, лог, проверка выбывания.
+     Вызывается из qJobDone (win:false) и из qJobLeave — «бесплатного» ухода с задания больше нет. */
+  const questSpendResources = (p: PlayerState, startedAt: number): void => {
+    const resM = (map.coinsOnly && map.startCoins !== undefined) ? 'coins' : normResMode(map.resMode); // время+попытки — один ресурс
+    if (resM === 'time' || resM === 'std') {
+      const mins = Math.max(0, Math.ceil((Date.now() - startedAt) / 60000));
+      const spend = Math.min(mins, Math.floor(p.secLeft / 60)) * 60;
+      if (spend > 0) p.secLeft -= spend;
+      if (resM === 'std') p.triesLeft = Math.max(0, p.triesLeft - 1); // вход в задание = 1 попытка
+    } else if (resM === 'tries') {
+      p.triesLeft = Math.max(0, p.triesLeft - 1);
+    }
+  };
+  const questDefeatApply = (p: PlayerState, cellIdx: number, byCode?: boolean, note?: string): void => {
+    s.qFails = s.qFails ?? {};
+    s.qFails[p.id] = (s.qFails[p.id] ?? 0) + 1;
+    /* v0.54: игрок ПРОИГРАЛ задание на ячейке босса — босс, патруль которого
+       замирал из-за него (захват/ожидание), СНОВА ПАТРУЛИРУЕТ; повержённые
+       остаются повержёнными. */
+    for (const hb of map.bosses ?? []) {
+      if (cellAtPoint(map, hb.x, hb.y) !== cellIdx) continue;
+      const h = s.qBossHoldAt?.[p.id];
+      if (h && h[hb.id] !== undefined) {
+        delete h[hb.id];
+        log(`👹 Босс${bossNameOf(hb.bid)} снова патрулирует — игрок проиграл задание.`);
+      }
+    }
+    /* v0.55 QUEST — СМЕСЬ РЕСУРСОВ: проигрыш задания ВСЕГДА бьёт по ПОЛОСКЕ HP
+       (кастомная цена задания или стандарт карты — 5%); МОНЕТЫ за проигрыш больше
+       НЕ списываются (деньги — только для торговли). КУЛЛДАУН 8 с: после проигрыша
+       задания босса босс не хватает заново — успей уйти. */
+    {
+      const stake = taskStakeOf(cellIdx);
+      if (stake.loseH > 0) { p.hp = Math.max(0, (p.hp ?? RUBG_HP_MAX) - stake.loseH); log(`💔 −${stake.loseH}% HP — полоска ${Math.round(p.hp)}%`); }
+      s.qCaptureCd = s.qCaptureCd ?? {};
+      s.qCaptureCd[p.id] = Date.now() + 8000;
+    }
+    log(`💢 ${p.name} проиграл задание №${cellIdx + 1}${byCode ? ' — ПОРАЖЕНИЕ ПО КОДУ 🤖' : ''}${note ?? ''} (провалов: ${s.qFails[p.id]})`);
+    checkElim();
   };
   /* ---------- v0.55: SKILL «СЛУЧАЙНЫЕ ЗАДАНИЯ» — случайная ячейка с заданием ----------
    Приоритет — ещё НЕ сыгранные (не в skillDone); если всё сыграно — любая с заданием. */
@@ -2183,16 +2226,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       /* v0.70 ТОЛЬКО ПО КОДУ: ручной зачёт/провал запрещён — только срабатывание условия из CodeSearch */
       if (cellTaskOf(s, map, a.cellIdx)?.codeOnly && !a.byCode) break;
       delete s.qJobs![p.id];
-      /* ресурс партии: время списывается по факту (минуты за задание); монеты/HP — платёж по итогам; попытка — 1 за вход */
-      const resM = (map.coinsOnly && map.startCoins !== undefined) ? 'coins' : normResMode(map.resMode); // время+попытки — один ресурс
-      if (resM === 'time' || resM === 'std') {
-        const mins = Math.max(0, Math.ceil((Date.now() - job.startedAt) / 60000));
-        const spend = Math.min(mins, Math.floor(p.secLeft / 60)) * 60;
-        if (spend > 0) p.secLeft -= spend;
-        if (resM === 'std') p.triesLeft = Math.max(0, p.triesLeft - 1); // вход в задание = 1 попытка
-      } else if (resM === 'tries') {
-        p.triesLeft = Math.max(0, p.triesLeft - 1);
-      }
+      /* ресурс партии: время списывается по факту (минуты за задание); монеты/HP — платёж по итогам; попытка — 1 за вход (v0.101: общий код с qJobLeave) */
+      questSpendResources(p, job.startedAt);
       if (a.win) {
         s.qDone = s.qDone ?? {};
         const done = s.qDone[p.id] ?? [];
@@ -2231,32 +2266,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         const tkw = cellTaskOf(s, map, a.cellIdx);
         log(`🏆 ${p.name} ПРОШЁЛ задание «${(tkw?.title ?? `№${a.cellIdx + 1}`).slice(0, 30)}»${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : ''} — всего выполнено: ${done.length}`);
       } else {
-        s.qFails = s.qFails ?? {};
-        s.qFails[p.id] = (s.qFails[p.id] ?? 0) + 1;
-        /* v0.54: игрок ПРОИГРАЛ задание на ячейке босса — босс, патруль которого
-           замирал из-за него (захват/ожидание), СНОВА ПАТРУЛИРУЕТ; повержённые
-           остаются повержёнными. */
-        for (const hb of map.bosses ?? []) {
-          if (cellAtPoint(map, hb.x, hb.y) !== a.cellIdx) continue;
-          const h = s.qBossHoldAt?.[p.id];
-          if (h && h[hb.id] !== undefined) {
-            delete h[hb.id];
-            log(`👹 Босс${bossNameOf(hb.bid)} снова патрулирует — игрок проиграл задание.`);
-          }
-        }
-        /* v0.55 QUEST — СМЕСЬ РЕСУРСОВ: проигрыш задания ВСЕГДА бьёт по ПОЛОСКЕ HP
-           (кастомная цена задания или стандарт карты — 5%); МОНЕТЫ за проигрыш больше
-           НЕ списываются (деньги — только для торговли). КУЛЛДАУН 8 с: после проигрыша
-           задания босса босс не хватает заново — успей уйти. */
-        {
-          const stake = taskStakeOf(a.cellIdx);
-          if (stake.loseH > 0) { p.hp = Math.max(0, (p.hp ?? RUBG_HP_MAX) - stake.loseH); log(`💔 −${stake.loseH}% HP — полоска ${Math.round(p.hp)}%`); }
-          s.qCaptureCd = s.qCaptureCd ?? {};
-          s.qCaptureCd[p.id] = Date.now() + 8000;
-        }
-        log(`💢 ${p.name} проиграл задание №${a.cellIdx + 1}${a.byCode ? ' — ПОРАЖЕНИЕ ПО КОДУ 🤖' : ''} (провалов: ${s.qFails[p.id]})`);
+        questDefeatApply(p, a.cellIdx, a.byCode);
       }
-      checkElim();
+      checkElim(); // v0.101: как раньше — и после победы тоже (helper вызывает его только на поражении)
       break;
     }
     case 'qJobLeave': {
@@ -2265,7 +2277,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const job = p ? s.qJobs?.[p.id] : undefined;
       if (!p || !job || job.cellIdx !== a.cellIdx) break;
       delete s.qJobs![p.id];
-      log(`🚶 ${p.name} отошёл от задания — можно зайти снова`);
+      /* v0.101 УЙТИ = ПОРАЖЕНИЕ (заказчик): «бесплатного» ухода больше нет — выход с задания
+         до победы считается провалом: время/попытка списываются, счётчик провалов +1, HP минус,
+         босс снова патрулирует. Зайти снова МОЖНО — ячейка не блокируется. */
+      questSpendResources(p, job.startedAt);
+      questDefeatApply(p, a.cellIdx, false, ' — УЙТИ = ПОРАЖЕНИЕ 🚪');
       break;
     }
     case 'qCardAck': {

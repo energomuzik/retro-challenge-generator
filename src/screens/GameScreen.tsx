@@ -473,6 +473,9 @@ export default function GameScreen() {
   useEffect(() => { setQArmed(false); }, [myQJob?.cellIdx]);
   const [qPaused, setQPaused] = useState(false);
   useEffect(() => { setQPaused(false); }, [myQJob?.cellIdx, qArmed]);
+  /* v0.101: «УЙТИ» теперь засчитывает ПОРАЖЕНИЕ (движок) — двухшаговое подтверждение от случайного клика */
+  const [qLeaveArm, setQLeaveArm] = useState(false);
+  useEffect(() => { setQLeaveArm(false); }, [myQJob?.cellIdx, qArmed]);
 
   /* ---------- RUBG: «СТАРТ ИГРЫ» в личном задании — эмулятор на паузе до нажатия,
      чтобы игрок мог подготовиться (прочитать задание, настроить управление).
@@ -4233,10 +4236,18 @@ export default function GameScreen() {
                               {Ic.rotate(13)} Перезапуск
                             </GhostBtn>
                             <GhostBtn
-                              title="Отойти от задания без последствий — можно зайти снова"
-                              onClick={() => { dispatch({ t: 'qJobLeave', id: me, cellIdx: myQJob.cellIdx }); setQArmed(false); }}
+                              title={qLeaveArm
+                                ? 'Подтвердить: уйти И ПОЛУЧИТЬ ПОРАЖЕНИЕ (−HP, провал в счёт)'
+                                : 'Уйти = ПОРАЖЕНИЕ: спишутся время/попытка и HP, провал засчитается. Зайти снова можно.'}
+                              className={qLeaveArm ? 'border-coral text-coral' : undefined}
+                              onClick={() => {
+                                if (!qLeaveArm) { setQLeaveArm(true); return; } // первый клик — предупреждение
+                                setQLeaveArm(false);
+                                dispatch({ t: 'qJobLeave', id: me, cellIdx: myQJob.cellIdx });
+                                setQArmed(false);
+                              }}
                             >
-                              🚪 Уйти
+                              {qLeaveArm ? '💀 Точно уйти? (= поражение)' : '🚪 Уйти (= поражение)'}
                             </GhostBtn>
                           </div>
                         </>
