@@ -54,6 +54,11 @@ const voiceOf = (v: TVoiceId, secId: string, idx: number): string | null => {
   if (typeof hit === 'string') return hit;
   return v === 'dm' ? null : voiceOf('dm', secId, idx);
 };
+/* v0.103: сколько у голоса СВОИХ записей — бейдж «скоро» вешаем только когда их нет вовсе */
+const VOICE_COUNT: Record<TVoiceId, number> = { dm: 0, kin: 0, blog: 0 };
+(Object.keys(VOICES) as string[]).forEach((k) => {
+  (Object.keys(VOICE_DIR) as TVoiceId[]).forEach((v) => { if (k.startsWith(VOICE_DIR[v])) VOICE_COUNT[v]++; });
+});
 
 interface PlayItem { slide: TSlide; sec: TSection; si: number }
 interface PlayState { title: string; color: string; items: PlayItem[]; idx: number }
@@ -312,7 +317,7 @@ export default function TrainingScreen() {
       ? 'Озвучка: нейроголос Дмитрий (mp3)'
       : ownVoice
         ? `Озвучка: голос «${VOICE_LABEL[voice]}»`
-        : `Голос «${VOICE_LABEL[voice]}» скоро появится — пока говорит Дмитрий`;
+        : `У голоса «${VOICE_LABEL[voice]}» нет записи этого слайда — играет Дмитрий`;
 
   return (
     <div className="h-full crt-grid-bg relative overflow-hidden">
@@ -380,19 +385,20 @@ export default function TrainingScreen() {
           {/* шапка окна */}
           <div className="shrink-0 flex items-center gap-2 px-4 py-3 border-b-2 border-edge bg-[rgba(13,18,38,0.8)]">
             <span className="font-pixel text-[10px]" style={{ color: play.color }}>{play.title.toUpperCase()}</span>
-            {/* v0.92: выбор голоса озвучки — ДМИТРИЙ / КИНАМАН / БЛОГЕРЫ (заглушка: у двух последних
-                бейдж «скоро», играет Дмитрий); выбор запоминается, смена перезапускает текущий слайд */}
+            {/* v0.92→v0.103: выбор голоса озвучки — ДМИТРИЙ / КИНАМАН / БЛОГЕРЫ; бейдж «скоро» только
+                у голосов без своих записей (Кинаман записался — бейдж снят); выбор запоминается,
+                смена перезапускает текущий слайд */}
             <span className="ml-2 hidden sm:flex items-center gap-1">
               <span className="font-pixel text-[8px] text-faint">ГОЛОС:</span>
               {(Object.keys(VOICE_LABEL) as TVoiceId[]).map((v) => (
                 <button
                   key={v}
-                  title={v === 'dm' ? 'Озвучка Дмитрия (нейроголос)' : `Голос «${VOICE_LABEL[v]}» — записи ещё в работе, пока играет Дмитрий`}
+                  title={v === 'dm' ? 'Озвучка Дмитрия (нейроголос)' : VOICE_COUNT[v] > 0 ? `Голос «${VOICE_LABEL[v]}»: ${VOICE_COUNT[v]} записей; где своей нет — играет Дмитрий` : `Голос «${VOICE_LABEL[v]}» — записи ещё в работе, пока играет Дмитрий`}
                   onClick={() => changeVoice(v)}
                   className={`relative px-1.5 py-0.5 border-2 font-pixel text-[8px] uppercase ${voice === v ? 'text-gold border-gold' : 'text-dim border-edge hover:border-edge2'}`}
                 >
                   {VOICE_LABEL[v]}
-                  {v !== 'dm' && (
+                  {v !== 'dm' && VOICE_COUNT[v] === 0 && (
                     <span className="absolute -top-1.5 -right-1.5 px-0.5 text-[7px] leading-none text-magma bg-[rgba(6,9,20,0.85)] border border-magma/60">скоро</span>
                   )}
                 </button>
