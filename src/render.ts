@@ -396,7 +396,7 @@ export interface BoardDrawOpts {
   brokenAt?: Record<number, number>; // ЛОКАЛЬНЫЙ момент появления разбития (Date.now() клиента) — короткая анимация разлёта осколков после разбития
   bossDown?: Record<string, boolean>; // повержённые боссы: статичный кадр побеждённого
   /* разовые реакции боссов (fx): клип играется ОДИН раз от start (rAF-мс), дойдя до последнего кадра — замирает */
-  bossFx?: Record<string, { frames: string[]; fps: number; start: number }>;
+  bossFx?: Record<string, { frames: string[]; fps: number; start: number; bw?: number; bh?: number; ax?: number; ay?: number }>; // v0.100: + база/якорь клипа
   /* QUEST: NPC на карте — рисуются с клипом done, если ВСЕ их квесты сданы ЭТИМ игроком (done считает клиент) */
   npcs?: { npc: PlacedNpc; def: NpcLibEntry; done: boolean }[];
   /* РЕЖИМ КОМНАТ (АЙЗЕК): прямоугольник текущей плитки-комнаты (px поля).
@@ -680,7 +680,17 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     ctx.save();
     ctx.translate(pa.x, pa.y);
     ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(img, -pa.w / 2, -pa.h / 2, pa.w, pa.h);
+    /* v0.100: с базой+якорем клипа масштаб считаем по БАЗЕ (исходному тайлу) и садим якорь
+       на точку размещения — тайл при сдвигах кадров НЕ уменьшается (двигается только картинка).
+       Без меты (старые клипы) — растягиваем канву в габарит, как раньше */
+    const acl = entry.clip;
+    if (acl.bw && acl.bh) {
+      const kx = pa.w / acl.bw, ky = pa.h / acl.bh;
+      const ax = acl.ax ?? (img.width || 1) / 2, ay = acl.ay ?? (img.height || 1) / 2;
+      ctx.drawImage(img, -ax * kx, -ay * ky, (img.width || 1) * kx, (img.height || 1) * ky);
+    } else {
+      ctx.drawImage(img, -pa.w / 2, -pa.h / 2, pa.w, pa.h);
+    }
     ctx.restore();
   }
 
@@ -1286,16 +1296,20 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     let fps = 6;
     let once = false; // клип-одноразка (реакция) — не зацикливать, замереть на последнем кадре
     let startMs = 0;
+    let bmeta: { bw?: number; bh?: number; ax?: number; ay?: number } | null = null; // v0.100: база+якорь клипа босса
     const fxC = o.bossFx?.[pb.id];
     if (fxC && fxC.frames.length) {
       frames = fxC.frames; fps = fxC.fps; once = true; startMs = fxC.start;
+      bmeta = fxC.bw && fxC.bh ? fxC : null;
     } else if (o.bossDown?.[pb.id]) {
       const dclip = def.defeated && def.defeated.frames.length ? def.defeated : def.win;
       frames = dclip.frames.length ? dclip.frames : def.idle.frames;
       fps = dclip.frames.length ? dclip.fps : def.idle.fps;
+      bmeta = dclip.frames.length ? dclip : def.idle; // v0.100
       once = true; startMs = 0; // статичный кадр — берём последний
     } else {
       frames = def.idle.frames; fps = def.idle.fps;
+      bmeta = def.idle; // v0.100
     }
     if (!frames || !frames.length) continue;
     let idx: number;
@@ -1320,7 +1334,14 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     }
     ctx.imageSmoothingEnabled = true;
     if (o.bossDown?.[pb.id] && !fxC) ctx.globalAlpha = 0.85; // побеждённый — чуть приглушён
-    ctx.drawImage(img, -pb.w / 2, -pb.h / 2, pb.w, pb.h);
+    /* v0.100: с базой+якорем — масштаб по базе, якорь на точке босса (тайл не уменьшается при сдвигах кадров) */
+    if (bmeta && bmeta.bw && bmeta.bh) {
+      const kx = pb.w / bmeta.bw, ky = pb.h / bmeta.bh;
+      const bax = bmeta.ax ?? (img.width || 1) / 2, bay = bmeta.ay ?? (img.height || 1) / 2;
+      ctx.drawImage(img, -bax * kx, -bay * ky, (img.width || 1) * kx, (img.height || 1) * ky);
+    } else {
+      ctx.drawImage(img, -pb.w / 2, -pb.h / 2, pb.w, pb.h);
+    }
     ctx.restore();
   }
 
@@ -1360,7 +1381,14 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     ctx.save();
     ctx.translate(nx, ny);
     ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(img, -npc.w / 2, -npc.h / 2, npc.w, npc.h);
+    /* v0.100: с базой+якорем — масштаб по базе (тайл NPC при сдвигах кадров не уменьшается) */
+    if (clip.bw && clip.bh) {
+      const kx = npc.w / clip.bw, ky = npc.h / clip.bh;
+      const nax = clip.ax ?? (img.width || 1) / 2, nay = clip.ay ?? (img.height || 1) / 2;
+      ctx.drawImage(img, -nax * kx, -nay * ky, (img.width || 1) * kx, (img.height || 1) * ky);
+    } else {
+      ctx.drawImage(img, -npc.w / 2, -npc.h / 2, npc.w, npc.h);
+    }
     // значок диалога над NPC с диалогом (в игре и в редакторе — видно, что с ним можно говорить)
     if (npc.dialog && npc.dialog.nodes.length) {
       ctx.save();
@@ -1409,9 +1437,17 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     ctx.ellipse(0, sz * 0.47, sz * 0.32, sz * 0.13, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    /* картинка фишки: большая сторона = sz, пропорции сохранены, чуть приподнята над тенью */
-    const drawFit = (img: HTMLImageElement) => {
+    /* картинка фишки: большая сторона = sz, пропорции сохранены, чуть приподнята над тенью.
+       v0.100: с базой+якорем клипа — масштаб по БАЗЕ (исходному тайлу) и якорь на точке фишки:
+       сдвиг кадров в редакторе анимаций больше НЕ уменьшает тайл ни в редакторе, ни здесь */
+    const drawFit = (img: HTMLImageElement, meta?: { bw?: number; bh?: number; ax?: number; ay?: number }) => {
       const iw = img.width || 1, ih = img.height || 1;
+      if (meta?.bw && meta?.bh) {
+        const ka = sz / Math.max(meta.bw, meta.bh);
+        const ax = meta.ax ?? iw / 2, ay = meta.ay ?? ih / 2;
+        ctx.drawImage(img, -ax * ka, -ay * ka - sz * 0.12, iw * ka, ih * ka);
+        return;
+      }
       const k = sz / Math.max(iw, ih);
       const dw = iw * k, dh = ih * k;
       ctx.drawImage(img, -dw / 2, -dh / 2 - sz * 0.12, dw, dh);
@@ -1427,7 +1463,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       const fimgO = getImage(t.override.frames[idxO]);
       if (fimgO) {
         ctx.imageSmoothingEnabled = false;
-        drawFit(fimgO);
+        drawFit(fimgO, t.override);
         drawn = true;
       }
     }
@@ -1438,7 +1474,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       const fimg = getImage(clip.frames[clipFrameIdx(clip, o.time + (t.phase ?? 0) * 1000)]);
       if (fimg) {
         ctx.imageSmoothingEnabled = false;
-        drawFit(fimg);
+        drawFit(fimg, clip);
         drawn = true;
       }
     }

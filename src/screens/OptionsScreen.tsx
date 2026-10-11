@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useApp } from '../store';
 import { Field, GhostBtn, Ic, Modal, Panel, PxBtn, Toggle } from '../ui';
 import type { SpoilerMode } from '../types';
@@ -45,6 +45,37 @@ export default function OptionsScreen() {
   const mClearCache = useMusic((s) => s.clearCache);
   const mNext = useMusic((s) => s.next);
   const [askUrl, setAskUrl] = useState(''); // какой внешний адрес собираемся открыть (окно-предупреждение)
+  const iconFileRef = useRef<HTMLInputElement | null>(null); // v0.100: выбор файла мини-иконки игрока
+
+  /* v0.100 МИНИ-ИКОНКА игрока: файл с компа → canvas ≤ 64×64 (пиксель-арт не размывается) →
+     PNG; если PNG велик (фото) — JPEG. Держим размер маленьким: иконка уезжает всем
+     игрокам сообщением при подключении */
+  const pickIconFile = (file: File) => {
+    if (!file.type.startsWith('image/')) { toast('Это не картинка', 'err'); sfx.fail(); return; }
+    const rd = new FileReader();
+    rd.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const mx = Math.max(img.width || 1, img.height || 1);
+        const k = Math.min(1, 64 / mx);
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(img.width * k));
+        cv.height = Math.max(1, Math.round(img.height * k));
+        const cx = cv.getContext('2d')!;
+        cx.imageSmoothingEnabled = false;
+        cx.drawImage(img, 0, 0, cv.width, cv.height);
+        let url = cv.toDataURL('image/png');
+        if (url.length > 24 * 1024) url = cv.toDataURL('image/jpeg', 0.85); // фото — в JPEG
+        if (url.length > 24 * 1024) { toast('Картинка слишком велика — возьмите поменьше', 'err'); sfx.fail(); return; }
+        setOptions({ pIcon: url });
+        sfx.coin();
+        toast('Мини-иконка сохранена — остальные увидят её при подключении к комнате', 'ok');
+      };
+      img.onerror = () => { toast('Не удалось прочитать картинку', 'err'); sfx.fail(); };
+      img.src = String(rd.result);
+    };
+    rd.readAsDataURL(file);
+  };
 
   // Экспорт всей библиотеки (карты, тайлы, ромы, сохранения, фишки) в один файл
   const doExport = async () => {
@@ -110,6 +141,36 @@ export default function OptionsScreen() {
                   onChange={(e) => setOptions({ name: e.target.value.toUpperCase() })}
                 />
               </Field>
+              {/* v0.100 МИНИ-ИКОНКА: картинка рядом с именем в шапке партии, в лобби и в окнах заданий */}
+              <div>
+                <span className="tick-label block mb-2">Мини-иконка (рядом с именем в игре)</span>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="w-10 h-10 shrink-0 border-2 border-edge flex items-center justify-center" style={{ background: 'repeating-conic-gradient(#1a2244 0 25%, #10142a 0 50%) 0 0 / 10px 10px' }} title={options.pIcon ? 'Ваша мини-иконка' : 'Иконка не выбрана — видно цветную плашку'}>
+                    {options.pIcon
+                      ? <img src={options.pIcon} alt="иконка" className="w-full h-full object-contain" style={{ imageRendering: 'pixelated' }} />
+                      : <span className="font-pixel text-[8px] text-faint">НЕТ</span>}
+                  </span>
+                  <input
+                    ref={iconFileRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) pickIconFile(f);
+                      e.target.value = ''; // тот же файл можно выбрать повторно
+                    }}
+                  />
+                  <GhostBtn small onClick={() => iconFileRef.current?.click()}>{Ic.plus(12)} Выбрать картинку</GhostBtn>
+                  {options.pIcon && (
+                    <GhostBtn small onClick={() => { setOptions({ pIcon: undefined }); sfx.hover(); toast('Мини-иконка убрана', 'info'); }}>✕ Убрать</GhostBtn>
+                  )}
+                </div>
+                <p className="text-[10px] text-faint mt-2 leading-relaxed">
+                  Картинка сжимается до 64×64. Видна у вашего имени в шапке партии, в лобби и в окнах заданий (во всех режимах).
+                  Остальным игрокам уходит при подключении к комнате — если поменяли иконку в середине партии, переподключитесь (или пересоздайте комнату).
+                </p>
+              </div>
               <p className="text-[11px] text-dim leading-relaxed">
                 Имя видно в лобби, в журнале партии и в подписи трансляции.
               </p>
@@ -137,6 +198,141 @@ export default function OptionsScreen() {
             </div>
           </Panel>
 
+          <Panel title="Музыка" icon={Ic.volume(16)} accent="var(--color-teal)" className="slide-up md:col-span-2">
+            <div className="p-4 space-y-4">
+              <Toggle
+                checked={mEnabled}
+                onChange={(v) => mSet(v)}
+                label="Фоновая музыка (Яндекс.Диск)"
+                hint="Ретро-миксы Dj Berto: 7 Dendy minimix + 2 RetroGame MIX. Треки выбираются случайно и не повторяют предыдущий; уходя в тишину — пауза, вернулись — продолжение с того же места; после F5 плеер продолжит тот же трек с того же места. Прослушанный трек сохраняется на компьютере и дальше играет локально, без скачиваний. В партии, подключении, создании, запуске ромов и обучении — тишина."
+              />
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="font-pixel text-[9px] text-faint">🔉</span>
+                <input
+                  type="range" min={0} max={1} step={0.05} value={mVolume}
+                  onChange={(e) => mSetVolume(Number(e.target.value))}
+                  title={`Громкость музыки: ${Math.round(mVolume * 100)}%`}
+                  className="w-40 accent-[#ffcf3f] cursor-pointer"
+                  aria-label="Громкость музыки"
+                />
+                <span className="font-pixel text-[8px] text-faint w-9 text-right">{Math.round(mVolume * 100)}%</span>
+                <span className="tick-label text-faint">громкость музыки (не действует на озвучку обучения и звуки игры)</span>
+              </div>
+              <div>
+                <div className="tick-label mb-1.5">Где играть музыку</div>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {([
+                    ['title', 'Только на титульном экране', 'Музыка звучит только в главном меню: открыли сайт — играет, ушли в любой раздел — пауза, вернулись — продолжение'],
+                    ['everywhere', 'Везде, кроме создания игры и подключения', 'Меню, редакторы, опции — с музыкой; создание игры, подключение, лобби, партия, запуск ромов и обучение — тишина'],
+                  ] as ['title' | 'everywhere', string, string][]).map(([mode, lbl, hint]) => (
+                    <button
+                      key={mode}
+                      onClick={() => { mSetMode(mode); sfx.hover(); }}
+                      title={hint}
+                      className={`text-left px-3 py-2 border-2 transition-colors cursor-pointer ${mMode === mode ? 'border-teal bg-teal/10' : 'border-edge hover:border-edge2'}`}
+                    >
+                      <div className={`font-display text-[11px] uppercase ${mMode === mode ? 'text-teal' : 'text-paper'}`}>{lbl}</div>
+                      <div className="text-[10px] text-dim mt-0.5 leading-snug">{hint}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="tick-label mb-1.5">После тишины</div>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {([
+                    ['same', 'Продолжать ту же мелодию', 'Вернулись из тишины (партия, подключение, обучение) — трек продолжается с того места, где остановился'],
+                    ['new', 'Включать новую мелодию', 'Вернулись из тишины — включается случайный новый трек (со случайного места, если включён «рандомный рандом»). По умолчанию (v0.87.0)'],
+                  ] as ['same' | 'new', string, string][]).map(([r, lbl, hint]) => (
+                    <button
+                      key={r}
+                      onClick={() => { mSetResume(r); sfx.hover(); }}
+                      title={hint}
+                      className={`text-left px-3 py-2 border-2 transition-colors cursor-pointer ${mResume === r ? 'border-teal bg-teal/10' : 'border-edge hover:border-edge2'}`}
+                    >
+                      <div className={`font-display text-[11px] uppercase ${mResume === r ? 'text-teal' : 'text-paper'}`}>{lbl}</div>
+                      <div className="text-[10px] text-dim mt-0.5 leading-snug">{hint}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <span className="font-pixel text-[9px] text-teal">▶</span>
+                <span className="font-display text-[11px] text-paper" title={mTrack}>
+                  {mTrack || '— трек ещё не выбран —'}
+                </span>
+                <span className={`tick-label ${mStatus === 'playing' ? 'text-teal' : mStatus === 'error' ? 'text-coral' : 'text-faint'}`}>
+                  {{ resolving: 'подключаюсь к Диску…', playing: 'играет', paused: 'пауза (экран вне списка)', error: `ошибка: ${mError}`, idle: 'выключена' }[mStatus]}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <PxBtn small color="teal" onClick={() => mNext()} title="Включить следующий трек (случайный)">
+                  ⏭ Следующий трек
+                </PxBtn>
+                <PxBtn small color="teal" onClick={() => {
+                  toast('Проверяю плейлист на Яндекс.Диске…', 'info');
+                  void probePlaylist().then(({ ok, fail }) => {
+                    toast(ok ? `Плейлист жив: треков доступно ${ok}${fail ? `, недоступно ${fail}` : ''}` : 'Яндекс.Диск не отвечает — проверь интернет или ссылки треков', ok ? 'ok' : 'err');
+                  });
+                }}>
+                  {Ic.rotate(13)} Проверить плейлист
+                </PxBtn>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <span
+                  className="tick-label text-faint"
+                  title="Первое прослушивание стримится с Диска и одновременно сохраняется на компьютер; дальше трек играет локально, без скачиваний"
+                >
+                  В кэше компьютера: {mCacheCount} из {MUSIC_TITLES.length} треков ({Math.round(mCacheBytes / 1048576)} МБ)
+                </span>
+                <PxBtn
+                  small
+                  onClick={() => { void mClearCache().then(() => toast('Кэш музыки очищен — треки снова будут скачиваться с Диска', 'ok')); }}
+                  title="Стереть сохранённые на компьютере треки"
+                >
+                  {Ic.trash(13)} Очистить кэш
+                </PxBtn>
+              </div>
+              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox" checked={mWild}
+                  onChange={(e) => mSetWild(e.target.checked)}
+                  className="mt-0.5 w-4 h-4 accent-[#ffcf3f] cursor-pointer shrink-0"
+                />
+                <span>
+                  <span className="font-display text-[11px] text-paper uppercase">Совсем рандомный рандом</span>
+                  <span className="block text-[10px] text-dim mt-0.5 leading-snug">
+                    каждый новый трек стартует со СЛУЧАЙНОГО места (а не с начала), и раз в 3–7 минут мелодия сама
+                    переключается на другой случайный трек в случайном месте — улучшенный рандом
+                  </span>
+                </span>
+              </label>
+              <p className="text-[11px] text-faint leading-relaxed">
+                Треки не вшиты в сайт — первый раз они стримятся с Яндекс.Диска и одновременно сохраняются на компьютер
+                (кэш браузера), все следующие разы играют локально, без скачиваний. Музыка стартует после первого
+                клика/клавиши (так требует браузер; если браузер разрешает автоплей — после F5 заиграет сразу, продолжив
+                тот же трек с того же места); при переходе в тишину ставится на паузу и продолжается с того же места,
+                треки идут в случайном порядке. Внизу экрана при старте музыки выезжает микро-плеер: название трека,
+                «следующий» и громкость (наведите мышь — не уедет). Автор музыки:{' '}
+                <button
+                  onClick={() => setAskUrl(MUSIC_AUTHOR_URL)}
+                  className="text-teal underline decoration-dotted hover:text-[#7ee7d0] cursor-pointer"
+                  title="Открыть сайт автора (с предупреждением)"
+                >
+                  Dj Berto — Dendy (NES) minimixes
+                </button>
+                , его{' '}
+                <button
+                  onClick={() => setAskUrl(MUSIC_AUTHOR_YT)}
+                  className="text-teal underline decoration-dotted hover:text-[#7ee7d0] cursor-pointer"
+                  title="Открыть YouTube-канал автора (с предупреждением)"
+                >
+                  YouTube-канал @DJ_Berto
+                </button>{' '}
+                (все {MUSIC_TITLES.length} треков: {MUSIC_TITLES.join(' · ')}). Источник: Яндекс.Диск автора проекта.
+              </p>
+            </div>
+          </Panel>
           <Panel title="Партия" icon={Ic.eye(16)} accent="var(--color-teal)" className="slide-up md:col-span-2">
             <div className="p-4 space-y-3">
               <Toggle
@@ -149,10 +345,10 @@ export default function OptionsScreen() {
                 <div className="flex items-center justify-between gap-4 pl-4 border-l-[3px] border-edge slide-up">
                   <div>
                     <span className="font-display text-[12px] uppercase text-paper">Кадров в секунду</span>
-                    <div className="text-[10px] text-faint mt-0.5">Больше FPS — плавнее картинка у зрителей, больше трафик</div>
+                    <div className="text-[10px] text-faint mt-0.5">Больше FPS — плавнее картинка у зрителей, больше трафик. Дефолт 30 (v0.100), максимум 60</div>
                   </div>
                   <div className="flex gap-1">
-                    {[5, 10, 15, 20, 30].map((f) => (
+                    {[5, 10, 15, 20, 30, 45, 60].map((f) => (
                       <button
                         key={f}
                         onClick={() => { setOptions({ streamFps: f }); sfx.hover(); }}
@@ -321,141 +517,6 @@ export default function OptionsScreen() {
             </div>
           </Panel>
 
-          <Panel title="Музыка" icon={Ic.volume(16)} accent="var(--color-teal)" className="slide-up md:col-span-2">
-            <div className="p-4 space-y-4">
-              <Toggle
-                checked={mEnabled}
-                onChange={(v) => mSet(v)}
-                label="Фоновая музыка (Яндекс.Диск)"
-                hint="Ретро-миксы Dj Berto: 7 Dendy minimix + 2 RetroGame MIX. Треки выбираются случайно и не повторяют предыдущий; уходя в тишину — пауза, вернулись — продолжение с того же места; после F5 плеер продолжит тот же трек с того же места. Прослушанный трек сохраняется на компьютере и дальше играет локально, без скачиваний. В партии, подключении, создании, запуске ромов и обучении — тишина."
-              />
-              <div className="flex items-center gap-3 flex-wrap">
-                <span className="font-pixel text-[9px] text-faint">🔉</span>
-                <input
-                  type="range" min={0} max={1} step={0.05} value={mVolume}
-                  onChange={(e) => mSetVolume(Number(e.target.value))}
-                  title={`Громкость музыки: ${Math.round(mVolume * 100)}%`}
-                  className="w-40 accent-[#ffcf3f] cursor-pointer"
-                  aria-label="Громкость музыки"
-                />
-                <span className="font-pixel text-[8px] text-faint w-9 text-right">{Math.round(mVolume * 100)}%</span>
-                <span className="tick-label text-faint">громкость музыки (не действует на озвучку обучения и звуки игры)</span>
-              </div>
-              <div>
-                <div className="tick-label mb-1.5">Где играть музыку</div>
-                <div className="grid sm:grid-cols-2 gap-2">
-                  {([
-                    ['title', 'Только на титульном экране', 'Музыка звучит только в главном меню: открыли сайт — играет, ушли в любой раздел — пауза, вернулись — продолжение'],
-                    ['everywhere', 'Везде, кроме создания игры и подключения', 'Меню, редакторы, опции — с музыкой; создание игры, подключение, лобби, партия, запуск ромов и обучение — тишина'],
-                  ] as ['title' | 'everywhere', string, string][]).map(([mode, lbl, hint]) => (
-                    <button
-                      key={mode}
-                      onClick={() => { mSetMode(mode); sfx.hover(); }}
-                      title={hint}
-                      className={`text-left px-3 py-2 border-2 transition-colors cursor-pointer ${mMode === mode ? 'border-teal bg-teal/10' : 'border-edge hover:border-edge2'}`}
-                    >
-                      <div className={`font-display text-[11px] uppercase ${mMode === mode ? 'text-teal' : 'text-paper'}`}>{lbl}</div>
-                      <div className="text-[10px] text-dim mt-0.5 leading-snug">{hint}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="tick-label mb-1.5">После тишины</div>
-                <div className="grid sm:grid-cols-2 gap-2">
-                  {([
-                    ['same', 'Продолжать ту же мелодию', 'Вернулись из тишины (партия, подключение, обучение) — трек продолжается с того места, где остановился'],
-                    ['new', 'Включать новую мелодию', 'Вернулись из тишины — включается случайный новый трек (со случайного места, если включён «рандомный рандом»). По умолчанию (v0.87.0)'],
-                  ] as ['same' | 'new', string, string][]).map(([r, lbl, hint]) => (
-                    <button
-                      key={r}
-                      onClick={() => { mSetResume(r); sfx.hover(); }}
-                      title={hint}
-                      className={`text-left px-3 py-2 border-2 transition-colors cursor-pointer ${mResume === r ? 'border-teal bg-teal/10' : 'border-edge hover:border-edge2'}`}
-                    >
-                      <div className={`font-display text-[11px] uppercase ${mResume === r ? 'text-teal' : 'text-paper'}`}>{lbl}</div>
-                      <div className="text-[10px] text-dim mt-0.5 leading-snug">{hint}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex items-center gap-2.5 flex-wrap">
-                <span className="font-pixel text-[9px] text-teal">▶</span>
-                <span className="font-display text-[11px] text-paper" title={mTrack}>
-                  {mTrack || '— трек ещё не выбран —'}
-                </span>
-                <span className={`tick-label ${mStatus === 'playing' ? 'text-teal' : mStatus === 'error' ? 'text-coral' : 'text-faint'}`}>
-                  {{ resolving: 'подключаюсь к Диску…', playing: 'играет', paused: 'пауза (экран вне списка)', error: `ошибка: ${mError}`, idle: 'выключена' }[mStatus]}
-                </span>
-              </div>
-              <div className="flex items-center gap-3 flex-wrap">
-                <PxBtn small color="teal" onClick={() => mNext()} title="Включить следующий трек (случайный)">
-                  ⏭ Следующий трек
-                </PxBtn>
-                <PxBtn small color="teal" onClick={() => {
-                  toast('Проверяю плейлист на Яндекс.Диске…', 'info');
-                  void probePlaylist().then(({ ok, fail }) => {
-                    toast(ok ? `Плейлист жив: треков доступно ${ok}${fail ? `, недоступно ${fail}` : ''}` : 'Яндекс.Диск не отвечает — проверь интернет или ссылки треков', ok ? 'ok' : 'err');
-                  });
-                }}>
-                  {Ic.rotate(13)} Проверить плейлист
-                </PxBtn>
-              </div>
-              <div className="flex items-center gap-3 flex-wrap">
-                <span
-                  className="tick-label text-faint"
-                  title="Первое прослушивание стримится с Диска и одновременно сохраняется на компьютер; дальше трек играет локально, без скачиваний"
-                >
-                  В кэше компьютера: {mCacheCount} из {MUSIC_TITLES.length} треков ({Math.round(mCacheBytes / 1048576)} МБ)
-                </span>
-                <PxBtn
-                  small
-                  onClick={() => { void mClearCache().then(() => toast('Кэш музыки очищен — треки снова будут скачиваться с Диска', 'ok')); }}
-                  title="Стереть сохранённые на компьютере треки"
-                >
-                  {Ic.trash(13)} Очистить кэш
-                </PxBtn>
-              </div>
-              <label className="flex items-start gap-2.5 cursor-pointer select-none">
-                <input
-                  type="checkbox" checked={mWild}
-                  onChange={(e) => mSetWild(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 accent-[#ffcf3f] cursor-pointer shrink-0"
-                />
-                <span>
-                  <span className="font-display text-[11px] text-paper uppercase">Совсем рандомный рандом</span>
-                  <span className="block text-[10px] text-dim mt-0.5 leading-snug">
-                    каждый новый трек стартует со СЛУЧАЙНОГО места (а не с начала), и раз в 3–7 минут мелодия сама
-                    переключается на другой случайный трек в случайном месте — улучшенный рандом
-                  </span>
-                </span>
-              </label>
-              <p className="text-[11px] text-faint leading-relaxed">
-                Треки не вшиты в сайт — первый раз они стримятся с Яндекс.Диска и одновременно сохраняются на компьютер
-                (кэш браузера), все следующие разы играют локально, без скачиваний. Музыка стартует после первого
-                клика/клавиши (так требует браузер; если браузер разрешает автоплей — после F5 заиграет сразу, продолжив
-                тот же трек с того же места); при переходе в тишину ставится на паузу и продолжается с того же места,
-                треки идут в случайном порядке. Внизу экрана при старте музыки выезжает микро-плеер: название трека,
-                «следующий» и громкость (наведите мышь — не уедет). Автор музыки:{' '}
-                <button
-                  onClick={() => setAskUrl(MUSIC_AUTHOR_URL)}
-                  className="text-teal underline decoration-dotted hover:text-[#7ee7d0] cursor-pointer"
-                  title="Открыть сайт автора (с предупреждением)"
-                >
-                  Dj Berto — Dendy (NES) minimixes
-                </button>
-                , его{' '}
-                <button
-                  onClick={() => setAskUrl(MUSIC_AUTHOR_YT)}
-                  className="text-teal underline decoration-dotted hover:text-[#7ee7d0] cursor-pointer"
-                  title="Открыть YouTube-канал автора (с предупреждением)"
-                >
-                  YouTube-канал @DJ_Berto
-                </button>{' '}
-                (все {MUSIC_TITLES.length} треков: {MUSIC_TITLES.join(' · ')}). Источник: Яндекс.Диск автора проекта.
-              </p>
-            </div>
-          </Panel>
 
           <Panel title="Как устроена связь" icon={Ic.globe(16)} accent="var(--color-sky)" className="slide-up md:col-span-2">
             <div className="p-4 text-[13px] text-dim leading-relaxed space-y-2">

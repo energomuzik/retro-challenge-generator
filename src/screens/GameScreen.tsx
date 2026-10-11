@@ -938,7 +938,7 @@ export default function GameScreen() {
   const streaming = options.broadcast && (isQuest
     ? (isQuestSolo ? isHost && !!myQJob && qArmed && !qPaused : false) // мульти-QUEST: трансляции НЕТ; QUEST SOLO: хост стримит зрителям
     : myTurn && ch?.status === 'playing');
-  const streamMs = Math.round(1000 / Math.min(30, Math.max(2, options.streamFps || 10)));
+  const streamMs = Math.round(1000 / Math.min(60, Math.max(2, options.streamFps || 30))); // v0.100: потолок 60 кадр/с (было 30), дефолт 30
   useEffect(() => {
     if (!streaming || !room) return;
     let busy = false;
@@ -1913,7 +1913,7 @@ export default function GameScreen() {
         // Пока длится пауза delay — босс продолжает IDLE (клип ещё не начался);
         // клип доиграл — босс ВОЗВРАЩАЕТСЯ к idle (замирает навсегда только побеждённый,
         // его клип гибели bossDef доигрывает и продолжает статичным последним кадром).
-        const bossFx: Record<string, { frames: string[]; fps: number; start: number }> = {};
+        const bossFx: Record<string, { frames: string[]; fps: number; start: number; bw?: number; bh?: number; ax?: number; ay?: number }> = {};
         /* ПАТРУЛЬ (v0.52): момент гибели босса (ts fx bossDef — Date.now() хоста, синхронно) —
            повержённый патрульный замирает в той точке маршрута, где его настигли */
         const patrolFreeze: Record<string, number> = {};
@@ -1930,7 +1930,7 @@ export default function GameScreen() {
           if (t < st) continue; // пауза не прошла — босс ещё играет idle
           const durMs = (clip.frames.length / Math.max(1, Math.min(24, clip.fps || 6))) * 1000;
           if (t - st >= durMs) continue; // реакция доиграла — обратно к idle
-          bossFx[b.id] = { frames: clip.frames, fps: clip.fps, start: st };
+          bossFx[b.id] = { frames: clip.frames, fps: clip.fps, start: st, bw: clip.bw, bh: clip.bh, ax: clip.ax, ay: clip.ay }; // v0.100: + база/якорь — масштаб в рендере не уменьшит тайл
         }
         /* v0.53: БОСС БОЛЬШЕ НЕ ПАТРУЛИРУЕТ ПОСЛЕ ПОБЕДЫ. В QUEST у каждого игрока свой
            прогресс: боссы, повержённые МНОЙ, замирают в точке гибели (момент победы —
@@ -2696,6 +2696,7 @@ export default function GameScreen() {
               className={`hud-chip pixel-corners px-2.5 py-1.5 flex items-center gap-2 transition-all ${active?.id === p.id && s.phase === 'playing' && !(walkFree && !ch && !s.pendingCard && !s.awaitPost && !s.quiz && !(s.fxs ?? []).some((f) => f.gate)) ? 'border-gold shadow-[0_0_14px_rgba(255,207,63,0.35)]' : ''} ${!p.alive ? 'opacity-40 grayscale' : ''} ${p.spect ? 'opacity-70' : ''}`}
             >
               <span className="w-3.5 h-3.5 border border-abyss" style={{ background: PLAYER_COLORS[p.color] }} />
+              <PlayerIcon pid={p.id} size={16} /> {/* v0.100: мини-иконка рядом с именем */}
               <div className="leading-none">
                 <div className="font-display text-[10px] uppercase tracking-wide text-paper flex items-center gap-1">
                   {p.name}
@@ -3010,6 +3011,7 @@ export default function GameScreen() {
             <div className="hud-chip pixel-corners p-1.5">
               <div className="flex items-center gap-2 px-1 pb-1">
                 <span className={`w-2 h-2 shrink-0 ${streamLive ? 'bg-teal' : 'bg-coral'}`} title={streamLive ? 'Кадры идут' : 'Ждём кадры'} />
+                <PlayerIcon pid={stream!.from} size={14} /> {/* v0.100: иконка трансляющего */}
                 <span className="font-pixel text-[7px] text-paper">ТРАНСЛЯЦИЯ · {stream!.name}</span>
                 <button
                   onClick={() => setStreamBig(true)}
@@ -3035,6 +3037,7 @@ export default function GameScreen() {
             <div className="relative pixel-panel pixel-corners pop-in p-2 w-[600px] max-w-[94vw]">
               <div className="flex items-center gap-2 px-1 pb-1.5">
                 <span className={`w-2 h-2 shrink-0 ${streamLive ? 'bg-teal' : 'bg-coral'}`} title={streamLive ? 'Кадры идут' : 'Ждём кадры'} />
+                <PlayerIcon pid={stream!.from} size={16} /> {/* v0.100: иконка трансляющего */}
                 <span className="font-pixel text-[8px] text-paper">ТРАНСЛЯЦИЯ · {stream!.name}</span>
                 <GhostBtn small className="ml-auto" onClick={() => setStreamBig(false)}>{Ic.cross(12)} Свернуть</GhostBtn>
               </div>
@@ -3538,8 +3541,13 @@ export default function GameScreen() {
           w={taskWinSize === 1 ? 'max-w-6xl' : taskWinSize === -1 ? 'max-w-2xl' : 'max-w-4xl'}
           locked
         >
-          {/* v0.56: размер окна задания — «−»/«Стд»/«＋» */}
-          <div className="flex justify-end mb-2">{taskSizeBtns}</div>
+          {/* v0.56: размер окна задания — «−»/«Стд»/«＋»; v0.100: слева — кто играет, с мини-иконкой */}
+          <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+            <span className="hud-chip pixel-corners px-2.5 py-1.5 font-display text-[10px] uppercase text-gold flex items-center gap-1.5 min-w-0" title="Игрок, который выполняет это задание">
+              {active && <><PlayerIcon pid={active.id} size={18} /> ИГРАЕТ: {active.name}</>}
+            </span>
+            {taskSizeBtns}
+          </div>
           <div className="grid md:grid-cols-[220px_1fr] gap-4">
             <div className="space-y-3">
               <img
@@ -4145,7 +4153,9 @@ export default function GameScreen() {
               <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.78)] p-3">
                 <div className={`pixel-panel pixel-corners p-4 ${taskWinCls} w-full max-h-[93vh] overflow-y-auto`}>
                   <div className="flex items-center justify-between gap-3 flex-wrap min-w-0">
-                    <div className="font-display uppercase text-lg text-teal break-words min-w-0">🧭 ЗАДАНИЕ · {myQTask.title}</div>
+                    <div className="font-display uppercase text-lg text-teal break-words min-w-0 flex items-center gap-2">
+                      <PlayerIcon pid={me} size={20} /> 🧭 ЗАДАНИЕ · {myQTask.title}
+                    </div>
                     {taskSizeBtns}
                     <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myQJob.cellIdx + 1} · играешь ТОЛЬКО ты</span>
                   </div>
@@ -4264,7 +4274,9 @@ export default function GameScreen() {
             <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.78)] p-3">
               <div className={`pixel-panel pixel-corners p-4 ${taskWinCls} w-full max-h-[93vh] overflow-y-auto`}>
                 <div className="flex items-center justify-between gap-3 flex-wrap min-w-0">
-                  <div className="font-display uppercase text-lg text-gold break-words min-w-0">🎮 ЛИЧНОЕ ЗАДАНИЕ · {myRubgTask.title}</div>
+                  <div className="font-display uppercase text-lg text-gold break-words min-w-0 flex items-center gap-2">
+                    <PlayerIcon pid={me} size={20} /> 🎮 ЛИЧНОЕ ЗАДАНИЕ · {myRubgTask.title}
+                  </div>
                   {taskSizeBtns}
                   <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myJob.cellIdx + 1} · играешь ТОЛЬКО ты</span>
                 </div>
@@ -4762,6 +4774,23 @@ export default function GameScreen() {
 }
 
 /* ---------- кубик ---------- */
+
+/* v0.100 МИНИ-ИКОНКА игрока у имени (шапка партии, окна заданий, плашки трансляций).
+   Иконки живут ВНЕ состояния партии (store.icons — заполняется сообщениями «picon»);
+   нет иконки — ничего не рисуем (остаётся цветная плашка) */
+function PlayerIcon({ pid, size = 16, className = '' }: { pid: string; size?: number; className?: string }) {
+  const icon = useApp((x) => x.icons[pid]);
+  if (!icon) return null;
+  return (
+    <img
+      src={icon}
+      alt=""
+      title="Мини-иконка игрока (задаётся в Опциях)"
+      className={`shrink-0 object-contain ${className}`}
+      style={{ width: size, height: size, imageRendering: 'pixelated' }}
+    />
+  );
+}
 
 function DieFace({ v, dropping, delay, rolling, blank, frame }: { v: number; dropping?: boolean; delay?: boolean; rolling?: boolean; blank?: boolean; frame?: string }) {
   const pips: Record<number, [number, number][]> = {

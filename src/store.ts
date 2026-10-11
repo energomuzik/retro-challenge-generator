@@ -36,6 +36,11 @@ interface AppState {
   toasts: Toast[];
   toast: (text: string, kind?: Toast['kind']) => void;
 
+  /* v0.100 МИНИ-ИКОНКИ игроков (вне состояния партии — иначе каждое действие возило бы
+     картинки всем): pid → dataUrl ≤ 64×64. Наполняется сообщениями «picon» при подключении */
+  icons: Record<string, string>;
+  setIcon: (id: string, icon?: string) => void;
+
   room: Room | null;
   netInfo: NetInfo;
   selfId: string;
@@ -75,7 +80,8 @@ export const useApp = create<AppState>()((set, get) => ({
     autoReloadOnViolation: true,
     showCellNumbers: true,
     volume: 0.6,
-    streamFps: 10,
+    streamFps: 30, // v0.100: дефолт поднят с 10 до 30 (одноразовая миграция ниже переведёт на 30 тех, у кого осталось старое значение)
+    fpsReset: false, // v0.100: одноразовая миграция streamFps ещё не выполнялась
     emuSound: true,
     emuVolume: 1,
     hideUnrevealed: false,
@@ -108,6 +114,13 @@ export const useApp = create<AppState>()((set, get) => ({
     if (!options.ntscReset) {
       options.ntscReset = true;
       options.ntscMode = 0;
+    }
+    // v0.100 ОДНОКРАТНАЯ МИГРАЦИЯ FPS ТРАНСЛЯЦИИ: у всех, кто не трогал ползунок руками
+    // (то есть осталось старое значение по умолчанию 10), ставим новый дефолт 30.
+    // Осознанные выборы (5/15/20 и т.д.) НЕ трогаем. После миграции выбор сохраняется как обычно.
+    if (!options.fpsReset) {
+      options.fpsReset = true;
+      if (options.streamFps === 10) options.streamFps = 30;
     }
     setVolume(options.volume);
     set({ options });
@@ -170,6 +183,13 @@ export const useApp = create<AppState>()((set, get) => ({
     set((st) => ({ toasts: [...st.toasts.slice(-3), { id, text, kind }] }));
     setTimeout(() => set((st) => ({ toasts: st.toasts.filter((t) => t.id !== id) })), 4200);
   },
+
+  icons: {},
+  setIcon: (id, icon) => set((st) => {
+    const icons = { ...st.icons };
+    if (icon) icons[id] = icon; else delete icons[id];
+    return { icons };
+  }),
 
   room: null,
   netInfo: { online: false, local: true, links: 0, signal: 'connecting', attempts: 0 },

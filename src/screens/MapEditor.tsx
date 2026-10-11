@@ -2339,7 +2339,9 @@ export default function MapEditor() {
       }
       if (placeAnimId && (m.animLib ?? []).some((x) => x.id === placeAnimId)) {
         const img = ghostAnimRef.current;
-        const natW = img?.width || 64, natH = img?.height || 64;
+        /* v0.100: натуральный размер — по БАЗЕ клипа (исходный тайл), не по выросшей от сдвигов канве */
+        const acl = (m.animLib ?? []).find((x) => x.id === placeAnimId)?.clip;
+        const natW = acl?.bw || img?.width || 64, natH = acl?.bh || img?.height || 64;
         const maxSide = Math.max(natW, natH);
         const k = maxSide < 64 ? 64 / maxSide : maxSide > 128 ? 128 / maxSide : 1;
         const p = snapPt(w.x, w.y);

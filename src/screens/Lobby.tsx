@@ -228,6 +228,11 @@ export function CreateScreen() {
       const code = genRoomCode();
       const session = newSession(code, map.id, st.selfId, st.options.name);
       openRoom(code, true, { session, map });
+      /* v0.100: своя мини-иконка — в карту иконок и всем подключённым */
+      if (st.options.pIcon) {
+        useApp.getState().setIcon(st.selfId, st.options.pIcon);
+        useApp.getState().room?.send('picon', { id: st.selfId, icon: st.options.pIcon });
+      }
       sfx.start();
       toast(st.options.hideRoomCode ? 'Комната открыта — код скрыт (глазик рядом с КОМНАТОЙ его покажет)' : `Комната ${code} открыта`, 'ok');
     })();
@@ -460,6 +465,7 @@ export function JoinScreen() {
     const st = useApp.getState();
     const room = openRoom(c, false, { session: null, map: null });
     room.send('action', { t: 'hello', id: st.selfId, name: options.name });
+    room.send('action', { t: 'picon', id: st.selfId, icon: options.pIcon }); // v0.100: мини-иконка — вне состояния партии
     sfx.coin();
     toast(`Стучимся в комнату ${c}…`, 'info');
   };
@@ -790,7 +796,7 @@ function HostFallbackPanel({ onRestart }: { onRestart: (url: string) => void }) 
 /* ---------- лобби комнаты ---------- */
 
 export function LobbyScreen() {
-  const { session, sessionMap, roms, room, netInfo, setScreen, leaveRoom, selfId, options, setOptions, tokens, sync, resumeSnap, resumeClaims, setResumeClaim } = useApp();
+  const { session, sessionMap, roms, room, netInfo, setScreen, leaveRoom, selfId, options, setOptions, tokens, sync, resumeSnap, resumeClaims, setResumeClaim, icons } = useApp();
   const [waited, setWaited] = useState(0);
   const [lobbySeconds, setLobbySeconds] = useState(0);
   const [hubPanelOpen, setHubPanelOpen] = useState(false);
@@ -827,7 +833,13 @@ export function LobbyScreen() {
       session: isHost ? st.session : null,
       map: isHost ? st.sessionMap : null,
     });
-    if (!isHost) newRoom.send('action', { t: 'hello', id: st.selfId, name: st.options.name });
+    if (!isHost) {
+      newRoom.send('action', { t: 'hello', id: st.selfId, name: st.options.name });
+      newRoom.send('action', { t: 'picon', id: st.selfId, icon: st.options.pIcon }); // v0.100: мини-иконка
+    } else if (st.options.pIcon) {
+      useApp.getState().setIcon(st.selfId, st.options.pIcon); // хост при переподключении — свою иконку заново
+      newRoom.send('picon', { id: st.selfId, icon: st.options.pIcon });
+    }
     st.toast('Переподключаемся через игровой хаб…', 'info');
   };
 
@@ -1114,10 +1126,14 @@ export function LobbyScreen() {
                 style={p ? { borderColor: PLAYER_COLORS[p.color] } : undefined}
               >
                 <div className="flex items-center gap-3">
-                  <span
-                    className="w-9 h-9 shrink-0 border-[3px] border-abyss shadow-[0_0_14px_rgba(0,0,0,0.5)]"
-                    style={{ background: p ? PLAYER_COLORS[p.color] : 'repeating-linear-gradient(45deg,#1a2244 0 6px,#131a33 6px 12px)' }}
-                  />
+                  {p && icons[p.id] ? (
+                    <img src={icons[p.id]} alt="" className="w-9 h-9 shrink-0 object-contain" style={{ imageRendering: 'pixelated' }} title="Мини-иконка игрока (задаётся в Опциях)" />
+                  ) : (
+                    <span
+                      className="w-9 h-9 shrink-0 border-[3px] border-abyss shadow-[0_0_14px_rgba(0,0,0,0.5)]"
+                      style={{ background: p ? PLAYER_COLORS[p.color] : 'repeating-linear-gradient(45deg,#1a2244 0 6px,#131a33 6px 12px)' }}
+                    />
+                  )}
                   {p ? (
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">

@@ -277,6 +277,15 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
           useApp.getState().setSync(sp.id, sp.pct);
           break;
         }
+        /* v0.100 МИНИ-ИКОНКА игрока — служебное сообщение вне состояния партии:
+           хост кладёт в свою карту иконок и ПЕРЕДАЁТ всем остальным (состояние партии
+           рассылается целиком на каждом действии — возить в нём картинки нельзя) */
+        if ((m.p as { t?: string })?.t === 'picon') {
+          const pi = m.p as { id: string; icon?: string };
+          useApp.getState().setIcon(pi.id, pi.icon);
+          room.send('picon', { id: pi.id, icon: pi.icon });
+          break;
+        }
         const h = useApp.getState();
         if (h.session && h.sessionMap) {
           const act = m.p as Action;
@@ -296,6 +305,12 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
             if (rs) {
               const hostSavedId = rs.state.players.find((p) => p.isHost)?.id;
               room.send('resumeInfo', { players: rs.state.players, mapName: rs.mapName, hostSavedId });
+            }
+            // v0.100: новичку — все собранные иконки (включая свою, хостовую)
+            const hh = useApp.getState();
+            const allIcons: Record<string, string | undefined> = { ...hh.icons, [room.selfId]: hh.options.pIcon };
+            for (const [pid, ic] of Object.entries(allIcons)) {
+              if (ic) room.send('picon', { id: pid, icon: ic });
             }
           }
           room.send('state', next);
@@ -356,6 +371,12 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
       }
       case 'stream': {
         streamBus.emit(m.p as StreamPacket);
+        break;
+      }
+      /* v0.100 МИНИ-ИКОНКА игрока (хост передал гостям; своё хост положил при перехвате) */
+      case 'picon': {
+        const pi = (m.p ?? {}) as { id?: string; icon?: string };
+        if (pi.id) useApp.getState().setIcon(pi.id, pi.icon);
         break;
       }
       default:

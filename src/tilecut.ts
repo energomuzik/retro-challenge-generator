@@ -408,6 +408,10 @@ export async function frameSize(dataUrl: string): Promise<{ w: number; h: number
   return img ? { w: img.width || 1, h: img.height || 1 } : null;
 }
 
+/* Метаданные клипа (types.AnimClip): база + якорь. См. комментарий в types.ts. */
+export interface ClipMeta { bw?: number; bh?: number; ax?: number; ay?: number }
+export interface ClipWithFrames extends ClipMeta { frames: string[] }
+
 /* v0.99 СДВИГ КАДРА БЕЗ ПОТЕРЬ (редактор анимаций фишек): раньше shiftTileImg сдвигал
    картинку внутри НЕПОДВИЖНОГО холста — всё, что выходило за край, срезалось НАСОВСЕМ
    (тайл, ушедший за «окошко», исчезал — нормальные анимации с переездами собрать было
@@ -415,10 +419,18 @@ export async function frameSize(dataUrl: string): Promise<{ w: number; h: number
    картинка поместилась ЦЕЛИКОМ; остальные кадры перекладываются на новую канву без
    изменения своих позиций — выравнивание кадров между собой сохраняется. Ничего не
    срезается никогда: тайл может уезжать за «окошко» и оставаться в кадре.
+   v0.100 ИСПРАВЛЕНИЕ «ТАЙЛ УМЕНЬШАЕТСЯ ПРИ ДВИЖЕНИИ»: канва выросла — а рендер вписывал
+   весь выросший холст в старый габарит, поэтому тайл уменьшался с каждым сдвигом (и в
+   редакторе, и в игре). Теперь клип хранит БАЗУ (размер исходного тайла, bw/bh) и ЯКОРЬ
+   (ax/ay — точка канвы, которая садится на позицию фишки на карте); масштаб считается по
+   базе, поэтому размер тайла при движении НЕ МЕНЯЕТСЯ. Якорь при сдвиге остаётся
+   приклеенным к НЕСДВИНУТЫМ кадрам: у сдвигаемого кадра содержимое уезжает на
+   (dx,dy) ОТНОСИТЕЛЬНО остальных — относительное движение кадров = то, что попросили.
    dx/dy — сдвиг в ПИКСЕЛЯХ канвы (может быть любым числом — драг мыши даёт произвольные).
-   Возвращает НОВЫЙ массив кадров (или null, если сдвиг нулевой/картинка не прочиталась). */
-export async function shiftFramesExpand(frames: string[], i: number, dx: number, dy: number): Promise<string[] | null> {
+   Возвращает НОВЫЙ клип { frames, ax, ay, bw?, bh? } (или null, если сдвиг нулевой/не читается). */
+export async function shiftFramesExpand(clip: ClipWithFrames, i: number, dx: number, dy: number): Promise<ClipWithFrames | null> {
   if (!dx && !dy) return null;
+  const frames = clip.frames;
   const base = frames[i];
   if (!base) return null;
   const imgs = await Promise.all(frames.map((f) => loadImg(f)));
@@ -426,6 +438,12 @@ export async function shiftFramesExpand(frames: string[], i: number, dx: number,
   let maxW = imgs[i]!.width || 1, maxH = imgs[i]!.height || 1;
   for (const im of imgs) { if (im) { maxW = Math.max(maxW, im.width || 1); maxH = Math.max(maxH, im.height || 1); } }
   const W = maxW + Math.abs(dx), H = maxH + Math.abs(dy);
+  /* v0.100 ЯКОРЬ: до первого сдвига его не было — считаем якорем ЦЕНТР канвы (кадр = тайл).
+     Для клипов, уже подвинутых в v0.99 без меты, базой становится текущий размер — дальше
+     масштаб от него не меняется (самовосстановление). */
+  const bw = clip.bw ?? maxW, bh = clip.bh ?? maxH;
+  const ax = (clip.ax ?? maxW / 2) + Math.max(0, -dx); // якорь едет ВМЕСТЕ с несдвинутыми кадрами
+  const ay = (clip.ay ?? maxH / 2) + Math.max(0, -dy);
   const out: string[] = [];
   for (let k = 0; k < frames.length; k++) {
     const im = imgs[k];
@@ -441,5 +459,50 @@ export async function shiftFramesExpand(frames: string[], i: number, dx: number,
     cx.drawImage(im, ox, oy);
     out.push(cv.toDataURL('image/png'));
   }
-  return out;
+  return { frames: out, bw, bh, ax, ay };
+}
+
+/* v0.100 ДОБАВЛЕНИЕ КАДРА с метаданными: первый кадр задаёт базу (bw/bh) и якорь (центр).
+   Если в клипе уже есть кадры ДРУГОГО размера (или канва выросла от сдвигов) — новый тайл
+   кладётся на общую канву ЦЕНТРОМ НА ЯКОРЬ: он появляется «на месте» тайла, а не в углу.
+   Одинаковый размер — просто дописываем (без перекладки, ничего не теряем). */
+export async function pushFrame(clip: ClipWithFrames, url: string): Promise<ClipWithFrames> {
+  const img = await loadImg(url);
+  const nw = img ? img.width || 1 : 1, nh = img ? img.height || 1 : 1;
+  if (!clip.frames.length) {
+    return { ...clip, frames: [url], bw: nw, bh: nh, ax: nw / 2, ay: nh / 2 };
+  }
+  const dims = await Promise.all(clip.frames.map((f) => frameSize(f)));
+  let W = nw, H = nh;
+  for (const d of dims) { if (d) { W = Math.max(W, d.w); H = Math.max(H, d.h); } }
+  const bw = Math.max(clip.bw ?? 0, nw), bh = Math.max(clip.bh ?? 0, nh);
+  const ax = clip.ax ?? (dims[0]?.w ?? nw) / 2, ay = clip.ay ?? (dims[0]?.h ?? nh) / 2;
+  const same = dims.every((d) => d && d.w === nw && d.h === nh); // все кадры уже такого размера
+  if (same && bw === (clip.bw ?? nw) && bh === (clip.bh ?? nh)) {
+    return { ...clip, frames: [...clip.frames, url], bw, bh, ax, ay };
+  }
+  /* размеры различаются — перекладываем на общую канву: старые как лежали (левый верх),
+     новый — центром на якорь (не даём уехать в минус) */
+  const nx = Math.max(0, Math.round(ax - nw / 2)), ny = Math.max(0, Math.round(ay - nh / 2));
+  const out: string[] = [];
+  for (let k = 0; k < clip.frames.length; k++) {
+    const d = dims[k];
+    const im = d ? await loadImg(clip.frames[k]) : null;
+    if (!im) { out.push(clip.frames[k]); continue; }
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const cx = cv.getContext('2d')!;
+    cx.imageSmoothingEnabled = false;
+    cx.drawImage(im, 0, 0);
+    out.push(cv.toDataURL('image/png'));
+  }
+  {
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const cx = cv.getContext('2d')!;
+    cx.imageSmoothingEnabled = false;
+    if (img) cx.drawImage(img, nx, ny);
+    out.push(cv.toDataURL('image/png'));
+  }
+  return { frames: out, bw, bh, ax, ay };
 }

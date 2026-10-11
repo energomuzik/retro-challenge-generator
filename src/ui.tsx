@@ -619,11 +619,15 @@ export function Field({ label, children }: { label: string; children: ReactNode 
  * Проигрыватель анимации из кадров (dataUrl): показывает кадры по кругу
  * с заданной скоростью (fps). Используется в редакторе анимаций и фишек,
  * в превью библиотеки и в окне выбора фишки после жеребьёвки.
+ * v0.100: с meta (база+якорь клипа) показывается «как в игре» — окошко НЕ растёт,
+ * картинка масштабируется по БАЗЕ и центрируется на ЯКОРЕ (тайл при сдвигах кадра
+ * не уменьшается и не уползает из превью). Без meta — как раньше.
  */
-export function AnimPreview({ frames, fps = 6, size = 48, className, style }: {
+export function AnimPreview({ frames, fps = 6, size = 48, meta, className, style }: {
   frames: string[];
   fps?: number;
   size?: number;
+  meta?: { bw?: number; bh?: number; ax?: number; ay?: number };
   className?: string;
   style?: React.CSSProperties;
 }) {
@@ -634,7 +638,31 @@ export function AnimPreview({ frames, fps = 6, size = 48, className, style }: {
     const iv = setInterval(() => setI((x) => (x + 1) % n), Math.max(42, 1000 / Math.max(1, Math.min(24, fps))));
     return () => clearInterval(iv);
   }, [n, fps]);
+  const hasMeta = !!(meta && meta.bw && meta.bh);
+  const [nat, setNat] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    if (!hasMeta || !n) { setNat(null); return; }
+    let dead = false;
+    const img = new Image();
+    img.onload = () => { if (!dead) setNat({ w: img.width || 1, h: img.height || 1 }); };
+    img.src = frames[0];
+    return () => { dead = true; };
+  }, [frames, hasMeta, n]);
   if (!n) return null;
+  if (hasMeta && nat) {
+    const k = size / Math.max(meta!.bw!, meta!.bh!);
+    const ax = meta!.ax ?? nat.w / 2, ay = meta!.ay ?? nat.h / 2;
+    return (
+      <span className={className} style={{ display: 'inline-block', width: size, height: size, position: 'relative', overflow: 'hidden', ...style }}>
+        <img
+          src={frames[i % n]}
+          alt=""
+          draggable={false}
+          style={{ position: 'absolute', left: size / 2 - ax * k, top: size / 2 - ay * k, width: nat.w * k, height: nat.h * k, maxWidth: 'none', imageRendering: 'pixelated' }}
+        />
+      </span>
+    );
+  }
   return (
     <img
       src={frames[i % n]}

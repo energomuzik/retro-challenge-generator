@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEven
 import { useApp } from '../store';
 import { AnimPreview, Field, GhostBtn, Ic, Modal, PxBtn, Stepper } from '../ui';
 import PixelPaint, { emptyGrid, gridToDataUrl, imageToGrid } from '../PixelPaint';
-import { extractTilesFromImage, frameSize, scaleTileImg, shiftFramesExpand } from '../tilecut';
+import { extractTilesFromImage, frameSize, pushFrame, scaleTileImg, shiftFramesExpand } from '../tilecut';
 import type { ExtractInfo } from '../tilecut';
 import { idbAll, idbDel, idbGet, idbPut, uid } from '../db';
 import type { AnimClip, AnimDef, BossAnimDef, BossLibEntry, GameMap, NpcAnimDef, SoundDef, TokenAnim, TokenDef, TileGroup, TileImg } from '../types';
@@ -68,8 +68,11 @@ const CLIP_META: { key: ClipKey; label: string; hint: string }[] = [
   { key: 'lose', label: '💀 ПОРАЖЕНИЕ · 6-я', hint: 'проигрывается ОДИН раз при провале задания — после неё ход уходит дальше' },
 ];
 
-interface ClipDraft { fps: number; frames: string[] }
-interface AnimDraft { id?: string; name: string; fps: number; frames: string[]; createdAt?: number; sndId?: string }
+/* v0.100: у клипа-черновика — база (bw/bh: размер исходного тайла) и якорь (ax/ay:
+   точка канвы, которая садится на позицию фишки на карте) — см. AnimClip в types.ts.
+   С ними сдвиг кадров НЕ меняет видимый размер тайла (растёт только окошко). */
+interface ClipDraft { fps: number; frames: string[]; bw?: number; bh?: number; ax?: number; ay?: number }
+interface AnimDraft { id?: string; name: string; fps: number; frames: string[]; bw?: number; bh?: number; ax?: number; ay?: number; createdAt?: number; sndId?: string }
 interface TokDraft { id?: string; name: string; size: number; clips: Record<ClipKey, ClipDraft>; createdAt?: number; sndId?: string; winSndId?: string; loseSndId?: string }
 interface BossDraft { id?: string; name: string; clips: Record<BossClipKey, ClipDraft>; createdAt?: number; sndIds?: { idle?: string; win?: string; lose?: string; defeated?: string } }
 type BossClipKey = 'idle' | 'win' | 'lose' | 'defeated';
@@ -113,17 +116,28 @@ const DEF_TOKEN_SIZE = 64; // размер фишки на карте по ум�
 
 const checker = { background: 'repeating-conic-gradient(#1a2244 0 25%, #10142a 0 50%) 0 0 / 10px 10px' } as React.CSSProperties;
 
+/* v0.100: мета клипа (база+якорь) — только определённые поля, чтобы в сохранение
+   не попадали ключи с undefined */
+const metaOf = (c: { bw?: number; bh?: number; ax?: number; ay?: number }) => ({
+  ...(c.bw !== undefined ? { bw: c.bw } : {}),
+  ...(c.bh !== undefined ? { bh: c.bh } : {}),
+  ...(c.ax !== undefined ? { ax: c.ax } : {}),
+  ...(c.ay !== undefined ? { ay: c.ay } : {}),
+});
+
 /* +/− ВНИЗУ ТАЙЛА теперь ОБЩИЙ компонент из delGuard.tsx — ОДНИ правила с крестиком
    удаления (режим из Опций: сразу / с окошком / удержанием). */
 
 /* Лента кадров: перестановка стрелками, удаление; СДВИГ ПОЛОЖЕНИЯ — стрелки ВОКРУГ тайла
    ИЛИ ДРАГ МЫШЬЮ прямо по кадру (v0.99). Сдвиг идёт «с расширением» (tilecut.shiftFramesExpand):
    канва ВСЕХ кадров клипа вырастает ровно настолько, чтобы картинка поместилась целиком —
-   тайл, ушедший за «окошко», НЕ обрезается и не исчезает (можно собирать нормальные
-   анимации с переездами спрайта за край кадра); рядом — скорость клипа */
-function FrameStrip({ clip, onFrames, size = 52 }: {
+   тайл, ушедший за «окошко», НЕ обрезается и не исчезает.
+   v0.100: окошко растёт, а ТАЙЛ БОЛЬШЕ НЕ УМЕНЬШАЕТСЯ — масштаб считается по БАЗЕ клипа
+   (размер исходного тайла, bw/bh), а не по выросшей канве; якорь (ax/ay) держит точку,
+   которая садится на позицию фишки в игре. Рядом — скорость клипа */
+function FrameStrip({ clip, onClip, size = 52 }: {
   clip: ClipDraft;
-  onFrames: (frames: string[]) => void;
+  onClip: (c: ClipDraft) => void;
   size?: number;
 }) {
   const move = (i: number, d: -1 | 1) => {
@@ -131,24 +145,34 @@ function FrameStrip({ clip, onFrames, size = 52 }: {
     if (j < 0 || j >= clip.frames.length) return;
     const arr = [...clip.frames];
     [arr[i], arr[j]] = [arr[j], arr[i]];
-    onFrames(arr);
+    onClip({ ...clip, frames: arr });
     sfx.hover();
   };
-  /* сдвиг стрелками (шаг ~1/32 большей стороны, как раньше) — теперь БЕЗ обрезки:
-     канва растёт, ушедший за край пиксель остаётся в кадре */
+  /* БАЗА для масштаба: bw/bh клипа; для старых клипов без меты — размер кадра (dims).
+     Размеры кадров читаются асинхронно один раз на изменение набора кадров */
+  const hasMeta = !!(clip.bw && clip.bh);
+  const [dims, setDims] = useState<({ w: number; h: number } | null)[]>([]);
+  useEffect(() => {
+    let dead = false;
+    void (async () => {
+      const ds = await Promise.all(clip.frames.map((f) => frameSize(f)));
+      if (!dead) setDims(ds);
+    })();
+    return () => { dead = true; };
+  }, [clip.frames]);
+  /* сдвиг стрелками (шаг ~1/32 БАЗЫ тайла — от базы, не от выросшей канвы) — без обрезки */
   const shift = (i: number, sx: -1 | 0 | 1, sy: -1 | 0 | 1) => {
     const f = clip.frames[i];
     if (!f || (!sx && !sy)) return;
     void (async () => {
-      const sz = await frameSize(f);
-      const step = sz ? Math.max(1, Math.round(Math.max(sz.w, sz.h) / 32)) : 1;
-      const next = await shiftFramesExpand(clip.frames, i, sx * step, sy * step);
-      if (next) { onFrames(next); sfx.hover(); }
+      const stepMax = hasMeta ? Math.max(clip.bw!, clip.bh!) : (dims[i] ? Math.max(dims[i]!.w, dims[i]!.h) : 0);
+      const step = stepMax ? Math.max(1, Math.round(stepMax / 32)) : 1;
+      const next = await shiftFramesExpand(clip, i, sx * step, sy * step);
+      if (next) { onClip({ ...clip, ...next }); sfx.hover(); }
     })();
   };
   /* ДРАГ МЫШЬЮ: тянешь картинку в кадре — она едет 1:1 (в пикселях канвы). Во время тяги
-     показываем живое превью сдвига, отпустил — сдвиг фиксируется на ВСЕХ кадрах клипа
-     (канва вырастает у всех одинаково — выравнивание кадров сохраняется) */
+     показываем живое превью сдвига, отпустил — сдвиг фиксируется на ВСЕХ кадрах клипа */
   const dragRef = useRef<{ i: number; x0: number; y0: number; base: string; k: number; dx: number; dy: number; run: number } | null>(null);
   const [dragPrev, setDragPrev] = useState<{ i: number; src: string } | null>(null);
   const dragStart = (i: number, e: RPointerEvent) => {
@@ -157,6 +181,8 @@ function FrameStrip({ clip, onFrames, size = 52 }: {
     if (!f) return;
     e.preventDefault();
     try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* noop */ }
+    const k0 = hasMeta ? Math.max(clip.bw!, clip.bh!) / size : null; // экран → канва, 1:1
+    if (k0) { dragRef.current = { i, x0: e.clientX, y0: e.clientY, base: f, k: k0, dx: 0, dy: 0, run: 0 }; return; }
     void frameSize(f).then((sz) => {
       dragRef.current = { i, x0: e.clientX, y0: e.clientY, base: f, k: sz ? Math.max(sz.w, sz.h) / size : 1, dx: 0, dy: 0, run: 0 };
     });
@@ -168,8 +194,8 @@ function FrameStrip({ clip, onFrames, size = 52 }: {
     if (tx === d.dx && ty === d.dy) return;
     d.dx = tx; d.dy = ty;
     const run = ++d.run;
-    void shiftFramesExpand([d.base], 0, tx, ty).then((nf) => {
-      if (nf && nf[0] && run === d.run) setDragPrev({ i, src: nf[0] });
+    void shiftFramesExpand({ frames: [d.base] }, 0, tx, ty).then((nf) => {
+      if (nf && nf.frames[0] && run === d.run) setDragPrev({ i, src: nf.frames[0] });
     });
   };
   const dragEnd = (i: number) => {
@@ -177,25 +203,32 @@ function FrameStrip({ clip, onFrames, size = 52 }: {
     dragRef.current = null;
     setDragPrev(null);
     if (!d || d.i !== i || (!d.dx && !d.dy)) return; // клик без тяги — ничего не меняем
-    void shiftFramesExpand(clip.frames, i, d.dx, d.dy).then((next) => {
-      if (next) { onFrames(next); sfx.hover(); }
+    void shiftFramesExpand(clip, i, d.dx, d.dy).then((next) => {
+      if (next) { onClip({ ...clip, ...next }); sfx.hover(); }
     });
   };
   const shBtn = 'absolute w-4 h-4 font-pixel text-[8px] leading-none text-faint hover:text-gold cursor-pointer select-none';
   return (
     <div className="flex gap-1.5 flex-wrap items-start">
-      {clip.frames.map((f, i) => (
+      {clip.frames.map((f, i) => {
+        const d = dims[i];
+        /* масштаб: ПО БАЗЕ (исходный тайл) — тайл при сдвигах всегда одного видимого размера;
+           без меты (старые клипы) — вписываем кадр в окошко, как раньше */
+        const k = hasMeta ? size / Math.max(clip.bw!, clip.bh!) : (d ? size / Math.max(d.w, d.h) : null);
+        const bwPx = d && k ? Math.round(d.w * k) : size;
+        const bhPx = d && k ? Math.round(d.h * k) : size;
+        return (
         <div key={`${i}-${f.slice(-16)}`} className="border-2 border-edge p-0.5" style={checker}>
           <div
             className="relative mx-auto cursor-grab active:cursor-grabbing"
-            style={{ width: size, height: size, touchAction: 'none' }}
-            title="Тяните картинку МЫШЬЮ — кадр сдвинется 1:1 (стрелки вокруг — мелкий шаг). Ушедший за край окошка тайл НЕ пропадает: канва кадра растёт"
+            style={{ width: bwPx, height: bhPx, touchAction: 'none' }}
+            title="Тяните картинку МЫШЬЮ — кадр сдвинется 1:1 (стрелки вокруг — мелкий шаг). Ушедший за край окошка тайл НЕ пропадает, а размер тайла НЕ меняется: канва растёт"
             onPointerDown={(e) => dragStart(i, e)}
             onPointerMove={(e) => dragMove(i, e)}
             onPointerUp={() => dragEnd(i)}
             onPointerCancel={() => dragEnd(i)}
           >
-            <img src={dragPrev?.i === i ? dragPrev.src : f} alt={`кадр ${i + 1}`} draggable={false} style={{ width: size, height: size, objectFit: 'contain', imageRendering: 'pixelated' }} />
+            <img src={dragPrev?.i === i ? dragPrev.src : f} alt={`кадр ${i + 1}`} draggable={false} style={{ width: bwPx, height: bhPx, maxWidth: 'none', objectFit: 'contain', imageRendering: 'pixelated' }} />
             {/* стрелки мелкого шага ВОКРУГ тайла (драг мышью — основной способ) */}
             <button onPointerDown={(e) => e.stopPropagation()} onClick={() => shift(i, 0, -1)} title="Сдвинуть картинку кадра ВВЕРХ" className={`${shBtn} -top-3 left-1/2 -translate-x-1/2`}>▲</button>
             <button onPointerDown={(e) => e.stopPropagation()} onClick={() => shift(i, -1, 0)} title="Сдвинуть картинку кадра ВЛЕВО" className={`${shBtn} -left-4 top-1/2 -translate-y-1/2`}>◀</button>
@@ -204,16 +237,17 @@ function FrameStrip({ clip, onFrames, size = 52 }: {
           </div>
           <div className="flex justify-center gap-0.5 mt-0.5">
             <button onClick={() => move(i, -1)} title="Раньше" className="px-1 text-[9px] text-dim hover:text-gold cursor-pointer">←</button>
-            <button onClick={() => onFrames(clip.frames.filter((_, k) => k !== i))} title="Убрать кадр" className="px-1 text-[9px] text-dim hover:text-coral cursor-pointer">×</button>
+            <button onClick={() => onClip({ ...clip, frames: clip.frames.filter((_, k) => k !== i) })} title="Убрать кадр" className="px-1 text-[9px] text-dim hover:text-coral cursor-pointer">×</button>
             <button onClick={() => move(i, 1)} title="Позже" className="px-1 text-[9px] text-dim hover:text-gold cursor-pointer">→</button>
           </div>
         </div>
-      ))}
+        );
+      })}
       {clip.frames.length === 0 && (
         <div className="text-[10px] text-faint self-center py-3">Кадров пока нет — кликайте тайлы в ЛЕВОЙ панели</div>
       )}
       {clip.frames.length > 0 && (
-        <div className="w-full text-[9.5px] text-faint leading-tight mt-0.5">Кадр можно тянуть МЫШЬЮ (1:1) или стрелками вокруг него. Канва растёт, когда картинка уходит за край, — тайл из кадра НЕ исчезает, собирайте переезды и падения как угодно.</div>
+        <div className="w-full text-[9.5px] text-faint leading-tight mt-0.5">Кадр можно тянуть МЫШЬЮ (1:1) или стрелками вокруг него. Канва растёт, когда картинка уходит за край — тайл НЕ исчезает и размер НЕ меняет; двигается только картинка.</div>
       )}
     </div>
   );
@@ -669,23 +703,29 @@ export default function TokenEditor() {
       let src = t.dataUrl;
       if (mirrorMode) src = await flipDataUrl(src); // ЗЕРКАЛО по горизонтали
       const url = await shrinkFrame(src);
+      /* v0.100: кадр добавляется через pushFrame — первый кадр задаёт базу и якорь клипа;
+         тайл другого размера кладётся центром на якорь (не в угол), сдвиги потом не уменьшают тайл */
       if (npcDraft) {
-        setNpcDraft((d) => (d ? { ...d, clips: { ...d.clips, [activeNpcClip]: { ...d.clips[activeNpcClip], frames: [...d.clips[activeNpcClip].frames, url] } } } : d));
+        const next = await pushFrame(npcDraft.clips[activeNpcClip], url);
+        setNpcDraft((d) => (d ? { ...d, clips: { ...d.clips, [activeNpcClip]: next } } : d));
         sfx.coin();
         return;
       }
       if (bossDraft) {
-        setBossDraft((d) => (d ? { ...d, clips: { ...d.clips, [activeBossClip]: { ...d.clips[activeBossClip], frames: [...d.clips[activeBossClip].frames, url] } } } : d));
+        const next = await pushFrame(bossDraft.clips[activeBossClip], url);
+        setBossDraft((d) => (d ? { ...d, clips: { ...d.clips, [activeBossClip]: next } } : d));
         sfx.coin();
         return;
       }
       if (animDraft) {
-        setAnimDraft((d) => (d ? { ...d, frames: [...d.frames, url] } : d));
+        const next = await pushFrame(animDraft, url);
+        setAnimDraft((d) => (d ? { ...d, ...next } : d));
         sfx.coin();
         return;
       }
       if (tokDraft) {
-        setTokDraft((d) => (d ? { ...d, clips: { ...d.clips, [activeClip]: { ...d.clips[activeClip], frames: [...d.clips[activeClip].frames, url] } } } : d));
+        const next = await pushFrame(tokDraft.clips[activeClip], url);
+        setTokDraft((d) => (d ? { ...d, clips: { ...d.clips, [activeClip]: next } } : d));
         sfx.coin();
         return;
       }
@@ -743,7 +783,7 @@ export default function TokenEditor() {
     const a: AnimDef = {
       id: animDraft.id ?? uid('anim'),
       name: animDraft.name.trim().toUpperCase() || 'АНИМАЦИЯ',
-      clip: { fps: Math.max(1, Math.min(24, animDraft.fps)), frames: animDraft.frames },
+      clip: { fps: Math.max(1, Math.min(24, animDraft.fps)), frames: animDraft.frames, ...metaOf(animDraft) },
       ...(sndUrl ? { snd: sndUrl } : {}),
       createdAt: animDraft.createdAt ?? Date.now(),
     };
@@ -829,7 +869,7 @@ export default function TokenEditor() {
     const tokSndUrl = tokDraft.sndId ? sounds.find((x) => x.id === tokDraft.sndId)?.dataUrl : undefined;
     const winSndUrl = tokDraft.winSndId ? sounds.find((x) => x.id === tokDraft.winSndId)?.dataUrl : undefined;
     const loseSndUrl = tokDraft.loseSndId ? sounds.find((x) => x.id === tokDraft.loseSndId)?.dataUrl : undefined;
-    const clipOf = (k: ClipKey) => ({ fps: Math.max(1, Math.min(24, tokDraft.clips[k].fps)), frames: tokDraft.clips[k].frames });
+    const clipOf = (k: ClipKey) => ({ fps: Math.max(1, Math.min(24, tokDraft.clips[k].fps)), frames: tokDraft.clips[k].frames, ...metaOf(tokDraft.clips[k]) });
     const anim: TokenAnim = {
       idle: clipOf('idle'),
       ...(tokDraft.clips.up.frames.length ? { up: clipOf('up') } : {}),
@@ -895,7 +935,7 @@ export default function TokenEditor() {
     if (!bossDraft.clips.idle.frames.length) { toast('Клип IDLE обязателен — добавьте кадры (живой босс на ячейке)', 'err'); sfx.fail(); return; }
     if (!bossDraft.clips.win.frames.length || !bossDraft.clips.lose.frames.length) { toast('Нужны клипы ПОБЕДЫ и ПОРАЖЕНИЯ — это реакции босса на исходы заданий', 'err'); sfx.fail(); return; }
     const sndUrl = (sid?: string) => (sid ? sounds.find((x) => x.id === sid)?.dataUrl : undefined);
-    const clipOf = (k: BossClipKey) => ({ fps: Math.max(1, Math.min(24, bossDraft.clips[k].fps)), frames: bossDraft.clips[k].frames });
+    const clipOf = (k: BossClipKey) => ({ fps: Math.max(1, Math.min(24, bossDraft.clips[k].fps)), frames: bossDraft.clips[k].frames, ...metaOf(bossDraft.clips[k]) });
     const b: BossAnimDef = {
       id: bossDraft.id ?? uid('boss'),
       name: bossDraft.name.trim().toUpperCase() || 'БОСС',
@@ -940,7 +980,7 @@ export default function TokenEditor() {
     if (!npcDraft) return;
     if (!npcDraft.clips.idle.frames.length) { toast('Клип IDLE обязателен — добавьте кадры (NPC стоит на карте)', 'err'); sfx.fail(); return; }
     const sndUrl = (sid?: string) => (sid ? sounds.find((x) => x.id === sid)?.dataUrl : undefined);
-    const clipOf = (k: NpcClipKey) => ({ fps: Math.max(1, Math.min(24, npcDraft.clips[k].fps)), frames: npcDraft.clips[k].frames });
+    const clipOf = (k: NpcClipKey) => ({ fps: Math.max(1, Math.min(24, npcDraft.clips[k].fps)), frames: npcDraft.clips[k].frames, ...metaOf(npcDraft.clips[k]) });
     const n: NpcAnimDef = {
       id: npcDraft.id ?? uid('npc'),
       name: npcDraft.name.trim().toUpperCase() || 'NPC',
@@ -1247,12 +1287,12 @@ export default function TokenEditor() {
                   <div>
                     <span className="tick-label block mb-1.5">Превью</span>
                     <div className="w-16 h-16 border-2 border-edge flex items-center justify-center" style={checker}>
-                      <AnimPreview frames={animDraft.frames} fps={animDraft.fps} size={56} />
+                      <AnimPreview frames={animDraft.frames} fps={animDraft.fps} size={56} meta={animDraft} />
                     </div>
                   </div>
                 </div>
                 <p className="text-[11px] text-gold leading-tight">Выбирайте анимацию КАДР ЗА КАДРОМ: кликайте тайлы в ЛЕВОЙ панели — они встанут по порядку. Стрелками ← → меняйте порядок кадров, × — уберите лишний.</p>
-                <FrameStrip clip={{ fps: animDraft.fps, frames: animDraft.frames }} onFrames={(frames) => setAnimDraft({ ...animDraft, frames })} size={64} />
+                <FrameStrip clip={animDraft} onClip={(c) => setAnimDraft({ ...animDraft, ...c })} size={64} />
                 <div className="pt-1 border-t-2 border-edge space-y-1">
                   <div className="tick-label">🔊 Звук — прикрепляется кликом по ЛЕВОЙ панели</div>
                   <SoundAttach sounds={sounds} value={animDraft.sndId} onDetach={() => setAnimDraft((d) => (d ? { ...d, sndId: undefined } : d))} />
@@ -1302,11 +1342,11 @@ export default function TokenEditor() {
                           <span className="tick-label text-faint">скорость</span>
                           <Stepper value={c.fps} onChange={(v) => setTokDraft({ ...tokDraft, clips: { ...tokDraft.clips, [cm.key]: { ...c, fps: v } } })} min={1} max={24} suffix=" кадр/с" />
                           <div className="w-10 h-10 border-2 border-edge flex items-center justify-center" style={checker}>
-                            <AnimPreview frames={c.frames} fps={c.fps} size={34} />
+                            <AnimPreview frames={c.frames} fps={c.fps} size={34} meta={c} />
                           </div>
                         </div>
                       </div>
-                      <FrameStrip clip={c} onFrames={(frames) => setTokDraft({ ...tokDraft, clips: { ...tokDraft.clips, [cm.key]: { ...c, frames } } })} size={44} />
+                      <FrameStrip clip={c} onClip={(nc) => setTokDraft({ ...tokDraft, clips: { ...tokDraft.clips, [cm.key]: { ...c, ...nc } } })} size={44} />
                     </div>
                   );
                 })}
@@ -1354,7 +1394,7 @@ export default function TokenEditor() {
                   <div>
                     <span className="tick-label block mb-1.5">Превью idle</span>
                     <div className="w-16 h-16 border-2 border-edge flex items-center justify-center" style={checker}>
-                      <AnimPreview frames={npcDraft.clips.idle.frames} fps={npcDraft.clips.idle.fps} size={56} />
+                      <AnimPreview frames={npcDraft.clips.idle.frames} fps={npcDraft.clips.idle.fps} size={56} meta={npcDraft.clips.idle} />
                     </div>
                   </div>
                 </div>
@@ -1376,11 +1416,11 @@ export default function TokenEditor() {
                           <span className="tick-label text-faint">скорость</span>
                           <Stepper value={c.fps} onChange={(v) => setNpcDraft({ ...npcDraft, clips: { ...npcDraft.clips, [cm.key]: { ...c, fps: v } } })} min={1} max={24} suffix=" кадр/с" />
                           <div className="w-10 h-10 border-2 border-edge flex items-center justify-center" style={checker}>
-                            <AnimPreview frames={c.frames} fps={c.fps} size={34} />
+                            <AnimPreview frames={c.frames} fps={c.fps} size={34} meta={c} />
                           </div>
                         </div>
                       </div>
-                      <FrameStrip clip={c} onFrames={(frames) => setNpcDraft({ ...npcDraft, clips: { ...npcDraft.clips, [cm.key]: { ...c, frames } } })} size={44} />
+                      <FrameStrip clip={c} onClip={(nc) => setNpcDraft({ ...npcDraft, clips: { ...npcDraft.clips, [cm.key]: { ...c, ...nc } } })} size={44} />
                     </div>
                   );
                 })}
@@ -1426,7 +1466,7 @@ export default function TokenEditor() {
                   <div>
                     <span className="tick-label block mb-1.5">Превью idle</span>
                     <div className="w-16 h-16 border-2 border-edge flex items-center justify-center" style={checker}>
-                      <AnimPreview frames={bossDraft.clips.idle.frames} fps={bossDraft.clips.idle.fps} size={56} />
+                      <AnimPreview frames={bossDraft.clips.idle.frames} fps={bossDraft.clips.idle.fps} size={56} meta={bossDraft.clips.idle} />
                     </div>
                   </div>
                 </div>
@@ -1448,11 +1488,11 @@ export default function TokenEditor() {
                           <span className="tick-label text-faint">скорость</span>
                           <Stepper value={c.fps} onChange={(v) => setBossDraft({ ...bossDraft, clips: { ...bossDraft.clips, [cm.key]: { ...c, fps: v } } })} min={1} max={24} suffix=" кадр/с" />
                           <div className="w-10 h-10 border-2 border-edge flex items-center justify-center" style={checker}>
-                            <AnimPreview frames={c.frames} fps={c.fps} size={34} />
+                            <AnimPreview frames={c.frames} fps={c.fps} size={34} meta={c} />
                           </div>
                         </div>
                       </div>
-                      <FrameStrip clip={c} onFrames={(frames) => setBossDraft({ ...bossDraft, clips: { ...bossDraft.clips, [cm.key]: { ...c, frames } } })} size={44} />
+                      <FrameStrip clip={c} onClip={(nc) => setBossDraft({ ...bossDraft, clips: { ...bossDraft.clips, [cm.key]: { ...c, ...nc } } })} size={44} />
                     </div>
                   );
                 })}
@@ -1509,12 +1549,12 @@ export default function TokenEditor() {
                   {anims.map((a) => (
                     <div key={a.id} className="pixel-panel pixel-corners p-3 text-center">
                       <div className="mx-auto w-20 h-20 flex items-center justify-center border-2 border-edge" style={checker}>
-                        <AnimPreview frames={a.clip.frames} fps={a.clip.fps} size={72} />
+                        <AnimPreview frames={a.clip.frames} fps={a.clip.fps} size={72} meta={a.clip} />
                       </div>
                       <div className="font-display text-[11px] uppercase text-paper truncate mt-2">{a.name}</div>
                       <div className="tick-label text-faint">{a.clip.frames.length} кадр. · {a.clip.fps} кадр/с</div>
                       <div className="flex justify-center gap-2 mt-2">
-                        <GhostBtn small onClick={() => { setAnimDraft({ id: a.id, name: a.name, fps: a.clip.fps, frames: [...a.clip.frames], createdAt: a.createdAt, sndId: sounds.find((x) => x.dataUrl === a.snd)?.id }); sfx.hover(); }} className="!px-2">Изменить</GhostBtn>
+                        <GhostBtn small onClick={() => { setAnimDraft({ id: a.id, name: a.name, fps: a.clip.fps, frames: [...a.clip.frames], ...metaOf(a.clip), createdAt: a.createdAt, sndId: sounds.find((x) => x.dataUrl === a.snd)?.id }); sfx.hover(); }} className="!px-2">Изменить</GhostBtn>
                         <HoldDeleteButton onFire={() => void removeAnim(a)} label={a.name} ariaLabel="Удалить анимацию">{Ic.trash(15)}</HoldDeleteButton>
                       </div>
                     </div>
@@ -1536,7 +1576,7 @@ export default function TokenEditor() {
                     {animToks.map((t) => (
                       <div key={t.id} className="pixel-panel pixel-corners p-3 text-center">
                         <div className="mx-auto w-20 h-20 flex items-center justify-center border-2 border-edge" style={checker}>
-                          <AnimPreview frames={t.anim!.idle.frames} fps={t.anim!.idle.fps} size={72} />
+                          <AnimPreview frames={t.anim!.idle.frames} fps={t.anim!.idle.fps} size={72} meta={t.anim!.idle} />
                         </div>
                         <div className="font-display text-[11px] uppercase text-paper truncate mt-2">{t.name}</div>
                         <div className="tick-label text-faint">{(['up', 'down', 'left', 'right'] as const).filter((d) => t.anim![d]?.frames.length).length} напр.{t.anim!.win?.frames.length ? ' · 🏆' : ''}{t.anim!.lose?.frames.length ? ' · 💀' : ''} · {t.anim!.idle.frames.length} кадр. idle</div>
@@ -1570,7 +1610,7 @@ export default function TokenEditor() {
                     {bossAnims.map((b) => (
                       <div key={b.id} className="pixel-panel pixel-corners p-3 text-center">
                         <div className="mx-auto w-20 h-20 flex items-center justify-center border-2 border-edge" style={checker}>
-                          <AnimPreview frames={b.idle.frames} fps={b.idle.fps} size={72} />
+                          <AnimPreview frames={b.idle.frames} fps={b.idle.fps} size={72} meta={b.idle} />
                         </div>
                         <div className="font-display text-[11px] uppercase text-paper truncate mt-2">{b.idleSnd ? '🔊 ' : ''}{b.name}</div>
                         <div className="tick-label text-faint">🏆 {b.win.frames.length} к. · 💀 {b.lose.frames.length} к.{b.defeated ? ` · ☠ ${b.defeated.frames.length} к.` : ''}</div>
