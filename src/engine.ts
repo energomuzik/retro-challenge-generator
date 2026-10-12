@@ -686,16 +686,30 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     if (s.qEntries[p.id] >= lim) log(`🚧 ${p.name}: последний заход на ячейки (${lim} из ${lim}) — дальше задания не откроются`);
     return true;
   };
-  /* ---------- v0.104: БОГАЧ — открыть общее задание ячейки вошедшему игроку ----------
+  /* ---------- v0.105: РЕТРОРАННЕР — открыть общее задание игроку / ВСЕЙ компании ----------
    Задание ячейки ЕДИНОЕ для всех (выбранный вариант). Вызывается из входа на ячейку,
-   из qPick (когда выбор сделан — всем вошедшим сразу) и из поимки боссом. */
-  const bogachStartJob = (pl: PlayerState, idx: number): void => {
+   из qPick (когда выбор сделан) и из поимки боссом.
+   v0.105: детали задания НЕ ТРАНСЛИРУЮТСЯ — в общем логе только факт старта гонки,
+   без названия; каждый игрок видит задание только на своём экране. */
+  const bogachStartJob = (pl: PlayerState, idx: number, silent = false): void => {
     const tk = cellTaskOf(s, map, idx);
     if (!tk) return;
     s.qJobs = s.qJobs ?? {};
     if (s.qJobs[pl.id]) return;
     s.qJobs[pl.id] = { cellIdx: idx, startedAt: Date.now() };
-    log(`🎯 ${pl.name} играет ОБЩЕЕ задание «${tk.title.slice(0, 30)}» — все вошедшие на ячейку играют его одновременно`);
+    if (!silent) log(`🎯 ${pl.name} взял задание — гонка на опережение!`);
+  };
+  /* v0.105 РЕТРОРАННЕР: ОБЩИЙ ЗАПУСК — выбранное задание стартует у ВСЕЙ КОМПАНИИ
+   одновременно: у каждого свободного (без активного задания) игрока, где бы он ни был.
+   Так работает гонка: сначала опереди всех на карте, потом опереди всех в игре. */
+  const bogachMassStart = (idx: number): void => {
+    let n = 0;
+    for (const pl of s.players) {
+      if (!pl.alive || pl.spect || s.qJobs?.[pl.id]) continue;
+      bogachStartJob(pl, idx, true);
+      n++;
+    }
+    if (n) log(`🔥 ЗАДАНИЕ ЗАПУЩЕНО ДЛЯ ВСЕЙ КОМПАНИИ (${n} игрок(ов)) — ГОНКА! Что за игра, каждый увидит только на своём экране. Кто первый пройдёт — заберёт награду`);
   };
   /* ---------- v0.55: SKILL «СЛУЧАЙНЫЕ ЗАДАНИЯ» — случайная ячейка с заданием ----------
    Приоритет — ещё НЕ сыгранные (не в skillDone); если всё сыграно — любая с заданием. */
@@ -1797,7 +1811,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       log(map.mode === 'rubg'
         ? `🪂 RUBG! ${s.players.length} бойцов на борту. Самолёт летит — ПРЫГАЙТЕ, где хотите! Ресурс — полоска HP, у каждого ОТМЫЧКА 🔑 для ящиков. Побеждает последний живой!`
         : map.mode === 'bogach'
-          ? `💰 БОГАЧ! У каждого ${p0coins} монет и свободная ходьба. Первый вошедший на ячейку ВЫБИРАЕТ задание — и ВСЕ вошедшие играют ЕГО одновременно. Пропуск −${Math.max(0, Math.floor(map.skipCoins ?? SKIP_COINS_DEFAULT))} бронзы, первый победивший +${Math.max(0, Math.floor(map.taskWinCoins ?? 10))} бронзы (остановленные платят столько же). Кончились монеты — вылетел. ПОБЕДИТ ПОСЛЕДНИЙ БОГАЧ!`
+          ? `💰 РЕТРОРАННЕР! У каждого ${p0coins} монет и свободная ходьба. Кто ПЕРВЫЙ вбежит на ячейку задания — выберет игру, и она ЗАПУСТИТСЯ У ВСЕЙ КОМПАНИИ одновременно (задание никому не транслируется — увидите его у себя на экране). Кто первый пройдёт — +${Math.max(0, Math.floor(map.taskWinCoins ?? 10))} бронзы; остальные, кто ещё играл, остановятся и заплатят столько же. Пропуск −${Math.max(0, Math.floor(map.skipCoins ?? SKIP_COINS_DEFAULT))} бронзы. Кончились монеты — вылетел. ПОБЕДИТ ПОСЛЕДНИЙ НА НОГАХ!`
           : isQuestMode(map.mode)
           ? `🗺 QUEST! ${isSoloMode(map.mode) ? 'Играет хост — зрители смотрят трансляцию. ' : 'Каждый играет ИНДИВИДУАНО, трансляции нет. '}Задания — на доверии: вошёл в ячейку, играй и жми «Победа/Поражение». Побеждает ПЕРВЫЙ, кто выполнит КОНЦОВКУ${(map.endings ?? []).length ? ` (концовок: ${(map.endings ?? []).length})` : ''}!`
           : map.mode === 'classic1p'
@@ -2062,8 +2076,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
   /* пересёк ячейку задания? вход = прошлый центр был ВНЕ прямоугольника, новый — ВНУТРИ.
         КТО ПЕРВЫЙ пересёк — у того и задание: turn = этот игрок (все фишки замирают,
         остальные смотрят трансляцию — «всё как всегда»); после задания все снова ходят. */
-      /* v0.104 БОГАЧ: ячейка задания ЕДИНАЯ для всех. Первый вошедший ВЫБИРАЕТ задание
-         (если вариантов 2–3), все вошедшие останавливаются и играют ЕГО одновременно.
+      /* v0.105 РЕТРОРАННЕР: ячейка задания ЕДИНАЯ для всех. Кто ПЕРВЫЙ вбежал — ВЫБИРАЕТ задание
+         (если вариантов 2–3), после выбора оно запускается У ВСЕЙ КОМПАНИИ одновременно (bogachMassStart).
          Пропуск — монеты (иммунитет/джокер — бесплатно); первый победил — награда ему,
          игры остальных обрываются с той же суммой. */
       if (map.mode === 'bogach') {
@@ -2101,11 +2115,15 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
               }
               s.qPicks = s.qPicks ?? {};
               s.qPicks[i] = { by: p.id, ts: Date.now() };
-              log(`🎲 ${p.name} ПЕРВЫМ вошёл на ячейку ${posName(i)} — выбирает задание из ${list.length} вариантов`);
+              log(`🎲 ${p.name} опередил всех на ячейке ${posName(i)} — теперь он выбирает игру для ВСЕЙ компании`);
               break;
             }
-            if (s.qChosen[i] === undefined) s.qChosen[i] = 0; // вариант один — выбор не нужен
-            bogachStartJob(p, i);
+            if (s.qChosen[i] === undefined) {
+              s.qChosen[i] = 0; // вариант один — выбор не нужен
+              bogachMassStart(i); // v0.105: гонка стартует у ВСЕЙ компании одновременно
+            } else {
+              bogachStartJob(p, i); // гонка уже идёт — вошедший присоединяется лично
+            }
           } else if (c.type === 'bonus' || c.type === 'trap') {
             const deck = c.type === 'bonus' ? map.bonusCards : map.trapCards;
             if (!deck.length) continue;
@@ -2432,12 +2450,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       /* v0.104 БОГАЧ: общее задание ячейки — победа ТОЛЬКО первого (+награда, ячейка закрывается,
          игры остальных обрываются с той же суммой); поражение/уход — цена пропуска (иммунитет — бесплатно) */
       if (map.mode === 'bogach') {
-        const tk = cellTaskOf(s, map, a.cellIdx);
         if (a.win) {
           if (s.qCellDone[a.cellIdx] === undefined) {
             const winC = bogachWinCoins(a.cellIdx);
-            if (winC > 0) { p.coinsLeft = Math.min(COINS_MAX, (p.coinsLeft ?? 0) + winC); log(`🪙 ${p.name} ПЕРВЫЙ прошёл задание «${(tk?.title ?? `№${a.cellIdx + 1}`).slice(0, 30)}» — награда +${winC} бронзы, капитал ${coinsStr(p.coinsLeft)}`); }
-            else log(`🏆 ${p.name} ПЕРВЫЙ прошёл задание «${(tk?.title ?? `№${a.cellIdx + 1}`).slice(0, 30)}» — награда не назначена`);
+            if (winC > 0) { p.coinsLeft = Math.min(COINS_MAX, (p.coinsLeft ?? 0) + winC); log(`🪙 ${p.name} ПЕРВЫЙ прошёл задание — награда +${winC} бронзы, капитал ${coinsStr(p.coinsLeft)}`); }
+            else log(`🏆 ${p.name} ПЕРВЫЙ прошёл задание — награда не назначена`);
             s.qDone = s.qDone ?? {};
             const done = s.qDone[p.id] ?? [];
             if (!done.includes(a.cellIdx)) done.push(a.cellIdx);
@@ -2480,7 +2497,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         } else {
           const stake = taskStakeOf(a.cellIdx);
           bogachPay(p, stake.loseC, 'поражение в задании');
-          log(`💢 ${p.name} проиграл задание «${(tk?.title ?? `№${a.cellIdx + 1}`).slice(0, 30)}»${a.byCode ? ' — ПОРАЖЕНИЕ ПО КОДУ 🤖' : ''}`);
+          log(`💢 ${p.name} проиграл задание${a.byCode ? ' — ПОРАЖЕНИЕ ПО КОДУ 🤖' : ''}`);
         }
         checkElim();
         break;
@@ -2543,13 +2560,13 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         const im = immuneActiveOf(p.id, tk?.plat);
         const joy = bogachSkipFreeJoy(p, tk?.plat);
         if (im) {
-          log(`🛡 ${p.name} пропустил задание «${(tk?.title ?? `№${a.cellIdx + 1}`).slice(0, 30)}» БЕСПЛАТНО — иммунитет ${taskPlatLabel(im.plat)} ещё ${Math.max(1, Math.ceil((im.activatedAt! + im.minutes * 60000 - Date.now()) / 60000))} мин`);
+          log(`🛡 ${p.name} пропустил задание БЕСПЛАТНО — иммунитет ${taskPlatLabel(im.plat)} ещё ${Math.max(1, Math.ceil((im.activatedAt! + im.minutes * 60000 - Date.now()) / 60000))} мин`);
         } else if (joy) {
           bogachConsumeJoy(p, tk?.plat);
           log(`🛡 ${p.name} пропустил задание БЕСПЛАТНО — сгорела радость «${joy}»`);
         } else {
           const stake = taskStakeOf(a.cellIdx);
-          bogachPay(p, stake.loseC, `пропуск задания «${(tk?.title ?? `№${a.cellIdx + 1}`).slice(0, 30)}»`);
+          bogachPay(p, stake.loseC, 'пропуск задания');
         }
         checkElim();
         break;
@@ -2567,24 +2584,17 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const p = actor();
       if (!p || !p.alive || p.spect) break;
       const pick = s.qPicks?.[a.cellIdx];
-      if (!pick || pick.by !== p.id) break; // выбирает только тот, кто ПЕРВЫМ вошёл
+      if (!pick || pick.by !== p.id) break; // выбирает только тот, кто опередил всех
       const list = bogachTaskList(map, a.cellIdx);
       const v = Math.max(0, Math.min(list.length - 1, Math.floor(a.v)));
       if (s.qCellDone[a.cellIdx] !== undefined || !list.length) { delete s.qPicks![a.cellIdx]; break; }
       s.qChosen = s.qChosen ?? {};
       s.qChosen[a.cellIdx] = v; // задание ячейки ЕДИНОЕ для всех
       delete s.qPicks![a.cellIdx];
-      const tk = list[v];
-      log(`🎲 ${p.name} выбрал задание ячейки ${posName(a.cellIdx)}: «${tk.title.slice(0, 40)}» — теперь его играют ВСЕ вошедшие`);
-      /* задание стартует СРАЗУ у всех, кто стоит на ячейке (включая выбравшего) */
-      for (const pl of s.players) {
-        if (!pl.alive || pl.spect) continue;
-        const jp = s.journeyPos?.[pl.id];
-        if (!jp) continue;
-        const r = cellRectOf(map, a.cellIdx);
-        if (!r) break;
-        if (jp.x >= r.x && jp.x < r.x + r.w && jp.y >= r.y && jp.y < r.y + r.h) bogachStartJob(pl, a.cellIdx);
-      }
+      /* v0.105: выбор НЕ ТРАНСЛИРУЕТСЯ — никто не узнает, какую игру выбрал опередивший,
+         пока она не запустится у него на экране */
+      log(`🎲 ${p.name} опередил всех и выбрал игру — задание запускается для ВСЕЙ компании!`);
+      bogachMassStart(a.cellIdx);
       break;
     }
     case 'qImmuneOn': {

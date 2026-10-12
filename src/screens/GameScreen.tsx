@@ -2664,8 +2664,8 @@ export default function GameScreen() {
         {map?.mode === 'classic1p' && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky" title="RETROPOLIA на одного: победа — пройти ВСЕ задания карты">RETROPOLIA SOLO</span>}
         {map?.mode === 'quest' && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-teal">QUEST</span>}
         {isQuestSolo && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky">QUEST SOLO</span>}
-        {/* v0.104 БОГАЧ: чип режима + счётчик закрытых ячеек у игрока */}
-        {isBogach && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="БОГАЧ: монетная битва — кончились монеты, вылетел. Победит последний богатый">БОГАЧ</span>}
+        {/* v0.105 РЕТРОРАННЕР: чип режима + счётчик закрытых ячеек у игрока */}
+        {isBogach && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="РЕТРОРАННЕР: гонка на опережение — кончились монеты, вылетел. Победит последний на ногах">РЕТРОРАННЕР</span>}
         {isQuest && s?.phase === 'playing' && map && (() => {
           const total = map.cells.filter((c) => c.type === 'task').length;
           const done = (s.qDone?.[me] ?? []).length;
@@ -4192,7 +4192,7 @@ export default function GameScreen() {
                       <PlayerIcon pid={me} size={20} /> {isBogach ? '💰 ОБЩЕЕ ЗАДАНИЕ' : '🧭 ЗАДАНИЕ'} · {myQTask.title}
                     </div>
                     {taskSizeBtns}
-                    <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myQJob.cellIdx + 1} · {isBogach ? 'играют ВСЕ вошедшие на ячейку' : 'играешь ТОЛЬКО ты'}</span>
+                    <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myQJob.cellIdx + 1} · {isBogach ? 'играет ВСЯ компания — гонка!' : 'играешь ТОЛЬКО ты'}</span>
                   </div>
                   <div className="grid md:grid-cols-[220px_1fr] gap-4 mt-2">
                     <div className="space-y-3 min-w-0">
@@ -4233,7 +4233,7 @@ export default function GameScreen() {
                         </div>
                       </div>
                       <p className="text-[10px] text-faint">{isBogach
-                        ? `Общее задание: все вошедшие на ячейку играют ОДНУ игру. Первый ПОБЕДИВШИЙ получает +${bogachWin} бронзы${bogachWin ? '' : ' (награда не назначена)'}, игры остальных в этот миг останавливаются и с них списывается столько же. Пропуск — ${skipCoinsNeed} бронзы${bogachFree ? ' — У ВАС ИММУНИТЕТ: бесплатно' : ''}.`
+                        ? `Гонка: вся компания играет ОДНУ игру одновременно, но задание НИКОМУ не транслируется — что за игра, видно только на вашем экране. Кто ПЕРВЫЙ пройдёт — +${bogachWin} бронзы${bogachWin ? '' : ' (награда не назначена)'}, остальные, кто ещё играл, остановятся и заплатят столько же. Пропуск — ${skipCoinsNeed} бронзы${bogachFree ? ' — У ВАС ИММУНИТЕТ: бесплатно' : ''}.`
                         : 'Режим доверия — победа и поражение на твоей совести. Каждый игрок проходит задания САМ: выполненные засчитываются только тебе (цели концовок и квестов — личные).'}</p>
                       {!qArmed ? (
                         <>
@@ -4311,12 +4311,12 @@ export default function GameScreen() {
             </div>
           )}
 
-          {/* ============ v0.104 БОГАЧ: ВЫБОР ЗАДАНИЯ — первый вошедший решает, что играют ВСЕ ============ */}
+          {/* ============ v0.105 РЕТРОРАННЕР: ВЫБОР ЗАДАНИЯ — кто опередил всех, тот решает, что играют ВСЕ ============ */}
           {isBogach && myPickIdx >= 0 && myPickList.length > 1 && (
             <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.82)] p-3">
               <div className="pixel-panel pixel-corners p-4 w-full max-w-[560px] max-h-[92vh] overflow-y-auto">
                 <div className="font-display uppercase text-lg text-gold mb-1">🎲 Выберите задание ячейки №{myPickIdx + 1}</div>
-                <p className="text-[10px] text-dim leading-snug mb-3">Вы вошли ПЕРВЫМ — выбирайте игру для ВСЕХ: каждый, кто зайдёт на ячейку, остановится и будет играть выбранное задание вместе с вами.</p>
+                <p className="text-[10px] text-dim leading-snug mb-3">Вы опередили всех — выбирайте игру для ВСЕЙ компании: она запустится у всех игроков ОДНОВРЕМЕННО. Выбор никому не транслируется, поэтому берите игру, в которой вы сильнее всех: кто первый её пройдёт — заберёт награду, а остальные остановятся и заплатят.</p>
                 <div className="space-y-2">
                   {myPickList.map((tk, vi) => {
                     const rDef = st.roms.find((r) => r.id === tk.romId);

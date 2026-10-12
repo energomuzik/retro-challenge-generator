@@ -884,8 +884,8 @@ export default function TaskEditor() {
               ) : cell.type === 'task' ? (
                 <Panel title="Задание ячейки" icon={Ic.cart(16)}>
                   <div className="p-3 space-y-3">
-                    {/* v0.104: СЛОТЫ ЗАДАНИЯ — основное + до двух вариантов (БОГАЧ:
-                       первый вошедший на ячейку выбирает одно из 2–3 заданий) */}
+                    {/* v0.105: СЛОТЫ ЗАДАНИЯ — основное + до двух вариантов (РЕТРОРАННЕР:
+                       кто опередил всех на ячейке — выбирает одно из 2–3 заданий для всей компании) */}
                     <div>
                       <div className="flex items-center gap-1.5 flex-wrap">
                         {[0, 1, 2].map((s) => {
@@ -893,7 +893,7 @@ export default function TaskEditor() {
                           const active = taskSlot === s;
                           return (
                             <button key={s} onClick={() => { if (!active) { setTaskSlot(s); sfx.hover(); } }}
-                              title={s === 0 ? 'Основное задание ячейки — играет во всех режимах' : `Вариант ${s + 1}: дополнительное задание для режима БОГАЧ`}
+                              title={s === 0 ? 'Основное задание ячейки — играет во всех режимах' : `Вариант ${s + 1}: дополнительное задание для режима РЕТРОРАННЕР`}
                               className={`px-2.5 py-1 text-[10px] font-display uppercase border-2 cursor-pointer transition-colors ${active ? 'border-gold bg-gold/15 text-gold' : filled ? 'border-edge2 text-paper hover:border-gold/60' : 'border-edge text-dim hover:border-edge2'}`}>
                               {s === 0 ? '🎮 Задание' : `＋ Вариант ${s + 1}`}{filled ? ' ✓' : ''}
                             </button>
@@ -902,8 +902,8 @@ export default function TaskEditor() {
                       </div>
                       <p className="text-[9.5px] text-faint leading-tight mt-1.5">
                         {taskSlot === 0
-                          ? 'Основное задание — играет во всех режимах. Варианты нужны для режима БОГАЧ: первый вошедший на ячейку выбирает одно из 2–3 заданий — и его играют ВСЕ вошедшие одновременно. В остальных режимах варианты не задействуются.'
-                          : `Редактируется ВАРИАНТ ${taskSlot + 1}. В режиме БОГАЧ первый вошедший на ячейку увидит его в списке выбора вместе с остальными заданиями ячейки. Заполните ром/сохранение и жмите «Сохранить задание».`}
+                          ? 'Основное задание — играет во всех режимах. Варианты нужны для режима РЕТРОРАННЕР: кто первый вбежал на ячейку — выбирает одно из 2–3 заданий, и оно запускается у ВСЕЙ компании одновременно (выбор никому не транслируется). В остальных режимах варианты не задействуются.'
+                          : `Редактируется ВАРИАНТ ${taskSlot + 1}. В режиме РЕТРОРАННЕР опередивший всех игрок увидит его в списке выбора вместе с остальными заданиями ячейки. Заполните ром/сохранение и жмите «Сохранить задание».`}
                       </p>
                     </div>
                     <Field label="Ром (выбирается в ЛЕВОЙ панели «Ромы»)">
@@ -1115,7 +1115,7 @@ export default function TaskEditor() {
                       <PxBtn color="coral" className="w-full" onClick={() => void clearVariant()}>{Ic.trash(14)} Убрать вариант {taskSlot + 1} с ячейки</PxBtn>
                     )}
                     {taskSlot === 0 && cell.task && (
-                      <div className="text-[11px] text-teal">Сейчас: «{cell.task.title}» · {romName(cell.task.romId)}{cell.task.code ? ' · зачёт по коду ✓' : ''}{cell.task.codeFail ? ' · поражение по коду ✓' : ''}{cell.task.codeOnly ? ' · только по коду ✓' : ''}{(cell.taskVariants ?? []).some((v) => v) ? ' · есть варианты для БОГАЧА' : ''}</div>
+                      <div className="text-[11px] text-teal">Сейчас: «{cell.task.title}» · {romName(cell.task.romId)}{cell.task.code ? ' · зачёт по коду ✓' : ''}{cell.task.codeFail ? ' · поражение по коду ✓' : ''}{cell.task.codeOnly ? ' · только по коду ✓' : ''}{(cell.taskVariants ?? []).some((v) => v) ? ' · есть варианты для РЕТРОРАННЕРА' : ''}</div>
                     )}
                     {taskSlot > 0 && (cell.taskVariants?.[taskSlot - 1] ? (
                       <div className="text-[11px] text-teal">Вариант {taskSlot + 1}: «{cell.taskVariants![taskSlot - 1]!.title}» · {romName(cell.taskVariants![taskSlot - 1]!.romId)}{cell.taskVariants![taskSlot - 1]!.code ? ' · зачёт по коду ✓' : ''}</div>
