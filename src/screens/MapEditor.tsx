@@ -3310,12 +3310,21 @@ export default function MapEditor() {
       toast('Ячейки-ящики работают только в режиме RUBG — измените тип ячеек или включите режим RUBG', 'err');
       return;
     }
-    /* QUEST/QUEST SOLO: квизы ЗАПРЕЩЕНЫ (задания на доверие, квесты NPC и концовки вместо викторин) */
-    if (isQuestMode(map.mode)) {
+    /* QUEST/QUEST SOLO и БОГАЧ: квизы ЗАПРЕЩЕНЫ (задания на доверии/общие, вместо викторин) */
+    if (isQuestMode(map.mode) || map.mode === 'bogach') {
       const bad = map.cells.filter((c) => c.type === 'quiz').length;
       if (bad > 0) {
         sfx.fail();
-        toast(`QUEST: ячейки-квизы запрещены — на карте ${bad} таких. Уберите их или измените режим (кнопки вверху)`, 'err');
+        toast(`${map.mode === 'bogach' ? 'БОГАЧ' : 'QUEST'}: ячейки-квизы запрещены — на карте ${bad} таких. Уберите их или измените режим (кнопки вверху)`, 'err');
+        return;
+      }
+    }
+    /* БОГАЧ: задания на карте обязательны — иначе битва богатых не из чего состоять */
+    if (map.mode === 'bogach') {
+      const tasks = map.cells.filter((c) => c.type === 'task').length;
+      if (tasks === 0) {
+        sfx.fail();
+        toast('БОГАЧ: на карте нет ни одной ячейки задания — поставьте ячейки «Зад.» с заданиями', 'err');
         return;
       }
     }
@@ -3472,7 +3481,7 @@ export default function MapEditor() {
             {(() => {
               const id = baseModeOf(map.mode ?? 'classic');
               const solo = isSoloMode(map.mode ?? 'classic');
-              const soloLocked = id === 'skill' || id === 'rubg';
+              const soloLocked = id === 'skill' || id === 'rubg' || id === 'bogach';
               const sv = soloVariantOf(id);
               return (
                 <button
@@ -3482,7 +3491,9 @@ export default function MapEditor() {
                     ? 'SKILL CHALLENGE всегда соло — играет только хост, остальные зрители'
                     : id === 'rubg'
                       ? 'В RUBG галочка SOLO недоступна'
-                      : 'SOLO: играет только хост, остальные — зрители трансляции. В RETROPOLIA/JOURNEY меняется условие победы: пройти ВСЕ задания карты'}
+                      : id === 'bogach'
+                        ? 'В БОГАЧЕ соло нет: битва богатых — минимум два игрока'
+                        : 'SOLO: играет только хост, остальные — зрители трансляции. В RETROPOLIA/JOURNEY меняется условие победы: пройти ВСЕ задания карты'}
                   className={`px-2.5 py-1 border-2 font-display text-[9px] uppercase transition-colors whitespace-nowrap ${solo ? 'border-sky text-sky bg-sky/10 cursor-pointer' : soloLocked ? 'border-edge text-faint/50 cursor-not-allowed' : 'border-edge text-faint hover:text-sky cursor-pointer'}`}
                 >{solo ? '☑ ' : '☐ '}SOLO</button>
               );
@@ -3877,6 +3888,17 @@ export default function MapEditor() {
                     )}
                   </div>
                 )}
+
+                {/* v0.104 ЛИМИТ ЗАХОДОВ на ячейки заданий (у КАЖДОГО игрока) — авторский
+                    Скилл-челлендж делается так: карта JOURNEY SOLO + лимит 25 + 60/60.
+                    По умолчанию БЕЗ лимита (∞) — соло-игры не заканчиваются сами. */}
+                <div className="mt-2 pt-2 border-t border-edge/40 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-dim">Лимит заходов на ячейки заданий</span>
+                    <Stepper value={map.entryLimit ?? 0} onChange={(v) => updMap({ entryLimit: v })} min={0} max={999} step={5} suffix={(map.entryLimit ?? 0) > 0 ? ' зах.' : ' (∞)'} />
+                  </div>
+                  <p className="text-[9px] text-faint leading-tight">0 = БЕЗ лимита. Каждый вход игрока на ячейку задания расходует заход: вошёл 25 раз — задания больше не открываются. В соло-режимах исчерпание лимита = провал челленджа. Так делается авторский Скилл-челлендж: JOURNEY SOLO + лимит 25 + 60 минут и 60 попыток.</p>
+                </div>
               </div>
 
               {/* RUBG: БЕЗОПАСНАЯ ЗОНА — ЕДИНАЯ ФАЗА для ВСЕХ сжатий: настраивается ОДНА фаза

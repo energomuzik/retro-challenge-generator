@@ -5,7 +5,7 @@ import { cellAtPoint, drawBoard, fitView } from '../render';
 import { idbGet, idbPut, uid } from '../db';
 import { cartridgeArt, cardArt, fileToDataUrl } from '../assets';
 import type { CardDef, CardEffect, CellType, ChaosKind, CodeOp, CodeType, EffectType, GameMap, MemCond, RomDef, SaveKind, TaskDef } from '../types';
-import { CHAOS_LIST, chaosLabel, mkChaosCard, JOY_LIST, SAVE_KIND_CLS, SAVE_KIND_LABEL, SAVE_KIND_SHORT, saveKindOf } from '../types';
+import { CHAOS_LIST, chaosLabel, mkChaosCard, JOY_LIST, SAVE_KIND_CLS, SAVE_KIND_LABEL, SAVE_KIND_SHORT, saveKindOf, taskPlatOfExt } from '../types';
 import { CODE_TYPE_LABEL, OP_LABEL, formatCond, hex8, memCondText, parseCond, parseHex } from '../memcode';
 import { renumberByPath, fixLinksAfterDelete } from '../render';
 import { HoldDeleteButton, rememberDeleted } from '../delGuard';
@@ -72,6 +72,9 @@ export default function TaskEditor() {
   const [fDesc, setFDesc] = useState('');
   const [fImg, setFImg] = useState('');
   const [fChaos, setFChaos] = useState('');
+  /* v0.104: СЛОТ ЗАДАНИЯ — 0 = основное задание, 1–2 = варианты (БОГАЧ:
+  первый вошедший выбирает одно из 2–3 заданий, его играют ВСЕ вошедшие) */
+  const [taskSlot, setTaskSlot] = useState(0);
   const [fJoy, setFJoy] = useState('');
   /* v0.55: КАСТОМНАЯ ЦЕНА задания — пустая строка = «стандарт карты» */
   const [fWinCoins, setFWinCoins] = useState('');
@@ -122,29 +125,31 @@ export default function TaskEditor() {
   useEffect(() => {
     const cell = map && selCell !== null ? map.cells[selCell] : null;
     if (!cell) return;
-    setFRom(cell.task?.romId ?? '');
-    setFSave(cell.task?.saveId ?? '');
-    setFTitle(cell.task?.title ?? '');
-    setFDesc(cell.task?.desc ?? '');
-    setFImg(cell.task?.imageId ?? '');
-    setFChaos(cell.task?.chaos ?? '');
-    setFJoy(cell.task?.joy ?? '');
-    setFWinCoins(cell.task?.winCoins !== undefined ? String(cell.task.winCoins) : '');
-    setFLoseCoins(cell.task?.loseCoins !== undefined ? String(cell.task.loseCoins) : '');
-    setFWinHp(cell.task?.winHp !== undefined ? String(cell.task.winHp) : '');
-    setFLoseHp(cell.task?.loseHp !== undefined ? String(cell.task.loseHp) : '');
+    /* v0.104: форма грузится из АКТИВНОГО слота (основное задание или вариант) */
+    const tdef = taskSlot === 0 ? cell.task : cell.taskVariants?.[taskSlot - 1] ?? null;
+    setFRom(tdef?.romId ?? '');
+    setFSave(tdef?.saveId ?? '');
+    setFTitle(tdef?.title ?? '');
+    setFDesc(tdef?.desc ?? '');
+    setFImg(tdef?.imageId ?? '');
+    setFChaos(tdef?.chaos ?? '');
+    setFJoy(tdef?.joy ?? '');
+    setFWinCoins(tdef?.winCoins !== undefined ? String(tdef.winCoins) : '');
+    setFLoseCoins(tdef?.loseCoins !== undefined ? String(tdef.loseCoins) : '');
+    setFWinHp(tdef?.winHp !== undefined ? String(tdef.winHp) : '');
+    setFLoseHp(tdef?.loseHp !== undefined ? String(tdef.loseHp) : '');
     setVLabel(cell.label ?? '');
     setVColor(cell.color ?? '');
     setVImg(cell.imageId ?? '');
     setVHide(cell.hideInfo ?? false);
-    setFCond(cell.task?.code ?? null);
-    setCodeIn(cell.task?.code ? formatCond(cell.task.code) : '');
+    setFCond(tdef?.code ?? null);
+    setCodeIn(tdef?.code ? formatCond(tdef.code) : '');
     setCodeErr('');
-    setFCondFail(cell.task?.codeFail ?? null);
-    setCodeFailIn(cell.task?.codeFail ? formatCond(cell.task.codeFail) : '');
+    setFCondFail(tdef?.codeFail ?? null);
+    setCodeFailIn(tdef?.codeFail ? formatCond(tdef.codeFail) : '');
     setCodeFailErr('');
-    setFCodeOnly(cell.task?.codeOnly ?? false);
-  }, [selCell, map?.id]);
+    setFCodeOnly(tdef?.codeOnly ?? false);
+  }, [selCell, map?.id, taskSlot]);
 
   const CELL_COLORS = ['#ffcf3f', '#ff5d73', '#5aa9ff', '#2ee6a8', '#ff8b3f', '#9be84d', '#c07aff', '#e9ecff'];
 
@@ -213,6 +218,7 @@ export default function TaskEditor() {
     // Теперь cellAtPoint понимает ОБА формата.
     const idx = cellAtPoint(m, wx, wy);
     setSelCell(idx >= 0 ? idx : null);
+    setTaskSlot(0); // v0.104: смена ячейки — возвращаемся к основному заданию
     if (idx >= 0) sfx.hover();
   };
 
@@ -393,12 +399,36 @@ export default function TaskEditor() {
       ...(fCondFail ? { codeFail: fCondFail } : {}),
       /* v0.70: только по коду — ручные кнопки и голосование для ячейки отключены */
       ...(fCodeOnly ? { codeOnly: true } : {}),
+      /* v0.104: платформа задания (для иммунитетов БОГАЧА) — по расширению рома */
+      plat: taskPlatOfExt(roms.find((r) => r.id === fRom)?.ext),
     };
-    nextMap.cells[selCell].task = task;
+    /* v0.104: задание пишется в АКТИВНЫЙ слот — основное (task) или вариант (taskVariants).
+       Слоты ПОЗИЦИОННЫЕ: в массиве возможны пропуски (null) — движок их игнорирует. */
+    if (taskSlot === 0) {
+      nextMap.cells[selCell].task = task;
+    } else {
+      const arr: TaskDef[] = [...(nextMap.cells[selCell].taskVariants ?? [])];
+      while (arr.length < taskSlot - 1) arr.push(undefined as unknown as TaskDef);
+      arr[taskSlot - 1] = task;
+      nextMap.cells[selCell].taskVariants = arr;
+    }
     setMap(nextMap);
     await persist(nextMap);
     sfx.success();
-    toast(`Задание ячейки №${selCell + 1} сохранено`, 'ok');
+    toast(taskSlot === 0 ? `Задание ячейки №${selCell + 1} сохранено` : `Вариант ${taskSlot + 1} ячейки №${selCell + 1} сохранён`, 'ok');
+  };
+
+  /* v0.104: убрать вариант со слота 1–2 (основное задание не трогаем) */
+  const clearVariant = async () => {
+    if (!map || selCell === null || taskSlot === 0) return;
+    const nextMap = JSON.parse(JSON.stringify(map)) as GameMap;
+    const arr: TaskDef[] = [...(nextMap.cells[selCell].taskVariants ?? [])];
+    arr[taskSlot - 1] = undefined as unknown as TaskDef;
+    nextMap.cells[selCell].taskVariants = arr.some((v) => v) ? arr : undefined;
+    setMap(nextMap);
+    await persist(nextMap);
+    sfx.click();
+    toast(`Вариант ${taskSlot + 1} убран с ячейки №${selCell + 1}`, 'ok');
   };
 
   const addCard = async () => {
@@ -854,6 +884,28 @@ export default function TaskEditor() {
               ) : cell.type === 'task' ? (
                 <Panel title="Задание ячейки" icon={Ic.cart(16)}>
                   <div className="p-3 space-y-3">
+                    {/* v0.104: СЛОТЫ ЗАДАНИЯ — основное + до двух вариантов (БОГАЧ:
+                       первый вошедший на ячейку выбирает одно из 2–3 заданий) */}
+                    <div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {[0, 1, 2].map((s) => {
+                          const filled = s === 0 ? !!cell.task : !!(cell.taskVariants?.[s - 1]);
+                          const active = taskSlot === s;
+                          return (
+                            <button key={s} onClick={() => { if (!active) { setTaskSlot(s); sfx.hover(); } }}
+                              title={s === 0 ? 'Основное задание ячейки — играет во всех режимах' : `Вариант ${s + 1}: дополнительное задание для режима БОГАЧ`}
+                              className={`px-2.5 py-1 text-[10px] font-display uppercase border-2 cursor-pointer transition-colors ${active ? 'border-gold bg-gold/15 text-gold' : filled ? 'border-edge2 text-paper hover:border-gold/60' : 'border-edge text-dim hover:border-edge2'}`}>
+                              {s === 0 ? '🎮 Задание' : `＋ Вариант ${s + 1}`}{filled ? ' ✓' : ''}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[9.5px] text-faint leading-tight mt-1.5">
+                        {taskSlot === 0
+                          ? 'Основное задание — играет во всех режимах. Варианты нужны для режима БОГАЧ: первый вошедший на ячейку выбирает одно из 2–3 заданий — и его играют ВСЕ вошедшие одновременно. В остальных режимах варианты не задействуются.'
+                          : `Редактируется ВАРИАНТ ${taskSlot + 1}. В режиме БОГАЧ первый вошедший на ячейку увидит его в списке выбора вместе с остальными заданиями ячейки. Заполните ром/сохранение и жмите «Сохранить задание».`}
+                      </p>
+                    </div>
                     <Field label="Ром (выбирается в ЛЕВОЙ панели «Ромы»)">
                       {fRom ? (
                         <div className="flex items-center gap-2 border-2 border-gold/60 bg-gold/5 px-2.5 py-2">
@@ -1058,10 +1110,18 @@ export default function TaskEditor() {
                         )}
                       </div>
                     </Field>
-                    <PxBtn className="w-full" disabled={codeConflict} title={codeConflict ? 'Сначала исправьте: зачёт и поражение — одинаковое условие' : undefined} onClick={() => void saveTask()}>{Ic.check(14)} Сохранить задание</PxBtn>
-                    {cell.task && (
-                      <div className="text-[11px] text-teal">Сейчас: «{cell.task.title}» · {romName(cell.task.romId)}{cell.task.code ? ' · зачёт по коду ✓' : ''}{cell.task.codeFail ? ' · поражение по коду ✓' : ''}{cell.task.codeOnly ? ' · только по коду ✓' : ''}</div>
+                    <PxBtn className="w-full" disabled={codeConflict} title={codeConflict ? 'Сначала исправьте: зачёт и поражение — одинаковое условие' : undefined} onClick={() => void saveTask()}>{Ic.check(14)} {taskSlot === 0 ? 'Сохранить задание' : `Сохранить вариант ${taskSlot + 1}`}</PxBtn>
+                    {taskSlot > 0 && cell.taskVariants?.[taskSlot - 1] && (
+                      <PxBtn color="coral" className="w-full" onClick={() => void clearVariant()}>{Ic.trash(14)} Убрать вариант {taskSlot + 1} с ячейки</PxBtn>
                     )}
+                    {taskSlot === 0 && cell.task && (
+                      <div className="text-[11px] text-teal">Сейчас: «{cell.task.title}» · {romName(cell.task.romId)}{cell.task.code ? ' · зачёт по коду ✓' : ''}{cell.task.codeFail ? ' · поражение по коду ✓' : ''}{cell.task.codeOnly ? ' · только по коду ✓' : ''}{(cell.taskVariants ?? []).some((v) => v) ? ' · есть варианты для БОГАЧА' : ''}</div>
+                    )}
+                    {taskSlot > 0 && (cell.taskVariants?.[taskSlot - 1] ? (
+                      <div className="text-[11px] text-teal">Вариант {taskSlot + 1}: «{cell.taskVariants![taskSlot - 1]!.title}» · {romName(cell.taskVariants![taskSlot - 1]!.romId)}{cell.taskVariants![taskSlot - 1]!.code ? ' · зачёт по коду ✓' : ''}</div>
+                    ) : (
+                      <div className="text-[11px] text-dim">Вариант {taskSlot + 1} пуст — заполните форму и сохраните.</div>
+                    ))}
                   </div>
                 </Panel>
               ) : cell.type === 'rest' ? (

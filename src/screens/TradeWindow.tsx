@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Action } from '../engine';
 import type { GameMap, GameSession, NpcLibEntry, NpcShopOffer, PlacedNpc, RubgItem, RubgItemKind } from '../types';
-import { RUBG_ITEMS, STEAL_USES, coinsStr } from '../types';
+import { RUBG_ITEMS, STEAL_USES, coinsStr, doorKeyHex, doorKeyName, taskPlatLabel } from '../types';
 import { CoinRow, GhostBtn, Ic, PxBtn } from '../ui';
 import { sfx } from '../sound';
 
@@ -22,7 +22,7 @@ type Sel = { k: 'buy' | 'sell'; id: string } | null;
 
 /* Крупный «рисунок» предмета: emoji-иконка каталога с тенью — без всяких подписей. */
 const resIcon = (res: 'time' | 'tries' | 'hp' | undefined): string => (res === 'tries' ? '🎯' : res === 'hp' ? '❤️' : '⏱');
-const artOf = (off: NpcShopOffer): string => (off.kind === 'item' && off.item ? RUBG_ITEMS[off.item].icon : resIcon(off.res));
+const artOf = (off: NpcShopOffer): string => (off.kind === 'item' && off.item ? RUBG_ITEMS[off.item].icon : off.kind === 'key' ? '🔑' : off.kind === 'immune' ? '🛡' : resIcon(off.res));
 
 /* Человекочитаемое описание предмета/ресурса — для строки ВНИЗУ окна (что это вообще). */
 function itemDesc(kind: RubgItemKind): string {
@@ -38,6 +38,11 @@ const resDesc = (off: NpcShopOffer): string => {
   const amt = Math.max(1, Math.floor(off.amount ?? 0));
   return off.res === 'tries' ? `ресурс: +${amt} попыток` : off.res === 'hp' ? `ресурс: +${amt}% HP` : `ресурс: +${amt} минут времени`;
 };
+/* v0.104: подписи и описания КЛЮЧЕЙ и ИММУНИТЕТОВ */
+const keyWhat = (off: NpcShopOffer): string => off.title?.trim() || `Ключ: ${doorKeyName(off.key ?? 'yellow')} 🔑`;
+const keyDesc = (off: NpcShopOffer): string => `Открывает дверь цвета «${doorKeyName(off.key ?? 'yellow')}». Ключ НЕ расходуется — ходите через дверь сколько угодно.`;
+const immuneWhat = (off: NpcShopOffer): string => off.title?.trim() || `Иммунитет ${taskPlatLabel(off.plat ?? 'nes')} · ${Math.max(1, Math.floor(off.minutes ?? 5))} мин 🛡`;
+const immuneDesc = (off: NpcShopOffer): string => `На ${Math.max(1, Math.floor(off.minutes ?? 5))} минут пропуски заданий ${taskPlatLabel(off.plat ?? 'nes')} — БЕСПЛАТНЫЕ. Активируйте ДО старта задания (кнопка «Иммунитеты» в HUD).`;
 
 /* Карточка-«монополия»: рисунок, цена под ним, запас уголком, кнопки.
    v0.54: ДВОЙНОЙ КЛИК ЛКМ кладёт предмет на стол СДЕЛКИ. */
@@ -158,8 +163,11 @@ export default function TradeWindow({ s, map, me, npc, def, dispatch, onClose }:
     if (sel.k === 'buy') {
       const off = offerOf(sel.id);
       if (!off) return null;
-      const name = off.kind === 'item' && off.item ? (off.title?.trim() || RUBG_ITEMS[off.item].name) : (off.title?.trim() || resWhat(off));
-      const desc = off.kind === 'item' && off.item ? itemDesc(off.item) : resDesc(off);
+      const name = off.kind === 'item' && off.item ? (off.title?.trim() || RUBG_ITEMS[off.item].name)
+        : off.kind === 'key' ? keyWhat(off)
+        : off.kind === 'immune' ? immuneWhat(off)
+        : (off.title?.trim() || resWhat(off));
+      const desc = off.kind === 'item' && off.item ? itemDesc(off.item) : off.kind === 'key' ? keyDesc(off) : off.kind === 'immune' ? immuneDesc(off) : resDesc(off);
       return { icon: artOf(off), name, desc, price: unitPrice(off), priceLabel: 'цена', extra: stockOf(off) !== undefined ? ` · на витрине: ${stockOf(off)} шт` : ' · на витрине: ∞' };
     }
     const it = itemOf(sel.id);
@@ -349,6 +357,47 @@ export default function TradeWindow({ s, map, me, npc, def, dispatch, onClose }:
             <span className="text-[10px] text-faint leading-tight">Кликните по предмету — здесь напишется, что это такое. ДВОЙНОЙ КЛИК по товару/вещи кладёт его на стол СДЕЛКИ (можно перетаскивать мышью или кнопкой «＋»; на телефоне — «＋»), затем «🤝 Обменять». Скидка {disc} % учтена в ценах{pool !== undefined ? `, касса торговца: ${coinsStr(pool)}` : ''}.</span>
           )}
         </div>
+
+        {/* ---------- v0.104: МОИ КЛЮЧИ И ИММУНИТЕТЫ (с активацией) ----------
+            Ключи уже в кармане — двери своего цвета открыты; иммунитеты ждут активации
+            (ТОЛЬКО до старта задания — с активации тикает срок). */}
+      {((s.qKeys?.[me] ?? []).length > 0 || (s.qImmunes?.[me] ?? []).length > 0) && (
+        <div className="border-2 border-[#ffcf3f]/40 bg-[rgba(7,9,18,0.6)] px-2 py-1.5 space-y-1">
+          <div className="tick-label text-gold">🔑 Ключи и иммунитеты</div>
+          {(s.qKeys?.[me] ?? []).length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              {(s.qKeys?.[me] ?? []).map((k, ki) => (
+                <span key={`${k}:${ki}`} className="text-[10px] text-paper border-2 border-edge px-1.5 py-0.5 inline-flex items-center gap-1">
+                  <span className="inline-block w-2.5 h-2.5 border border-abyss" style={{ background: doorKeyHex(k) }} /> Ключ: {doorKeyName(k)} — дверь открыта
+                </span>
+              ))}
+            </div>
+          )}
+          {(s.qImmunes?.[me] ?? []).length > 0 && (
+            <div className="space-y-1">
+              {(s.qImmunes?.[me] ?? []).map((im) => {
+                const nowMs = Date.now();
+                const leftMs = im.activatedAt ? im.activatedAt + im.minutes * 60000 - nowMs : 0;
+                const active = !!im.activatedAt && leftMs > 0;
+                return (
+                  <div key={im.id} className="flex items-center justify-between gap-2 flex-wrap text-[10px] text-paper">
+                    <span>
+                      🛡 <b className="text-gold">Иммунитет {taskPlatLabel(im.plat)}</b> · {im.minutes} мин
+                      {active ? <span className="text-teal"> · действует ещё {Math.max(1, Math.ceil(leftMs / 60000))} мин</span> : im.activatedAt ? <span className="text-faint"> · срок вышел</span> : <span className="text-dim"> · не активирован</span>}
+                    </span>
+                    {!im.activatedAt && (
+                      <PxBtn small color="teal" title="Активировать: запустится срок; пропуски этой платформы станут бесплатными"
+                        onClick={() => { dispatch({ t: 'qImmuneOn', id: me, immId: im.id }); sfx.success(); }}>
+                        Активировать
+                      </PxBtn>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
       </div>
     </div>
   );

@@ -3,7 +3,7 @@ import { useApp, getRomData, useBlobImage } from '../store';
 import { dispatch, streamBus, type StreamPacket } from '../useGame';
 import { CELL, cellAtPoint, cellCenter, drawBoard, drawRubgOverlay, fitView, mapSize, plateMetrics, plateNumAt, plateRectOf, smoothPxPerFrame, jumpFrameFactor, DEF_MOVE_SPEED, clampMoveSpeed } from '../render';
 import { patrolPos } from '../patrol';
-import { cellHushed, cellRectOf, cellTaskOf, fmtClock, spentInfo } from '../engine';
+import { cellHushed, cellRectOf, cellTaskOf, bogachTaskList, fmtClock, spentInfo } from '../engine';
 import { effectLabel } from './TaskEditor';
 import { cardArt, cartridgeArt } from '../assets';
 import SegaBox, { type SegaApi } from '../SegaBox';
@@ -19,7 +19,7 @@ import {
 import { saveSessionSnapshot } from './Lobby';
 import QuizOverlay from './QuizOverlay';
 import { AnimPreview, EmuVolumeChip, Field, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin, CoinRow } from '../ui';
-import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBossCatchMode, isSoloMode, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, frameWallsOf } from '../types';
+import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isBossCatchMode, isSoloMode, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf } from '../types';
 import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem } from '../types';
 import Randomizer from './Randomizer';
 import TradeWindow from './TradeWindow';
@@ -284,7 +284,9 @@ export default function GameScreen() {
   /* v0.76: плитки «невидимые соседи» — вспышка перехода работает и вне режима комнат */
   const tileHiddenUi = !!map?.tileGrid && tilePlayHidden(map.tileGrid);
   const isQuestSolo = map?.mode === 'quest1p';
-  const myQJob = isQuest && s ? s.qJobs?.[me] : undefined;
+  /* v0.104 БОГАЧ: монетная битва — задания общие (qJobs), окна личного задания и выбор вариантов переиспользованы */
+  const isBogach = isBogachMode(map?.mode);
+  const myQJob = (isQuest || isBogach) && s ? s.qJobs?.[me] : undefined;
   const myQTask = s && map && myQJob !== undefined ? cellTaskOf(s, map, myQJob.cellIdx) : null;
   const inStealth = !!mePlayer?.stealth;
   const coinsActive = map?.startCoins !== undefined; // монеты включены на карте
@@ -297,6 +299,13 @@ export default function GameScreen() {
   const hpRes = isRubg || map?.resMode === 'hp' || questMixed;
   const coinsRes = !hpRes && coinsOnly;
   const skipCoinsNeed = Math.max(0, Math.floor(map?.skipCoins ?? SKIP_COINS_DEFAULT)); // цена пропуска в бронзе
+  /* v0.104 БОГАЧ: ячейка, где Я выбираю задание (первый вошедший) + список её вариантов */
+  const myPick = isBogach && s && map ? (Object.entries(s.qPicks ?? {}).find(([, pk]) => pk.by === me)?.[0] ?? null) : null;
+  const myPickIdx = myPick !== null ? Number(myPick) : -1;
+  const myPickList = myPickIdx >= 0 ? bogachTaskList(map!, myPickIdx) : [];
+  /* v0.104 БОГАЧ: мои иммунитеты торговцев (ждут активации / тикают) */
+  const myImmunes = (isBogach || isQuest) && s ? s.qImmunes?.[me] ?? [] : [];
+  const [immOpen, setImmOpen] = useState(false); // окно «Иммунитеты» (активация ТОЛЬКО до старта задания)
   const task = s && map && ch ? cellTaskOf(s, map, ch.cellIdx) : null;
   /* v0.70 ТОЛЬКО ПО КОДУ: у задания ручные кнопки отключены — победа/поражение решают только коды CodeSearch */
   const chCodeOnly = !!task?.codeOnly;
@@ -625,7 +634,7 @@ export default function GameScreen() {
   /* ---------- QUEST: NPC в радиусе (звук + диалог) — ближайший к моей фишке ---------- */
   const myJourneyPos = s?.journeyPos?.[me];
   const nearNpc = useMemo(() => {
-    if (!isQuest || !s || s.phase !== 'playing' || !map || !mePlayer || !mePlayer.alive || mePlayer.spect) return null;
+    if ((!isQuest && !isBogach) || !s || s.phase !== 'playing' || !map || !mePlayer || !mePlayer.alive || mePlayer.spect) return null;
     if (!myJourneyPos) return null;
     /* ПАТРУЛЬ (v0.52): NPC с маршрутом считаем в его ТЕКУЩЕЙ точке (формула от времени партии)
        — говорить можно с идущим NPC; тик таймера обновляет позицию дважды в секунду */
@@ -643,7 +652,7 @@ export default function GameScreen() {
       if (!best || d < bestD) { best = { npc: n, def }; bestD = d; }
     }
     return best;
-  }, [isQuest, s, map, mePlayer, myJourneyPos?.x, myJourneyPos?.y, tick]);
+  }, [isQuest, isBogach, s, map, mePlayer, myJourneyPos?.x, myJourneyPos?.y, tick]);
   const [dlgNpcId, setDlgNpcId] = useState<string | null>(null);
   const [dlgNode, setDlgNode] = useState<string | null>(null);
   const [tradeNpcId, setTradeNpcId] = useState<string | null>(null); // v0.51: открыто окно торговли с NPC
@@ -2655,6 +2664,8 @@ export default function GameScreen() {
         {map?.mode === 'classic1p' && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky" title="RETROPOLIA на одного: победа — пройти ВСЕ задания карты">RETROPOLIA SOLO</span>}
         {map?.mode === 'quest' && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-teal">QUEST</span>}
         {isQuestSolo && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky">QUEST SOLO</span>}
+        {/* v0.104 БОГАЧ: чип режима + счётчик закрытых ячеек у игрока */}
+        {isBogach && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="БОГАЧ: монетная битва — кончились монеты, вылетел. Победит последний богатый">БОГАЧ</span>}
         {isQuest && s?.phase === 'playing' && map && (() => {
           const total = map.cells.filter((c) => c.type === 'task').length;
           const done = (s.qDone?.[me] ?? []).length;
@@ -2687,6 +2698,12 @@ export default function GameScreen() {
         {isSkill && s.phase === 'playing' && !s.mapless && (
           <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="Лимит ходов хоста в SKILL CHALLENGE">
             ХОД {Math.min(s.turnNo ?? 1, SKILL_TURNS)}/{SKILL_TURNS}
+          </span>
+        )}
+        {/* v0.104 БОГАЧ: счётчик заходов на ячейки заданий (если лимит задан картой) */}
+        {isBogach && s.phase === 'playing' && !!map?.entryLimit && (
+          <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky" title="Лимит заходов на ячейки заданий">
+            ЗАХОД {Math.min((s.qEntries?.[me] ?? 0), Math.floor(map.entryLimit))}/{Math.floor(map.entryLimit)}
           </span>
         )}
         <span className={`w-2 h-2 ${st.netInfo.online ? 'bg-teal' : 'bg-gold'}`} />
@@ -2749,6 +2766,12 @@ export default function GameScreen() {
         </div>
         <div className="flex items-center gap-1.5 ml-auto">
           {myTurn && streaming && <span className="font-pixel text-[7px] text-coral blink-hard">LIVE</span>}
+          {/* v0.104 БОГАЧ: иммунитеты торговцев — активация до старта задания */}
+          {isBogach && (
+            <GhostBtn small onClick={() => { setImmOpen(true); sfx.click(); }} title="Купленные иммунитеты: активируйте ДО старта задания">
+              🛡 Иммунитеты{myImmunes.length > 0 ? ` · ${myImmunes.length}` : ''}
+            </GhostBtn>
+          )}
           <GhostBtn small onClick={() => { setInvOpen(true); sfx.click(); }}>
             {Ic.grid(12)} Инвентарь{invCount > 0 ? ` · ${invCount}` : ''}{incomingTrades.length > 0 ? ' 💼' : ''}
           </GhostBtn>
@@ -4144,23 +4167,32 @@ export default function GameScreen() {
       {/* ---------- осмотр ячейки на карте ---------- */}
       {inspectIdx !== null && <CellInspectModal idx={inspectIdx} onClose={() => setInspectIdx(null)} />}
 
-      {/* ==================== QUEST: интерфейс режима ==================== */}
-      {isQuest && s.phase === 'playing' && mePlayer && mePlayer.alive && !mePlayer.spect && (
+      {/* ==================== QUEST / БОГАЧ: интерфейс режима ====================
+          v0.104: в БОГАЧЕ окно задания общее — играют ВСЕ вошедшие на ячейку;
+          вместо «Уйти = поражение» — «Пропустить» за монеты (иммунитет — бесплатно). */}
+      {(isQuest || isBogach) && s.phase === 'playing' && mePlayer && mePlayer.alive && !mePlayer.spect && (
         <>
           {/* ЛИЧНОЕ ЗАДАНИЕ (на доверии, как в RUBG): вошёл в ячейку — играй ИНДИВИДУАНО.
               Других не останавливает, трансляции нет (в QUEST SOLO хост стримит зрителям). */}
           {myQJob !== undefined && myQTask && (() => {
             const qName = qRomDef?.name ?? myQTask.romId;
+            /* v0.104 БОГАЧ: бесплатный пропуск? — активный иммунитет торговца на платформу задания
+               (НЕ сгорает, тикает срок) или джокер/радость-иммунитет (карточки — сгорают). */
+            const nowMs = Date.now();
+            const activeImm = (s.qImmunes?.[me] ?? []).find((x) => x.plat === myQTask.plat && !!x.activatedAt && nowMs < x.activatedAt + x.minutes * 60000);
+            const joyFree = !!mePlayer?.freeSkip || ((myQTask.plat === 'nes' || myQTask.plat === 'sega') && (mePlayer?.inventory ?? []).some((c) => c.effect?.type === (myQTask.plat === 'nes' ? 'immuneNes' : 'immuneSega')));
+            const bogachFree = !!activeImm || joyFree;
+            const bogachWin = Math.max(0, Math.floor(map.taskWinCoins ?? 10));
             return (
               <div className={peekMap ? 'hidden' : undefined}>
               <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.78)] p-3">
                 <div className={`pixel-panel pixel-corners p-4 ${taskWinCls} w-full max-h-[93vh] overflow-y-auto`}>
                   <div className="flex items-center justify-between gap-3 flex-wrap min-w-0">
-                    <div className="font-display uppercase text-lg text-teal break-words min-w-0 flex items-center gap-2">
-                      <PlayerIcon pid={me} size={20} /> 🧭 ЗАДАНИЕ · {myQTask.title}
+                    <div className={`font-display uppercase text-lg break-words min-w-0 flex items-center gap-2 ${isBogach ? 'text-gold' : 'text-teal'}`}>
+                      <PlayerIcon pid={me} size={20} /> {isBogach ? '💰 ОБЩЕЕ ЗАДАНИЕ' : '🧭 ЗАДАНИЕ'} · {myQTask.title}
                     </div>
                     {taskSizeBtns}
-                    <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myQJob.cellIdx + 1} · играешь ТОЛЬКО ты</span>
+                    <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myQJob.cellIdx + 1} · {isBogach ? 'играют ВСЕ вошедшие на ячейку' : 'играешь ТОЛЬКО ты'}</span>
                   </div>
                   <div className="grid md:grid-cols-[220px_1fr] gap-4 mt-2">
                     <div className="space-y-3 min-w-0">
@@ -4200,7 +4232,9 @@ export default function GameScreen() {
                   )}
                         </div>
                       </div>
-                      <p className="text-[10px] text-faint">Режим доверия — победа и поражение на твоей совести. Каждый игрок проходит задания САМ: выполненные засчитываются только тебе (цели концовок и квестов — личные).</p>
+                      <p className="text-[10px] text-faint">{isBogach
+                        ? `Общее задание: все вошедшие на ячейку играют ОДНУ игру. Первый ПОБЕДИВШИЙ получает +${bogachWin} бронзы${bogachWin ? '' : ' (награда не назначена)'}, игры остальных в этот миг останавливаются и с них списывается столько же. Пропуск — ${skipCoinsNeed} бронзы${bogachFree ? ' — У ВАС ИММУНИТЕТ: бесплатно' : ''}.`
+                        : 'Режим доверия — победа и поражение на твоей совести. Каждый игрок проходит задания САМ: выполненные засчитываются только тебе (цели концовок и квестов — личные).'}</p>
                       {!qArmed ? (
                         <>
                           <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.start(); setQArmed(true); }}>
@@ -4217,10 +4251,12 @@ export default function GameScreen() {
                             </p>
                           ) : (
                             <div className="grid grid-cols-2 gap-2">
-                              <PxBtn color="teal" onClick={() => { sfx.success(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: true }); }}>
-                                🏆 ПОБЕДА
+                              <PxBtn color="teal" onClick={() => { sfx.success(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: true }); }}
+                                title={isBogach ? `Первый победивший получает +${bogachWin} бронзы — и игры остальных остановятся` : undefined}>
+                                {isBogach ? `🏆 ПОБЕДА (первому +${bogachWin})` : '🏆 ПОБЕДА'}
                               </PxBtn>
-                              <PxBtn color="coral" onClick={() => { sfx.fail(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false }); }}>
+                              <PxBtn color="coral" onClick={() => { sfx.fail(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false }); }}
+                                title={isBogach ? `Проигрыш: −${skipCoinsNeed} бронзы` : undefined}>
                                 💀 ПОРАЖЕНИЕ
                               </PxBtn>
                             </div>
@@ -4236,18 +4272,24 @@ export default function GameScreen() {
                               {Ic.rotate(13)} Перезапуск
                             </GhostBtn>
                             <GhostBtn
-                              title={qLeaveArm
-                                ? 'Подтвердить: уйти И ПОЛУЧИТЬ ПОРАЖЕНИЕ (−HP, провал в счёт)'
-                                : 'Уйти = ПОРАЖЕНИЕ: спишутся время/попытка и HP, провал засчитается. Зайти снова можно.'}
-                              className={qLeaveArm ? 'border-coral text-coral' : undefined}
+                              title={isBogach
+                                ? (bogachFree
+                                  ? 'ИММУНИТЕТ действует: пропуск этого задания БЕСПЛАТНЫЙ'
+                                  : `Пропустить задание и уйти с ячейки: −${skipCoinsNeed} бронзы${activeImm ? '' : '. Купите иммунитет у торговца — будет бесплатно'}`)
+                                : (qLeaveArm
+                                  ? 'Подтвердить: уйти И ПОЛУЧИТЬ ПОРАЖЕНИЕ (−HP, провал в счёт)'
+                                  : 'Уйти = ПОРАЖЕНИЕ: спишутся время/попытка и HP, провал засчитается. Зайти снова можно.')}
+                              className={qLeaveArm && !isBogach ? 'border-coral text-coral' : undefined}
                               onClick={() => {
-                                if (!qLeaveArm) { setQLeaveArm(true); return; } // первый клик — предупреждение
+                                if (!isBogach && !qLeaveArm) { setQLeaveArm(true); return; } // первый клик — предупреждение
                                 setQLeaveArm(false);
                                 dispatch({ t: 'qJobLeave', id: me, cellIdx: myQJob.cellIdx });
                                 setQArmed(false);
                               }}
                             >
-                              {qLeaveArm ? '💀 Точно уйти? (= поражение)' : '🚪 Уйти (= поражение)'}
+                              {isBogach
+                                ? (bogachFree ? `🛡 Пропустить (бесплатно${activeImm ? `, иммунитет ${taskPlatLabel(activeImm.plat)}` : ''})` : `⏭ Пропустить (−${skipCoinsNeed} бронзы)`)
+                                : (qLeaveArm ? '💀 Точно уйти? (= поражение)' : '🚪 Уйти (= поражение)')}
                             </GhostBtn>
                           </div>
                         </>
@@ -4267,6 +4309,64 @@ export default function GameScreen() {
                 💬 ГОВОРИТЬ С «{nearNpc.def.name}» [E]
               </PxBtn>
             </div>
+          )}
+
+          {/* ============ v0.104 БОГАЧ: ВЫБОР ЗАДАНИЯ — первый вошедший решает, что играют ВСЕ ============ */}
+          {isBogach && myPickIdx >= 0 && myPickList.length > 1 && (
+            <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.82)] p-3">
+              <div className="pixel-panel pixel-corners p-4 w-full max-w-[560px] max-h-[92vh] overflow-y-auto">
+                <div className="font-display uppercase text-lg text-gold mb-1">🎲 Выберите задание ячейки №{myPickIdx + 1}</div>
+                <p className="text-[10px] text-dim leading-snug mb-3">Вы вошли ПЕРВЫМ — выбирайте игру для ВСЕХ: каждый, кто зайдёт на ячейку, остановится и будет играть выбранное задание вместе с вами.</p>
+                <div className="space-y-2">
+                  {myPickList.map((tk, vi) => {
+                    const rDef = st.roms.find((r) => r.id === tk.romId);
+                    const rc = Math.max(0, Math.floor(tk.winCoins !== undefined ? tk.winCoins : map.taskWinCoins ?? 10));
+                    return (
+                      <button key={`${tk.romId}-${vi}`} className="w-full text-left border-[3px] border-edge hover:border-gold bg-[rgba(255,255,255,0.04)] p-2 flex items-center gap-3"
+                        onClick={() => { sfx.coin(); dispatch({ t: 'qPick', id: me, cellIdx: myPickIdx, v: vi }); }}>
+                        <img src={cartridgeArt(tk.title, rDef?.name ?? tk.romId, myPickIdx + vi)} alt="" className="w-[64px] h-[64px] border-2 border-edge object-cover shrink-0" />
+                        <span className="min-w-0">
+                          <span className="block font-display uppercase text-sm text-gold truncate">{vi === 0 ? '① ' : vi === 1 ? '② ' : '③ '}{tk.title}</span>
+                          <span className="block text-[10px] text-dim truncate">{rDef?.name ?? tk.romId} · {consoleLabel(rDef?.ext)}</span>
+                          {tk.desc && <span className="block text-[10px] text-faint line-clamp-2">{tk.desc}</span>}
+                          <span className="block text-[10px] text-teal">Награда первому: +{rc} бронзы</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ============ v0.104 БОГАЧ: ИММУНИТЕТЫ — активация ТОЛЬКО до старта задания ============ */}
+          {isBogach && immOpen && (
+            <Modal title="🛡 Мои иммунитеты" onClose={() => setImmOpen(false)}>
+              <p className="text-[11px] text-dim leading-snug mb-2">Куплены у торговцев. Активируйте ДО входа в ячейку задания — с активации тикает срок, и пропуск заданий этой платформы БЕСПЛАТНЫЙ, пока иммунитет действует. С активным заданием активировать нельзя.</p>
+              {myImmunes.length === 0 && <p className="text-[11px] text-faint">Иммунитетов нет — купите у торговца (товар «Иммунитет на платформу»).</p>}
+              <div className="space-y-1.5">
+                {myImmunes.map((im) => {
+                  const nowMs = Date.now();
+                  const leftMs = im.activatedAt ? im.activatedAt + im.minutes * 60000 - nowMs : 0;
+                  const active = !!im.activatedAt && leftMs > 0;
+                  return (
+                    <div key={im.id} className="flex items-center justify-between gap-2 border-2 border-edge px-2 py-1.5">
+                      <span className="text-[11px]">
+                        <b className="text-gold">🛡 {taskPlatLabel(im.plat)}</b> · {im.minutes} мин
+                        {active && <span className="text-teal"> · действует ещё {Math.max(1, Math.ceil(leftMs / 60000))} мин</span>}
+                        {im.activatedAt && !active && <span className="text-faint"> · срок вышел</span>}
+                      </span>
+                      {!im.activatedAt && (
+                        <PxBtn small color="teal" disabled={!!myQJob} title={myQJob ? 'Сначала завершите текущее задание' : 'Активировать иммунитет (запустится срок)'}
+                          onClick={() => { sfx.success(); dispatch({ t: 'qImmuneOn', id: me, immId: im.id }); }}>
+                          Активировать
+                        </PxBtn>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </Modal>
           )}
         </>
       )}

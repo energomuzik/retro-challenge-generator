@@ -1,5 +1,6 @@
 import type { CardDef, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
-import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
+import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
+import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
 import { CELL, cellAtPoint, cellCenter, hopTargetOf, prevCellOf, startCellIdx, stepNext, stepPrev, clampMoveSpeed, DEF_MOVE_SPEED } from './render';
@@ -75,8 +76,10 @@ export type Action =
   | { t: 'rubgStopThief'; id: string } // RUBG: жертва нажала «Остановить вора» (кулаул 15 с)
   | { t: 'rubgStealth'; id: string } // RUBG: активировать стелс (сгорает карта стелса)
   | { t: 'rubgBelt'; id: string; itemId: string; on: boolean } // RUBG: надеть/снять предмет с ПОЯСА (на поясе макс. 3 — только они имеют кнопки действий; пояс не воруется)
-  | { t: 'qJobDone'; id: string; cellIdx: number; win: boolean; byCode?: boolean } // QUEST: игрок закрыл ЛИЧНОЕ задание (доверие): победа — награда и прогресс, поражение — плата и счётчик провалов; v0.68 byCode — зачтено по памяти (условие CodeSearch)
-  | { t: 'qJobLeave'; id: string; cellIdx: number } // QUEST: игрок ушёл из личного задания — v0.101: УЙТИ = ПОРАЖЕНИЕ (те же последствия, что win:false)
+  | { t: 'qJobDone'; id: string; cellIdx: number; win: boolean; byCode?: boolean } // QUEST: игрок закрыл ЛИЧНОЕ задание (доверие): победа — награда и прогресс, поражение — плата и счётчик провалов; v0.68 byCode — зачтено по памяти (условие CodeSearch). v0.104: и в БОГАЧЕ
+  | { t: 'qJobLeave'; id: string; cellIdx: number } // QUEST: игрок ушёл из личного задания — v0.101: УЙТИ = ПОРАЖЕНИЕ (те же последствия, что win:false). v0.104: и в БОГАЧЕ (= пропуск)
+  | { t: 'qPick'; id: string; cellIdx: number; v: number } // v0.104 БОГАЧ: ПЕРВЫЙ вошедший выбрал вариант задания ячейки — задание становится ЕДИНЫМ для всех
+  | { t: 'qImmuneOn'; id: string; immId: string } // v0.104 БОГАЧ: игрок АКТИВИРОВАЛ иммунитет торговца (до старта задания) — пошли минуты срока
   | { t: 'qCardAck'; id: string } // QUEST: игрок подтвердил выпавшую карточку бонуса/ловушки
   | { t: 'dialogPick'; id: string; npcId: string; nodeId: string; optIdx: number } // QUEST: выбор игрока в диалоге NPC (награда/флаг/переход/концовка)
   | { t: 'npcClaim'; id: string; npcId: string; questId: string } // QUEST: сдача квеста NPC — награда + снятие стен
@@ -159,8 +162,28 @@ export function newSession(code: string, mapId: string, hostId: string, hostName
   };
 }
 
-export const cellTaskOf = (s: GameSession, map: GameMap, idx: number): TaskDef | null =>
-  s.sessionTasks[idx] ?? map.cells[idx]?.task ?? null;
+export const cellTaskOf = (s: GameSession, map: GameMap, idx: number): TaskDef | null => {
+  /* v0.104 БОГАЧ: задание ячейки — ВЫБРАННЫЙ вариант (0 = task, 1..2 = taskVariants).
+     Пока выбор не сделан — задача ещё «не определена», возвращаем null (это же окно выбора
+     решает по cellTaskListOf). sessionTasks (восстановление разбитых ячеек) в БОГАЧЕ не пишется. */
+  if (map.mode === 'bogach') {
+    const list = bogachTaskList(map, idx);
+    if (!list.length) return null;
+    const k = Math.max(0, Math.min(list.length - 1, s.qChosen?.[idx] ?? 0));
+    return list[k] ?? null;
+  }
+  return s.sessionTasks[idx] ?? map.cells[idx]?.task ?? null;
+};
+
+/** v0.104 БОГАЧ: список вариантов задания ячейки — [task, ...taskVariants] (1–3 задания). */
+export const bogachTaskList = (map: GameMap, idx: number): TaskDef[] => {
+  const c = map.cells[idx];
+  if (!c || c.type !== 'task') return [];
+  const list: TaskDef[] = [];
+  if (c.task) list.push(c.task);
+  for (const v of c.taskVariants ?? []) if (v) list.push(v);
+  return list;
+};
 
 /* v0.99 СКРЫТЫЕ РОМЫ/ЗАДАНИЯ (cell.hideInfo): ОТКРЫТА ЛИ ячейка ДЛЯ ЭТОГО ЗРИТЕЛЯ.
    Общий экран (Ретрополия/RUBG/JOURNEY — «трансляция»): работает глобальный s.revealed —
@@ -276,6 +299,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     base.qCaptureBoss = base.qCaptureBoss ?? {};
     base.qTaskAt = base.qTaskAt ?? {};
     base.cutsceneDone = base.cutsceneDone ?? {};
+    /* v0.104: БОГАЧ — выборы вариантов/победители ячеек/иммунитеты/счётчик заходов */
+    base.qChosen = base.qChosen ?? {};
+    base.qCellDone = base.qCellDone ?? {};
+    base.qPicks = base.qPicks ?? {};
+    base.qImmunes = base.qImmunes ?? {};
+    base.qEntries = base.qEntries ?? {};
     if (base.rubg !== undefined) {
       base.rubg.jobs = base.rubg.jobs ?? {};
       base.rubg.looted = base.rubg.looted ?? [];
@@ -331,6 +360,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
   if (!s.qCaptureBoss) s.qCaptureBoss = {};
   if (!s.qTaskAt) s.qTaskAt = {};
   if (!s.cutsceneDone) s.cutsceneDone = {};
+  /* v0.104: БОГАЧ — выборы вариантов/победители ячеек/иммунитеты/счётчик заходов */
+  if (!s.qChosen) s.qChosen = {};
+  if (!s.qCellDone) s.qCellDone = {};
+  if (!s.qPicks) s.qPicks = {};
+  if (!s.qImmunes) s.qImmunes = {};
+  if (!s.qEntries) s.qEntries = {};
   if (s.rubg !== undefined) {
     // старые сессии RUBG без части полей
     s.rubg.jobs = s.rubg.jobs ?? {};
@@ -351,8 +386,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
   const nextTurn = () => {
     const al = alive();
     /* SKILL CHALLENGE: играет ОДИН хост — «остался один» это норма; конец партии
-       только по исчерпанию ресурсов (поражение) или по лимиту 25 ходов (пройдено) */
-    if (al.length === 0 || (al.length <= 1 && map.mode !== 'skill')) {
+       только по исчерпанию ресурсов (поражение) или по лимиту 25 ходов (пройдено).
+       v0.104: СОЛО-режимы (classic1p/journey1p/quest1p) — тоже: «остался один»
+       это НОРМА (игрок один!), мгновенного конца нет: победа — soloTasksWin
+       (строка ниже по потоку), поражение — на нуле ресурсов (checkEnd). */
+    if (al.length === 0 || (al.length <= 1 && map.mode !== 'skill' && !isSoloMode(map.mode))) {
       s.phase = 'over';
       s.winner = al[0]?.id ?? null;
       if (s.winner) log(`🏆 ${al[0].name} — ПОБЕДИТЕЛЬ!`);
@@ -579,6 +617,85 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     }
     log(`💢 ${p.name} проиграл задание №${cellIdx + 1}${byCode ? ' — ПОРАЖЕНИЕ ПО КОДУ 🤖' : ''}${note ?? ''} (провалов: ${s.qFails[p.id]})`);
     checkElim();
+  };
+  /* ---------- v0.104: БОГАЧ — общие задания, иммунитеты, лимит заходов ----------
+     bogachWinCoins(cellIdx) — награда ПЕРВОМУ победившему (цена задания → стандарт карты → 10).
+     Она же — цена «остановки»: когда первый победил, у остальных игра обрывается и списывается
+     СТОЛЬКО ЖЕ (экономика симметрична: победитель забирает то, что теряют проигравшие).
+     immuneActiveOf — активный иммунитет игрока на платформу задания (куплен у торговца,
+     активирован ДО старта, минуты срока не вышли): пропуск такого задания бесплатен.
+     bogachSkipFreeJoy — «джокер»/радости-иммунитеты (карточки) тоже дают бесплатный пропуск.
+     entryGate — расход ЗАХОДА на ячейку задания (map.entryLimit): исчерпан — задание не
+     открывается; в соло-режимах исчерпание лимита = поражение партии. */
+  const bogachWinCoins = (cellIdx: number): number => {
+    const tk = bogachTaskList(map, cellIdx)[0];
+    if (tk?.winCoins !== undefined) return Math.max(0, Math.floor(tk.winCoins));
+    if (map.taskWinCoins !== undefined) return Math.max(0, Math.floor(map.taskWinCoins));
+    return BOGACH_WIN_COINS;
+  };
+  const immuneActiveOf = (pid: string, plat: TaskPlat | undefined): { id: string; plat: TaskPlat; minutes: number; activatedAt?: number } | null => {
+    if (!plat) return null;
+    const now = Date.now();
+    for (const im of s.qImmunes?.[pid] ?? []) {
+      if (im.plat !== plat || !im.activatedAt) continue;
+      if (now < im.activatedAt + Math.max(1, Math.floor(im.minutes)) * 60000) return im;
+    }
+    return null;
+  };
+  const bogachSkipFreeJoy = (p: PlayerState, plat: TaskPlat | undefined): string | null => {
+    if (p.freeSkip) return 'джокер';
+    if (plat === 'nes' || plat === 'sega') {
+      const has = (p.inventory ?? []).some((c) => c.effect?.type === (plat === 'nes' ? 'immuneNes' : 'immuneSega'));
+      if (has) return plat === 'nes' ? 'иммунитет к NES' : 'иммунитет к SEGA';
+    }
+    return null;
+  };
+  const bogachConsumeJoy = (p: PlayerState, plat: TaskPlat | undefined) => {
+    if (p.freeSkip) { p.freeSkip = false; return; }
+    if (plat === 'nes' || plat === 'sega') {
+      const kind = plat === 'nes' ? 'immuneNes' : 'immuneSega';
+      const idx = (p.inventory ?? []).findIndex((c) => c.effect?.type === kind);
+      if (idx >= 0) { p.inventory!.splice(idx, 1); }
+    }
+  };
+  const bogachPay = (p: PlayerState, amount: number, what: string): void => {
+    if (amount <= 0) return;
+    p.coinsLeft = Math.max(0, (p.coinsLeft ?? 0) - amount);
+    log(`🪙 ${p.name}: ${what} −${amount} бронзы — капитал ${coinsStr(p.coinsLeft)}`);
+  };
+  /** ЛИМИТ ЗАХОДОВ: true — задание можно открывать (заход списан); false — лимит исчерпан.
+      map.entryLimit 0/нет — без лимита. В соло-режимах исчерпание = ПОРАЖЕНИЕ партии. */
+  const entryGate = (p: PlayerState): boolean => {
+    const lim = Math.max(0, Math.floor(map.entryLimit ?? 0));
+    if (!lim) return true;
+    s.qEntries = s.qEntries ?? {};
+    const used = s.qEntries[p.id] ?? 0;
+    if (used >= lim) {
+      if (isSoloMode(map.mode) && map.mode !== 'skill') {
+        p.alive = false;
+        s.phase = 'over';
+        s.winner = null;
+        log(`❌ ${p.name} исчерпал лимит заходов (${lim}) — ЧЕЛЛЕНДЖ ПРОВАЛЕН!`);
+      } else if (!s.qEntries[`warn:${p.id}`]) {
+        s.qEntries[`warn:${p.id}`] = 0;
+        log(`🚧 ${p.name}: лимит заходов (${lim}) исчерпан — новые задания не открываются`);
+      }
+      return false;
+    }
+    s.qEntries[p.id] = used + 1;
+    if (s.qEntries[p.id] >= lim) log(`🚧 ${p.name}: последний заход на ячейки (${lim} из ${lim}) — дальше задания не откроются`);
+    return true;
+  };
+  /* ---------- v0.104: БОГАЧ — открыть общее задание ячейки вошедшему игроку ----------
+   Задание ячейки ЕДИНОЕ для всех (выбранный вариант). Вызывается из входа на ячейку,
+   из qPick (когда выбор сделан — всем вошедшим сразу) и из поимки боссом. */
+  const bogachStartJob = (pl: PlayerState, idx: number): void => {
+    const tk = cellTaskOf(s, map, idx);
+    if (!tk) return;
+    s.qJobs = s.qJobs ?? {};
+    if (s.qJobs[pl.id]) return;
+    s.qJobs[pl.id] = { cellIdx: idx, startedAt: Date.now() };
+    log(`🎯 ${pl.name} играет ОБЩЕЕ задание «${tk.title.slice(0, 30)}» — все вошедшие на ячейку играют его одновременно`);
   };
   /* ---------- v0.55: SKILL «СЛУЧАЙНЫЕ ЗАДАНИЯ» — случайная ячейка с заданием ----------
    Приоритет — ещё НЕ сыгранные (не в skillDone); если всё сыграно — любая с заданием. */
@@ -831,10 +948,27 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     for (const l of buyLines) {
       if (l.off.qty !== undefined && l.off.qty > 0) st.qty = st.qty ?? {};
       if (l.off.qty !== undefined && l.off.qty > 0 && st.qty) st.qty[l.off.id] = Math.max(0, (st.qty[l.off.id] ?? l.off.qty) - l.qty);
-      const what = l.off.title?.trim() || (l.off.kind === 'item' && l.off.item ? RUBG_ITEMS[l.off.item].name : '');
+      const what = l.off.title?.trim() || (l.off.kind === 'item' && l.off.item ? RUBG_ITEMS[l.off.item].name : l.off.kind === 'key' && l.off.key ? `ключ (${doorKeyName(l.off.key)})` : l.off.kind === 'immune' ? `иммунитет ${taskPlatLabel(l.off.plat)} ${Math.max(1, Math.floor(l.off.minutes ?? 5))} мин` : '');
+      const bought = `🛒 ${p.name} купил у «${npcName}» ${l.off.kind === 'key' ? '🔑' : l.off.kind === 'immune' ? '🛡' : ''} «${what}» за ${coinsStr(l.unit * l.qty)}${disc ? ` (скидка ${disc} %)` : ''}`;
       if (l.off.kind === 'item' && l.off.item) {
         for (let i = 0; i < l.qty; i++) rubgGiveItem(p, l.off.item);
-        log(`🛒 ${p.name} купил у «${npcName}» ${RUBG_ITEMS[l.off.item].icon} «${what}»×${l.qty} за ${coinsStr(l.unit * l.qty)}${disc ? ` (скидка ${disc} %)` : ''}`);
+        log(bought);
+      } else if (l.off.kind === 'key' && l.off.key) {
+        /* v0.104: ЦВЕТНОЙ КЛЮЧ В ПРОДАЖЕ — тот же механизм, что у награды NPC: открывает
+           дверь-стену того же цвета, НЕ расходуется. Повторная покупка лишняя — ключ уже есть. */
+        s.qKeys = s.qKeys ?? {};
+        const lst = s.qKeys[p.id] = s.qKeys[p.id] ?? [];
+        const had = lst.includes(l.off.key);
+        for (let i = 0; i < l.qty; i++) if (!lst.includes(l.off.key)) lst.push(l.off.key);
+        log(bought);
+        if (had) log(`ℹ Ключ этого цвета уже был — ключи не расходуются, второй не нужен`);
+      } else if (l.off.kind === 'immune' && l.off.plat) {
+        /* v0.104: ИММУНИТЕТ НА ПЛАТФОРМУ (5–30 мин) — ложится игроку, активируется ДО старта
+           задания; с активации тикает срок, пропуски заданий платформы бесплатны. */
+        s.qImmunes = s.qImmunes ?? {};
+        const lst = s.qImmunes[p.id] = s.qImmunes[p.id] ?? [];
+        for (let i = 0; i < l.qty; i++) lst.push({ id: `${l.off.id}-${Date.now()}-${i}-${Math.floor(Math.random() * 1e6).toString(36)}`, plat: l.off.plat, minutes: Math.max(1, Math.min(60, Math.floor(l.off.minutes ?? 5))) });
+        log(`${bought} — активируй ДО старта задания (кнопка «Иммунитеты»)`);
       } else if (l.off.res) {
         const amt = Math.max(1, Math.floor(l.off.amount ?? 0)) * l.qty;
         if (l.off.res === 'time') p.secLeft += amt;
@@ -1612,6 +1746,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           p.hp = RUBG_HP_MAX;
           if (map.startCoins === undefined) p.coinsLeft = 100;
         }
+        /* v0.104 БОГАЧ: кошелёк гарантирован — 1 серебряная монета (100 бронзы) по пресету;
+           если автор обнулил стартовый капитал, минимум 1 серебряная, иначе партия не может начаться */
+        if (map.mode === 'bogach' && (p.coinsLeft ?? 0) <= 0) p.coinsLeft = 100;
         if (soloMode) p.spect = !p.isHost; // играет только хост — остальные смотрят
         if (map.mode === 'rubg') { p.hp = RUBG_HP_MAX; p.items = [{ ...rubgMkItem('lockpick'), belt: true }]; p.stealth = false; } // стартовая ОТМЫЧКА на поясе — механику взлома можно пробовать сразу
       }
@@ -1656,9 +1793,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
          сразу панель готовности хоста (без кубиков). SKILL CHALLENGE — на карте, с жеребьёвкой. */
       if (map.mapless) s.rollOffWinner = s.players.find((p) => p.isHost)?.id ?? null;
       const taskTotal = map.cells.filter((c) => c.type === 'task').length;
+      const p0coins = coinsStr(s.players[0]?.coinsLeft ?? 100);
       log(map.mode === 'rubg'
         ? `🪂 RUBG! ${s.players.length} бойцов на борту. Самолёт летит — ПРЫГАЙТЕ, где хотите! Ресурс — полоска HP, у каждого ОТМЫЧКА 🔑 для ящиков. Побеждает последний живой!`
-        : isQuestMode(map.mode)
+        : map.mode === 'bogach'
+          ? `💰 БОГАЧ! У каждого ${p0coins} монет и свободная ходьба. Первый вошедший на ячейку ВЫБИРАЕТ задание — и ВСЕ вошедшие играют ЕГО одновременно. Пропуск −${Math.max(0, Math.floor(map.skipCoins ?? SKIP_COINS_DEFAULT))} бронзы, первый победивший +${Math.max(0, Math.floor(map.taskWinCoins ?? 10))} бронзы (остановленные платят столько же). Кончились монеты — вылетел. ПОБЕДИТ ПОСЛЕДНИЙ БОГАЧ!`
+          : isQuestMode(map.mode)
           ? `🗺 QUEST! ${isSoloMode(map.mode) ? 'Играет хост — зрители смотрят трансляцию. ' : 'Каждый играет ИНДИВИДУАНО, трансляции нет. '}Задания — на доверии: вошёл в ячейку, играй и жми «Победа/Поражение». Побеждает ПЕРВЫЙ, кто выполнит КОНЦОВКУ${(map.endings ?? []).length ? ` (концовок: ${(map.endings ?? []).length})` : ''}!`
           : map.mode === 'classic1p'
             ? `🎲 RETROPOLIA SOLO! Играет только хост (${sm} мин / ${st} поп.) — победа: пройти ВСЕ задания карты (заданий: ${taskTotal}).`
@@ -1820,6 +1960,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const p = s.players.find((x) => x.id === a.id);
       if (!p || p.spect || !p.alive) break;
       if (s.moving || s.challenge || s.pendingCard || s.quiz || s.awaitPost || gatingFx()) break;
+      /* v0.104 БОГАЧ: вошёл в ячейку задания — СТОИШЬ и играешь задание (ходьба заморожена,
+         пока не победил / не пропустил / не был остановлен победителем) */
+      if (map.mode === 'bogach' && s.qJobs?.[p.id]) break;
       const mszW = map.mw ?? map.cols * CELL_PX;
       const mszH = map.mh ?? map.rows * CELL_PX;
       let x = Math.max(0, Math.min(mszW, Number(a.x) || 0));
@@ -1900,6 +2043,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
             if (s.qJobs?.[p.id]) continue; // уже играешь личное задание
             const tk = cellTaskOf(s, map, i);
             if (!tk) continue; // задания нет — передышка
+            if (!entryGate(p)) continue; // v0.104: лимит заходов исчерпан — задания не открываются
             s.qJobs = s.qJobs ?? {};
             s.qJobs[p.id] = { cellIdx: i, startedAt: Date.now() };
             log(`🎯 ${p.name} взял задание «${tk.title.slice(0, 30)}» — ЛИЧНО, остальные не ждут`);
@@ -1915,9 +2059,65 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         }
         break;
       }
-      /* пересёк ячейку задания? вход = прошлый центр был ВНЕ прямоугольника, новый — ВНУТРИ.
+  /* пересёк ячейку задания? вход = прошлый центр был ВНЕ прямоугольника, новый — ВНУТРИ.
         КТО ПЕРВЫЙ пересёк — у того и задание: turn = этот игрок (все фишки замирают,
         остальные смотрят трансляцию — «всё как всегда»); после задания все снова ходят. */
+      /* v0.104 БОГАЧ: ячейка задания ЕДИНАЯ для всех. Первый вошедший ВЫБИРАЕТ задание
+         (если вариантов 2–3), все вошедшие останавливаются и играют ЕГО одновременно.
+         Пропуск — монеты (иммунитет/джокер — бесплатно); первый победил — награда ему,
+         игры остальных обрываются с той же суммой. */
+      if (map.mode === 'bogach') {
+        const capCell = s.qCaptureCell?.[p.id];
+        if (capCell !== undefined) {
+          const cr = cellRectOf(map, capCell);
+          if (cr === null || !(x >= cr.x && x < cr.x + cr.w && y >= cr.y && y < cr.y + cr.h)) delete s.qCaptureCell[p.id];
+        }
+        for (let i = 0; i < map.cells.length; i++) {
+          const c = map.cells[i];
+          const r = cellRectOf(map, i);
+          if (!r) continue;
+          const inNew = x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+          if (!inNew) continue;
+          const inOld = !!prev && prev.x >= r.x && prev.x < r.x + r.w && prev.y >= r.y && prev.y < r.y + r.h;
+          if (inOld) continue; // уже стоял в ней — вход был раньше
+          if (s.qCaptureCell?.[p.id] === i) continue; // v0.55: только что был оттащен боссом сюда — не срабатывает проходом
+          p.pos = i;
+          revealCell(s, p.id, i);
+          if (c.type === 'task') {
+            if (s.qCellDone[i] !== undefined) continue; // эту ячейку уже победили — закрыта навсегда
+            if (s.qJobs?.[p.id]) continue; // уже играешь общее задание
+            const list = bogachTaskList(map, i);
+            if (!list.length) continue; // задания нет — передышка
+            if (!entryGate(p)) continue; // лимит заходов исчерпан — ячейка молчит
+            /* выбор ещё не сделан и вариантов 2–3 — ПЕРВЫЙ вошедший выбирает (окно qPick) */
+            if (s.qChosen[i] === undefined && list.length > 1) {
+              /* ушедший с ячейки «выбиральщик» освобождает место — выбирает следующий вошедший */
+              if (s.qPicks?.[i]) {
+                const pr = cellRectOf(map, i);
+                const byP = s.journeyPos?.[s.qPicks[i].by];
+                const stillIn = pr && byP && byP.x >= pr.x && byP.x < pr.x + pr.w && byP.y >= pr.y && byP.y < pr.y + pr.h;
+                if (stillIn) continue; // выбор уже ждёт другого игрока — просто стоим
+                log(`🎲 ${s.players.find((q) => q.id === s.qPicks![i].by)?.name ?? 'Игрок'} ушёл с ячейки — выбор задания передаётся следующему вошедшему`);
+              }
+              s.qPicks = s.qPicks ?? {};
+              s.qPicks[i] = { by: p.id, ts: Date.now() };
+              log(`🎲 ${p.name} ПЕРВЫМ вошёл на ячейку ${posName(i)} — выбирает задание из ${list.length} вариантов`);
+              break;
+            }
+            if (s.qChosen[i] === undefined) s.qChosen[i] = 0; // вариант один — выбор не нужен
+            bogachStartJob(p, i);
+          } else if (c.type === 'bonus' || c.type === 'trap') {
+            const deck = c.type === 'bonus' ? map.bonusCards : map.trapCards;
+            if (!deck.length) continue;
+            const card = deck[Math.floor(Math.random() * deck.length)];
+            applyCard(p, card, true);
+            s.qCards = s.qCards ?? {};
+            s.qCards[p.id] = card;
+            log(`${c.type === 'bonus' ? '🌟 БОНУС' : '☠ ЛОВУШКА'} для ${p.name}: «${card.name}»`);
+          }
+        }
+        break;
+      }
       if (!s.challenge) {
         for (let i = 0; i < map.cells.length; i++) {
           const c = map.cells[i];
@@ -1932,6 +2132,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           if (inOld) continue; // уже стоял в ней — вход был раньше (перешёл границу — заново)
           if (s.captured[i] === p.id) continue; // своя ячейка — отдых
           if (!cellTaskOf(s, map, i)) continue; // задания нет — обычная ячейка
+          if (!entryGate(p)) continue; // v0.104: лимит заходов исчерпан — задания не открываются
           p.pos = i;
           revealCell(s, p.id, i);
           s.turn = Math.max(0, s.players.indexOf(p)); // игрок задания — «текущий»: камера/боссы/окно на нём
@@ -2218,7 +2419,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     }
     /* ---------- QUEST / QUEST SOLO: задания на доверии, карточки, диалоги и квесты NPC ---------- */
     case 'qJobDone': {
-      if (s.phase !== 'playing' || !isQuestMode(map.mode)) break;
+      if (s.phase !== 'playing' || (!isQuestMode(map.mode) && map.mode !== 'bogach')) break;
       const p = actor();
       if (!p || !p.alive || p.spect) break;
       const job = s.qJobs?.[p.id];
@@ -2228,6 +2429,62 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       delete s.qJobs![p.id];
       /* ресурс партии: время списывается по факту (минуты за задание); монеты/HP — платёж по итогам; попытка — 1 за вход (v0.101: общий код с qJobLeave) */
       questSpendResources(p, job.startedAt);
+      /* v0.104 БОГАЧ: общее задание ячейки — победа ТОЛЬКО первого (+награда, ячейка закрывается,
+         игры остальных обрываются с той же суммой); поражение/уход — цена пропуска (иммунитет — бесплатно) */
+      if (map.mode === 'bogach') {
+        const tk = cellTaskOf(s, map, a.cellIdx);
+        if (a.win) {
+          if (s.qCellDone[a.cellIdx] === undefined) {
+            const winC = bogachWinCoins(a.cellIdx);
+            if (winC > 0) { p.coinsLeft = Math.min(COINS_MAX, (p.coinsLeft ?? 0) + winC); log(`🪙 ${p.name} ПЕРВЫЙ прошёл задание «${(tk?.title ?? `№${a.cellIdx + 1}`).slice(0, 30)}» — награда +${winC} бронзы, капитал ${coinsStr(p.coinsLeft)}`); }
+            else log(`🏆 ${p.name} ПЕРВЫЙ прошёл задание «${(tk?.title ?? `№${a.cellIdx + 1}`).slice(0, 30)}» — награда не назначена`);
+            s.qDone = s.qDone ?? {};
+            const done = s.qDone[p.id] ?? [];
+            if (!done.includes(a.cellIdx)) done.push(a.cellIdx);
+            s.qDone[p.id] = done;
+            s.captured[a.cellIdx] = p.id; // визуальная отметка ячейки
+            s.qCellDone = s.qCellDone ?? {};
+            s.qCellDone[a.cellIdx] = p.id; // ячейка ЗАКРЫТА — задание больше не открывается никому
+            delete s.qPicks?.[a.cellIdx];
+            /* боссы на этой ячейке повержены (визуал/патрули — как в QUEST) */
+            for (const b of map.bosses ?? []) {
+              const bi = cellAtPoint(map, b.x, b.y);
+              if (bi !== a.cellIdx) continue;
+              s.qBossDown = s.qBossDown ?? {};
+              const lst = s.qBossDown[p.id] ?? [];
+              if (!lst.includes(b.id)) lst.push(b.id);
+              s.qBossDown[p.id] = lst;
+              s.qBossDownAt = s.qBossDownAt ?? {};
+              const downAt = s.qBossDownAt[p.id] = s.qBossDownAt[p.id] ?? {};
+              downAt[b.id] = Date.now();
+              if (s.qBossHoldAt?.[p.id]) delete s.qBossHoldAt[p.id][b.id];
+              const bdef = (map.bossLib ?? []).find((x) => x.id === b.bid);
+              const dms = bdef ? clipMs(bdef.defeated) : 0;
+              if (bdef && dms) pushFx({ kind: 'bossDef', player: p.id, cellIdx: a.cellIdx, bossId: b.id, ms: dms, after: 'none' });
+              if (bdef) log(`👹 Босс «${bdef.name}» ПОБЕЖДЕН игроком ${p.name}!`);
+            }
+            /* игры ВСЕХ остальных на этой ячейке ОБРЫВАЮТСЯ — каждый платит цену победителя */
+            let stopped = 0;
+            for (const [pid, j] of Object.entries(s.qJobs ?? {})) {
+              if (j.cellIdx !== a.cellIdx || pid === p.id) continue;
+              const loser = s.players.find((q) => q.id === pid);
+              if (!loser || !loser.alive || loser.spect) continue;
+              delete s.qJobs![pid];
+              bogachPay(loser, winC, `задание остановлено — победил ${p.name}`);
+              stopped++;
+            }
+            if (stopped) log(`⏹ Игры остановлены: ${stopped} игрок(ов) платят по ${winC} бронзы — гонка за награду закончилась`);
+          } else {
+            log(`ℹ ${p.name}: задание уже было закрыто — награда не начисляется`);
+          }
+        } else {
+          const stake = taskStakeOf(a.cellIdx);
+          bogachPay(p, stake.loseC, 'поражение в задании');
+          log(`💢 ${p.name} проиграл задание «${(tk?.title ?? `№${a.cellIdx + 1}`).slice(0, 30)}»${a.byCode ? ' — ПОРАЖЕНИЕ ПО КОДУ 🤖' : ''}`);
+        }
+        checkElim();
+        break;
+      }
       if (a.win) {
         s.qDone = s.qDone ?? {};
         const done = s.qDone[p.id] ?? [];
@@ -2272,16 +2529,76 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       break;
     }
     case 'qJobLeave': {
-      if (!isQuestMode(map.mode)) break;
+      if (!isQuestMode(map.mode) && map.mode !== 'bogach') break;
       const p = actor();
       const job = p ? s.qJobs?.[p.id] : undefined;
       if (!p || !job || job.cellIdx !== a.cellIdx) break;
       delete s.qJobs![p.id];
+      /* v0.104 БОГАЧ: ПРОПУСК общего задания — монеты по цене карты (5 по умолчанию).
+         АКТИВНЫЙ ИММУНИТЕТ на платформу задания (куплен у торговца, активирован до старта,
+         срок не вышел) делает пропуск БЕСПЛАТНЫМ — минуты срока продолжают тикать.
+         Радости-карточки (джокер / иммунитет к NES/SEGA) тоже дают бесплатный пропуск — и сгорают. */
+      if (map.mode === 'bogach') {
+        const tk = cellTaskOf(s, map, a.cellIdx);
+        const im = immuneActiveOf(p.id, tk?.plat);
+        const joy = bogachSkipFreeJoy(p, tk?.plat);
+        if (im) {
+          log(`🛡 ${p.name} пропустил задание «${(tk?.title ?? `№${a.cellIdx + 1}`).slice(0, 30)}» БЕСПЛАТНО — иммунитет ${taskPlatLabel(im.plat)} ещё ${Math.max(1, Math.ceil((im.activatedAt! + im.minutes * 60000 - Date.now()) / 60000))} мин`);
+        } else if (joy) {
+          bogachConsumeJoy(p, tk?.plat);
+          log(`🛡 ${p.name} пропустил задание БЕСПЛАТНО — сгорела радость «${joy}»`);
+        } else {
+          const stake = taskStakeOf(a.cellIdx);
+          bogachPay(p, stake.loseC, `пропуск задания «${(tk?.title ?? `№${a.cellIdx + 1}`).slice(0, 30)}»`);
+        }
+        checkElim();
+        break;
+      }
       /* v0.101 УЙТИ = ПОРАЖЕНИЕ (заказчик): «бесплатного» ухода больше нет — выход с задания
          до победы считается провалом: время/попытка списываются, счётчик провалов +1, HP минус,
          босс снова патрулирует. Зайти снова МОЖНО — ячейка не блокируется. */
       questSpendResources(p, job.startedAt);
       questDefeatApply(p, a.cellIdx, false, ' — УЙТИ = ПОРАЖЕНИЕ 🚪');
+      break;
+    }
+    /* ---------- v0.104 БОГАЧ: выбор варианта задания первым вошедшим + активация иммунитета ---------- */
+    case 'qPick': {
+      if (s.phase !== 'playing' || map.mode !== 'bogach') break;
+      const p = actor();
+      if (!p || !p.alive || p.spect) break;
+      const pick = s.qPicks?.[a.cellIdx];
+      if (!pick || pick.by !== p.id) break; // выбирает только тот, кто ПЕРВЫМ вошёл
+      const list = bogachTaskList(map, a.cellIdx);
+      const v = Math.max(0, Math.min(list.length - 1, Math.floor(a.v)));
+      if (s.qCellDone[a.cellIdx] !== undefined || !list.length) { delete s.qPicks![a.cellIdx]; break; }
+      s.qChosen = s.qChosen ?? {};
+      s.qChosen[a.cellIdx] = v; // задание ячейки ЕДИНОЕ для всех
+      delete s.qPicks![a.cellIdx];
+      const tk = list[v];
+      log(`🎲 ${p.name} выбрал задание ячейки ${posName(a.cellIdx)}: «${tk.title.slice(0, 40)}» — теперь его играют ВСЕ вошедшие`);
+      /* задание стартует СРАЗУ у всех, кто стоит на ячейке (включая выбравшего) */
+      for (const pl of s.players) {
+        if (!pl.alive || pl.spect) continue;
+        const jp = s.journeyPos?.[pl.id];
+        if (!jp) continue;
+        const r = cellRectOf(map, a.cellIdx);
+        if (!r) break;
+        if (jp.x >= r.x && jp.x < r.x + r.w && jp.y >= r.y && jp.y < r.y + r.h) bogachStartJob(pl, a.cellIdx);
+      }
+      break;
+    }
+    case 'qImmuneOn': {
+      if (s.phase !== 'playing') break;
+      const p = actor();
+      if (!p || !p.alive || p.spect) break;
+      const list = s.qImmunes?.[p.id] ?? [];
+      const im = list.find((x) => x.id === a.immId);
+      if (!im) break;
+      if (im.activatedAt) { log(`ℹ ${p.name}: иммунитет ${taskPlatLabel(im.plat)} уже активен`); break; }
+      /* АКТИВАЦИЯ ДО СТАРТА ЗАДАНИЯ: с заданием на руках активировать нельзя — только до входа в ячейку */
+      if (s.qJobs?.[p.id]) { log(`🛡 ${p.name}: сначала закончи текущее задание — иммунитет активируется ТОЛЬКО до старта задания`); break; }
+      im.activatedAt = Date.now();
+      log(`🛡 ${p.name} АКТИВИРОВАЛ иммунитет ${taskPlatLabel(im.plat)} на ${im.minutes} мин — пропуски заданий ${taskPlatLabel(im.plat)} бесплатны, пока он действует`);
       break;
     }
     case 'qCardAck': {
@@ -2456,6 +2773,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         if (done.includes(bossCell)) break; // это задание игрок УЖЕ победил
         s.qJobs = s.qJobs ?? {};
         s.qJobs[p.id] = { cellIdx: bossCell, startedAt: Date.now() };
+      } else if (map.mode === 'bogach') {
+        /* v0.104 БОГАЧ: босс доволок — пойманный играет ОБЩЕЕ задание ячейки босса (qJobs).
+           Ячейка закрыта/без задания — задание не откроется (босс просто оттащил). */
+        if (s.qJobs?.[p.id]) break;
+        if (s.qCellDone[bossCell] !== undefined) break; // ячейка уже закрыта
+        bogachStartJob(p, bossCell);
       } else {
         /* v0.76 JOURNEY: ОБЩЕЕ задание — те же проверки и тот же объект challenge, что при
            проходе ячейки задания ходьбой (journeyMove); пойманный игрок — «текущий». */

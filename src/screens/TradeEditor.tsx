@@ -1,5 +1,5 @@
-import type { GameMap, NpcDiscount, NpcShopOffer, PlacedNpc, RubgItemKind } from '../types';
-import { RUBG_ITEMS, coinsShort } from '../types';
+import type { DoorKey, GameMap, NpcDiscount, NpcShopOffer, PlacedNpc, RubgItemKind, TaskPlat } from '../types';
+import { RUBG_ITEMS, coinsShort, DOOR_KEYS, TASK_PLATS, doorKeyName, taskPlatLabel } from '../types';
 import { Modal, PxBtn, Stepper, Coin } from '../ui';
 import { uid } from '../db';
 import { sfx } from '../sound';
@@ -22,6 +22,8 @@ export const shopOfferLabel = (off: NpcShopOffer): string => {
     if (off.title?.trim()) return off.title.trim();
     return off.res === 'tries' ? `+${amt} попыток` : off.res === 'hp' ? `+${amt}% HP` : `+${amt} мин времени`;
   }
+  if (off.kind === 'key') return off.title?.trim() || `Ключ: ${doorKeyName(off.key ?? 'yellow')} 🔑`;
+  if (off.kind === 'immune') return off.title?.trim() || `Иммунитет ${taskPlatLabel(off.plat ?? 'nes')} · ${Math.max(1, Math.floor(off.minutes ?? 5))} мин 🛡`;
   const meta = off.item ? RUBG_ITEMS[off.item] : undefined;
   return off.title?.trim() || meta?.name || 'вещь';
 };
@@ -64,7 +66,7 @@ export function TradeShopEditor({ map, npc, onChange, onClose }: {
             {shop.map((off) => (
               <div key={off.id} className="border-2 border-edge px-2 py-1.5 space-y-1.5 bg-[rgba(7,9,18,0.5)]">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[15px] shrink-0">{off.kind === 'item' && off.item ? RUBG_ITEMS[off.item].icon : off.res === 'tries' ? '🎯' : off.res === 'hp' ? '❤' : '⏱'}</span>
+                  <span className="text-[15px] shrink-0">{off.kind === 'item' && off.item ? RUBG_ITEMS[off.item].icon : off.kind === 'key' ? '🔑' : off.kind === 'immune' ? '🛡' : off.res === 'tries' ? '🎯' : off.res === 'hp' ? '❤' : '⏱'}</span>
                   <span className="font-display text-[10px] uppercase text-paper truncate flex-1">{shopOfferLabel(off)}</span>
                   <button onClick={() => { onChange({ shop: shop.filter((x) => x.id !== off.id) }); sfx.fail(); }} className="text-faint hover:text-coral cursor-pointer px-0.5 text-[11px]" title="Снять товар с витрины">✕</button>
                 </div>
@@ -74,16 +76,33 @@ export function TradeShopEditor({ map, npc, onChange, onClose }: {
                     value={off.kind}
                     onChange={(ev) => {
                       const k = ev.target.value as NpcShopOffer['kind'];
-                      updOffer(off.id, k === 'item' ? { kind: k, item: off.item ?? 'medkit' } : { kind: k, res: off.res ?? 'time', amount: off.amount ?? 5 });
+                      updOffer(off.id,
+                        k === 'item' ? { kind: k, item: off.item ?? 'medkit' }
+                        : k === 'key' ? { kind: k, key: off.key ?? 'red', res: undefined, item: undefined }
+                        : k === 'immune' ? { kind: k, plat: off.plat ?? 'nes', minutes: off.minutes ?? 10, res: undefined, item: undefined }
+                        : { kind: k, res: off.res ?? 'time', amount: off.amount ?? 5, key: undefined, plat: undefined, minutes: undefined });
                     }}
                   >
                     <option value="item">вещь</option>
                     <option value="res">ресурс</option>
+                    <option value="key">ключ двери</option>
+                    <option value="immune">иммунитет на платформу</option>
                   </select>
                   {off.kind === 'item' ? (
                     <select className="field-in flex-1 min-w-0 px-1 py-0.5 text-[10px]" value={off.item ?? 'medkit'} onChange={(ev) => updOffer(off.id, { item: ev.target.value as RubgItemKind })}>
                       {Object.entries(RUBG_ITEMS).map(([k, m]) => <option key={k} value={k}>{m.icon} {m.name}</option>)}
                     </select>
+                  ) : off.kind === 'key' ? (
+                    <select className="field-in flex-1 min-w-0 px-1 py-0.5 text-[10px]" value={off.key ?? 'red'} onChange={(ev) => updOffer(off.id, { key: ev.target.value as DoorKey })}>
+                      {DOOR_KEYS.map((dk) => <option key={dk.id} value={dk.id}>🔑 {dk.name}</option>)}
+                    </select>
+                  ) : off.kind === 'immune' ? (
+                    <>
+                      <select className="field-in px-1 py-0.5 text-[10px]" value={off.plat ?? 'nes'} onChange={(ev) => updOffer(off.id, { plat: ev.target.value as TaskPlat })}>
+                        {TASK_PLATS.map((tp) => <option key={tp.id} value={tp.id}>🛡 {tp.name}</option>)}
+                      </select>
+                      <Stepper value={off.minutes ?? 10} onChange={(v) => updOffer(off.id, { minutes: v })} min={5} max={30} step={5} suffix=" мин" />
+                    </>
                   ) : (
                     <>
                       <select className="field-in px-1 py-0.5 text-[10px]" value={off.res ?? 'time'} onChange={(ev) => updOffer(off.id, { res: ev.target.value as 'time' | 'tries' | 'hp' })}>
