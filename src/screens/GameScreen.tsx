@@ -3,7 +3,7 @@ import { useApp, getRomData, useBlobImage } from '../store';
 import { dispatch, streamBus, type StreamPacket } from '../useGame';
 import { CELL, cellAtPoint, cellCenter, drawBoard, drawRubgOverlay, fitView, mapSize, plateMetrics, plateNumAt, plateRectOf, smoothPxPerFrame, jumpFrameFactor, DEF_MOVE_SPEED, clampMoveSpeed } from '../render';
 import { patrolPos } from '../patrol';
-import { cellHushed, cellRectOf, cellTaskOf, bogachTaskList, fmtClock, spentInfo } from '../engine';
+import { cellHushed, cellRectOf, cellTaskOf, bogachCellList, fmtClock, spentInfo } from '../engine';
 import { effectLabel } from './TaskEditor';
 import { cardArt, cartridgeArt } from '../assets';
 import SegaBox, { type SegaApi } from '../SegaBox';
@@ -302,7 +302,12 @@ export default function GameScreen() {
   /* v0.104 БОГАЧ: ячейка, где Я выбираю задание (первый вошедший) + список её вариантов */
   const myPick = isBogach && s && map ? (Object.entries(s.qPicks ?? {}).find(([, pk]) => pk.by === me)?.[0] ?? null) : null;
   const myPickIdx = myPick !== null ? Number(myPick) : -1;
-  const myPickList = myPickIdx >= 0 ? bogachTaskList(map!, myPickIdx) : [];
+  const myPickList = myPickIdx >= 0 ? bogachCellList(s!, map!, myPickIdx) : [];
+  /* v0.106 СПРИНТЕР: ожидание после пропуска/поражения, потраченное на задание, окно победителя */
+  const myQWait = isBogach && s ? s.qWait?.[me] : undefined;
+  const myQSpent = isBogach && s ? (s.qSpent?.[me] ?? 0) : 0;
+  const myPostWin = isBogach && s ? s.qPostWin : undefined;
+  const [postTplOpen, setPostTplOpen] = useState(false); // окно «своё задание» из окна победителя
   /* v0.104 БОГАЧ: мои иммунитеты торговцев (ждут активации / тикают) */
   const myImmunes = (isBogach || isQuest) && s ? s.qImmunes?.[me] ?? [] : [];
   const [immOpen, setImmOpen] = useState(false); // окно «Иммунитеты» (активация ТОЛЬКО до старта задания)
@@ -2664,8 +2669,8 @@ export default function GameScreen() {
         {map?.mode === 'classic1p' && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky" title="RETROPOLIA на одного: победа — пройти ВСЕ задания карты">RETROPOLIA SOLO</span>}
         {map?.mode === 'quest' && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-teal">QUEST</span>}
         {isQuestSolo && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky">QUEST SOLO</span>}
-        {/* v0.105 РЕТРОРАННЕР: чип режима + счётчик закрытых ячеек у игрока */}
-        {isBogach && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="РЕТРОРАННЕР: гонка на опережение — кончились монеты, вылетел. Победит последний на ногах">РЕТРОРАННЕР</span>}
+        {/* v0.105 СПРИНТЕР: чип режима у игрока */}
+        {isBogach && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="СПРИНТЕР: гонка на опережение — кончились монеты, вылетел. Победит последний на ногах">СПРИНТЕР</span>}
         {isQuest && s?.phase === 'playing' && map && (() => {
           const total = map.cells.filter((c) => c.type === 'task').length;
           const done = (s.qDone?.[me] ?? []).length;
@@ -2698,6 +2703,12 @@ export default function GameScreen() {
         {isSkill && s.phase === 'playing' && !s.mapless && (
           <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="Лимит ходов хоста в SKILL CHALLENGE">
             ХОД {Math.min(s.turnNo ?? 1, SKILL_TURNS)}/{SKILL_TURNS}
+          </span>
+        )}
+        {/* v0.106 СПРИНТЕР: пропустил/проиграл — ждёшь исхода задания (фишка замерла) */}
+        {isBogach && myQWait !== undefined && (
+          <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky blink-hard" title="Вы пропустили/проиграли задание: фишка замрёт на ячейке, пока кто-то не победит или все не пропустят — потом можно зайти на ячейку и выбрать задание заново">
+            ⏳ ЖДЁМ ИСХОДА
           </span>
         )}
         {/* v0.104 БОГАЧ: счётчик заходов на ячейки заданий (если лимит задан картой) */}
@@ -4233,7 +4244,7 @@ export default function GameScreen() {
                         </div>
                       </div>
                       <p className="text-[10px] text-faint">{isBogach
-                        ? `Гонка: вся компания играет ОДНУ игру одновременно, но задание НИКОМУ не транслируется — что за игра, видно только на вашем экране. Кто ПЕРВЫЙ пройдёт — +${bogachWin} бронзы${bogachWin ? '' : ' (награда не назначена)'}, остальные, кто ещё играл, остановятся и заплатят столько же. Пропуск — ${skipCoinsNeed} бронзы${bogachFree ? ' — У ВАС ИММУНИТЕТ: бесплатно' : ''}.`
+                        ? `Гонка: вся компания играет ОДНУ игру одновременно, но задание НИКОМУ не транслируется — что за игра, видно только на вашем экране. Кто ПЕРВЫЙ пройдёт — +${bogachWin} бронзы${bogachWin ? '' : ' (награда не назначена)'}, остальные, кто ещё играл, остановятся и заплатят столько же (хозяину ячейки, 20% испарится). Перезапуск — 1 бронза (траты идут в зачёт). Пропуск/поражение — сразу ${skipCoinsNeed} бронзы или потраченное${myQSpent ? ` (уже потрачено: ${myQSpent})` : ''} — и фишка замрёт, пока задание не разрешится.${bogachFree ? ' У ВАС ИММУНИТЕТ: пропуск бесплатный.' : ''}`
                         : 'Режим доверия — победа и поражение на твоей совести. Каждый игрок проходит задания САМ: выполненные засчитываются только тебе (цели концовок и квестов — личные).'}</p>
                       {!qArmed ? (
                         <>
@@ -4256,8 +4267,8 @@ export default function GameScreen() {
                                 {isBogach ? `🏆 ПОБЕДА (первому +${bogachWin})` : '🏆 ПОБЕДА'}
                               </PxBtn>
                               <PxBtn color="coral" onClick={() => { sfx.fail(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false }); }}
-                                title={isBogach ? `Проигрыш: −${skipCoinsNeed} бронзы` : undefined}>
-                                💀 ПОРАЖЕНИЕ
+                                title={isBogach ? `= пропуск: сразу ${skipCoinsNeed} бронзы или потраченное${myQSpent ? ` (уже ${myQSpent})` : ''} — потом ждёшь исхода задания` : undefined}>
+                                {isBogach ? '💀 ПОРАЖЕНИЕ (= пропуск)' : '💀 ПОРАЖЕНИЕ'}
                               </PxBtn>
                             </div>
                           )}
@@ -4266,16 +4277,22 @@ export default function GameScreen() {
                               {qPaused ? Ic.play(13) : Ic.pause(13)} {qPaused ? 'Продолжить' : 'Пауза'}
                             </GhostBtn>
                             <GhostBtn
-                              title="Перезапустить игру с сохранения (или с начала)"
-                              onClick={() => { ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null); sfx.alarm(); }}
+                              title={isBogach
+                                ? `Перезапустить игру с сохранения (или с начала) — стоит 1 бронзу (траты идут в зачёт пропуска)${myQSpent ? ` · уже потрачено: ${myQSpent}` : ''}`
+                                : 'Перезапустить игру с сохранения (или с начала)'}
+                              onClick={() => {
+                                ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null);
+                                if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); // v0.106: перезапуск — 1 бронза
+                                sfx.alarm();
+                              }}
                             >
-                              {Ic.rotate(13)} Перезапуск
+                              {Ic.rotate(13)} Перезапуск{isBogach ? ' · 1🪙' : ''}
                             </GhostBtn>
                             <GhostBtn
                               title={isBogach
                                 ? (bogachFree
                                   ? 'ИММУНИТЕТ действует: пропуск этого задания БЕСПЛАТНЫЙ'
-                                  : `Пропустить задание и уйти с ячейки: −${skipCoinsNeed} бронзы${activeImm ? '' : '. Купите иммунитет у торговца — будет бесплатно'}`)
+                                  : `Пропустить: сразу ${skipCoinsNeed} бронзы или потраченное на задание${myQSpent ? ` (уже ${myQSpent})` : ''}. После пропуска фишка замрёт, пока задание не разрешится (кто-то победит или все пропустят)${activeImm ? '' : '. Купите иммунитет у торговца — будет бесплатно'}`)
                                 : (qLeaveArm
                                   ? 'Подтвердить: уйти И ПОЛУЧИТЬ ПОРАЖЕНИЕ (−HP, провал в счёт)'
                                   : 'Уйти = ПОРАЖЕНИЕ: спишутся время/попытка и HP, провал засчитается. Зайти снова можно.')}
@@ -4288,7 +4305,9 @@ export default function GameScreen() {
                               }}
                             >
                               {isBogach
-                                ? (bogachFree ? `🛡 Пропустить (бесплатно${activeImm ? `, иммунитет ${taskPlatLabel(activeImm.plat)}` : ''})` : `⏭ Пропустить (−${skipCoinsNeed} бронзы)`)
+                                ? (bogachFree
+                                  ? `🛡 Пропустить (бесплатно${activeImm ? `, иммунитет ${taskPlatLabel(activeImm.plat)}` : ''})`
+                                  : `⏭ Пропустить (сразу ${skipCoinsNeed}🪙 или потраченное)`)
                                 : (qLeaveArm ? '💀 Точно уйти? (= поражение)' : '🚪 Уйти (= поражение)')}
                             </GhostBtn>
                           </div>
@@ -4311,7 +4330,7 @@ export default function GameScreen() {
             </div>
           )}
 
-          {/* ============ v0.105 РЕТРОРАННЕР: ВЫБОР ЗАДАНИЯ — кто опередил всех, тот решает, что играют ВСЕ ============ */}
+          {/* ============ v0.105 СПРИНТЕР: ВЫБОР ЗАДАНИЯ — кто опередил всех, тот решает, что играют ВСЕ ============ */}
           {isBogach && myPickIdx >= 0 && myPickList.length > 1 && (
             <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.82)] p-3">
               <div className="pixel-panel pixel-corners p-4 w-full max-w-[560px] max-h-[92vh] overflow-y-auto">
@@ -4833,6 +4852,33 @@ export default function GameScreen() {
         </>
       )}
 
+      {/* ============ v0.106 СПРИНТЕР: окно ПОБЕДИТЕЛЯ ячейки — поставить своё задание или оставить прежнее ============ */}
+      {myPostWin && !postTplOpen && (
+        <Modal title={`Ячейка №${myPostWin.cellIdx + 1} — ваша!`} icon={Ic.trophy(16)} w="max-w-lg">
+          <p className="text-[13px] text-dim mb-1">
+            Победа! Ячейка разбита и чинится <b className="text-paper">1 минуту</b> — потом снова играет, хозяин — вы.
+            Проигравшие на ней будут отдавать вам ресурсы (20% испаряется).
+          </p>
+          <p className="text-[11px] text-faint mb-4">Пока чинится — решите: поставить СВОЁ задание (ром и сохранение из вашей библиотеки) или оставить прежнее. Остальные игроки не ждут — ходят свободно.</p>
+          <div className="grid grid-cols-2 gap-3">
+            <button onClick={() => { sfx.coin(); dispatch({ t: 'qPostWinSkip', id: me, cellIdx: myPostWin.cellIdx }); }} className="pixel-panel pixel-corners p-4 text-left hover:border-gold hover:-translate-y-0.5 transition-all cursor-pointer group">
+              <span className="text-gold">{Ic.dice(22)}</span>
+              <div className="font-display uppercase text-paper group-hover:text-gold mt-2 text-sm">Оставить прежнее</div>
+              <div className="text-[10px] text-dim mt-1">Задание ячейки не меняется — после починки играют его (варианты выберут заново)</div>
+            </button>
+            <button onClick={() => { sfx.click(); setPostTplOpen(true); }} className="pixel-panel pixel-corners p-4 text-left hover:border-magma hover:-translate-y-0.5 transition-all cursor-pointer group">
+              <span className="text-magma">{Ic.cart(22)}</span>
+              <div className="font-display uppercase text-paper group-hover:text-magma mt-2 text-sm">Поставить своё задание</div>
+              <div className="text-[10px] text-dim mt-1">Ром + сохранение из библиотеки — вступит в силу после починки (1 минута)</div>
+            </button>
+          </div>
+          <div className="text-center mt-3">
+            <GhostBtn small onClick={() => { dispatch({ t: 'qPostWinSkip', id: me, cellIdx: myPostWin.cellIdx }); }}>{Ic.cross(12)} Решить позже (= оставить прежнее)</GhostBtn>
+          </div>
+        </Modal>
+      )}
+      {myPostWin && postTplOpen && <TemplateModal bogach cellIdx={myPostWin.cellIdx} onClose={() => setPostTplOpen(false)} />}
+
       {tplOpen && <TemplateModal cellIdx={active?.pos ?? 0} onClose={() => setTplOpen(false)} />}
 
       {/* ---------- v0.56: КАТ-СЦЕНА — кино-полосы (v0.60 — без плашки;
@@ -4942,7 +4988,7 @@ function DieFace({ v, dropping, delay, rolling, blank, frame }: { v: number; dro
 
 /* ---------- шаблон нового задания ---------- */
 
-function TemplateModal({ cellIdx, onClose }: { cellIdx: number; onClose: () => void }) {
+function TemplateModal({ cellIdx, onClose, bogach }: { cellIdx: number; onClose: () => void; bogach?: boolean }) {
   const { roms, saves, session, selfId } = useApp();
   const [romId, setRomId] = useState('');
   const [saveId, setSaveId] = useState('');
@@ -4971,7 +5017,10 @@ function TemplateModal({ cellIdx, onClose }: { cellIdx: number; onClose: () => v
       desc: desc.trim() || 'Задание, придуманное игроком на этой сессии.',
       joy: (joyId || undefined) as TaskDef['joy'],
     };
-    dispatch({ t: 'setCellTask', id: useApp.getState().selfId, cellIdx, task, cardId: chaosCardId || undefined });
+    /* v0.106: в Спринтере — qCellTask (задание хозяина вступает после минутной починки);
+       в остальных режимах — setCellTask (как в Ретрополии) */
+    if (bogach) dispatch({ t: 'qCellTask', id: useApp.getState().selfId, cellIdx, task });
+    else dispatch({ t: 'setCellTask', id: useApp.getState().selfId, cellIdx, task, cardId: chaosCardId || undefined });
     sfx.success();
     onClose();
   };
@@ -4983,7 +5032,7 @@ function TemplateModal({ cellIdx, onClose }: { cellIdx: number; onClose: () => v
         <div className="font-display uppercase tracking-wide text-magma text-sm mb-3 flex items-center gap-2">
           {Ic.cart(16)} Шаблон задания · ячейка №{cellIdx + 1}
         </div>
-        <p className="text-[11px] text-dim mb-3">Ром и сохранение из библиотеки — как в папках с шаблонами. Задание действует до конца этой сессии.</p>
+        <p className="text-[11px] text-dim mb-3">{bogach ? 'Ром и сохранение из библиотеки — задание хозяина ячейки: после минутной починки на ней будут играть ВСЕ вошедшие, а проигравшие отдадут вам ресурсы. Действует до конца сессии.' : 'Ром и сохранение из библиотеки — как в папках с шаблонами. Задание действует до конца этой сессии.'}</p>
         <div className="space-y-3">
           <Field label="Ром (по папкам)">
             <select className="field-in w-full px-2 py-2 text-sm" value={romId} onChange={(e) => { setRomId(e.target.value); setSaveId(''); }}>
@@ -5021,31 +5070,33 @@ function TemplateModal({ cellIdx, onClose }: { cellIdx: number; onClose: () => v
           <Field label="Описание">
             <textarea className="field-in w-full px-3 py-2 text-sm h-16 resize-none" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Пройти босса с одной полоской здоровья…" />
           </Field>
-          <Field label="Пакость из инвентаря (необязательно, максимум одна)">
-            {chaosCards.length === 0 ? (
-              <p className="text-[11px] text-dim">В инвентаре нет пакостных карточек — они выпадают на ячейках-шансах.</p>
-            ) : (
-              <div className="grid gap-1 max-h-[150px] overflow-y-auto pr-1">
-                <button
-                  onClick={() => setChaosCardId('')}
-                  className={`text-left px-2.5 py-1.5 border-2 text-[11px] cursor-pointer transition-colors ${chaosCardId === '' ? 'border-edge2 text-paper' : 'border-edge text-dim hover:border-edge2'}`}
-                >
-                  {chaosCardId === '' ? '●' : '○'} Без пакости
-                </button>
-                {chaosCards.map((c) => (
+          {!bogach && (
+            <Field label="Пакость из инвентаря (необязательно, максимум одна)">
+              {chaosCards.length === 0 ? (
+                <p className="text-[11px] text-dim">В инвентаре нет пакостных карточек — они выпадают на ячейках-шансах.</p>
+              ) : (
+                <div className="grid gap-1 max-h-[150px] overflow-y-auto pr-1">
                   <button
-                    key={c.id}
-                    onClick={() => { setChaosCardId(c.id); sfx.hover(); }}
-                    className={`text-left px-2.5 py-1.5 border-2 text-[11px] cursor-pointer transition-colors ${chaosCardId === c.id ? 'border-magma bg-magma/10 text-paper' : 'border-edge text-dim hover:border-edge2'}`}
-                    title={c.desc}
+                    onClick={() => setChaosCardId('')}
+                    className={`text-left px-2.5 py-1.5 border-2 text-[11px] cursor-pointer transition-colors ${chaosCardId === '' ? 'border-edge2 text-paper' : 'border-edge text-dim hover:border-edge2'}`}
                   >
-                    {chaosCardId === c.id ? '●' : '○'} 😈 {c.name}
+                    {chaosCardId === '' ? '●' : '○'} Без пакости
                   </button>
-                ))}
-              </div>
-            )}
-            {chaosCardId && <p className="text-[10.5px] text-magma mt-1">Карточка будет потрачена — следующий играющий здесь получит пакость.</p>}
-          </Field>
+                  {chaosCards.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => { setChaosCardId(c.id); sfx.hover(); }}
+                      className={`text-left px-2.5 py-1.5 border-2 text-[11px] cursor-pointer transition-colors ${chaosCardId === c.id ? 'border-magma bg-magma/10 text-paper' : 'border-edge text-dim hover:border-edge2'}`}
+                      title={c.desc}
+                    >
+                      {chaosCardId === c.id ? '●' : '○'} 😈 {c.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {chaosCardId && <p className="text-[10.5px] text-magma mt-1">Карточка будет потрачена — следующий играющий здесь получит пакость.</p>}
+            </Field>
+          )}
           <Field label="Радость за прохождение (награда прошедшему, максимум одна)">
             <select className="field-in w-full px-2 py-2 text-sm" value={joyId} onChange={(e) => { setJoyId(e.target.value); sfx.hover(); }}>
               <option value="">— без радости —</option>
@@ -5057,7 +5108,7 @@ function TemplateModal({ cellIdx, onClose }: { cellIdx: number; onClose: () => v
           </Field>
           <div className="flex justify-end gap-2 pt-1">
             <GhostBtn onClick={onClose}>Отмена</GhostBtn>
-            <PxBtn color="magma" onClick={apply}>{Ic.check(14)} Заменить задание</PxBtn>
+            <PxBtn color="magma" onClick={apply}>{Ic.check(14)} {bogach ? 'Поставить на ячейку' : 'Заменить задание'}</PxBtn>
           </div>
         </div>
       </div>

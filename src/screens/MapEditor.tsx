@@ -3310,21 +3310,21 @@ export default function MapEditor() {
       toast('Ячейки-ящики работают только в режиме RUBG — измените тип ячеек или включите режим RUBG', 'err');
       return;
     }
-    /* QUEST/QUEST SOLO и РЕТРОРАННЕР: квизы ЗАПРЕЩЕНЫ (задания на доверии/общие, вместо викторин) */
+    /* QUEST/QUEST SOLO и СПРИНТЕР: квизы ЗАПРЕЩЕНЫ (задания на доверии/общие, вместо викторин) */
     if (isQuestMode(map.mode) || map.mode === 'bogach') {
       const bad = map.cells.filter((c) => c.type === 'quiz').length;
       if (bad > 0) {
         sfx.fail();
-        toast(`${map.mode === 'bogach' ? 'РЕТРОРАННЕР' : 'QUEST'}: ячейки-квизы запрещены — на карте ${bad} таких. Уберите их или измените режим (кнопки вверху)`, 'err');
+        toast(`${map.mode === 'bogach' ? 'СПРИНТЕР' : 'QUEST'}: ячейки-квизы запрещены — на карте ${bad} таких. Уберите их или измените режим (кнопки вверху)`, 'err');
         return;
       }
     }
-    /* РЕТРОРАННЕР: задания на карте обязательны — иначе гонке не из чего состоять */
+    /* СПРИНТЕР: задания на карте обязательны — иначе гонке не из чего состоять */
     if (map.mode === 'bogach') {
       const tasks = map.cells.filter((c) => c.type === 'task').length;
       if (tasks === 0) {
         sfx.fail();
-        toast('РЕТРОРАННЕР: на карте нет ни одной ячейки задания — поставьте ячейки «Зад.» с заданиями', 'err');
+        toast('СПРИНТЕР: на карте нет ни одной ячейки задания — поставьте ячейки «Зад.» с заданиями', 'err');
         return;
       }
     }
@@ -3492,7 +3492,7 @@ export default function MapEditor() {
                     : id === 'rubg'
                       ? 'В RUBG галочка SOLO недоступна'
                       : id === 'bogach'
-                        ? 'В РЕТРОРАННЕРЕ соло нет — гонка на опережение, минимум два игрока'
+                        ? 'В СПРИНТЕРЕ соло нет — гонка на опережение, минимум два игрока'
                         : 'SOLO: играет только хост, остальные — зрители трансляции. В RETROPOLIA/JOURNEY меняется условие победы: пройти ВСЕ задания карты'}
                   className={`px-2.5 py-1 border-2 font-display text-[9px] uppercase transition-colors whitespace-nowrap ${solo ? 'border-sky text-sky bg-sky/10 cursor-pointer' : soloLocked ? 'border-edge text-faint/50 cursor-not-allowed' : 'border-edge text-faint hover:text-sky cursor-pointer'}`}
                 >{solo ? '☑ ' : '☐ '}SOLO</button>

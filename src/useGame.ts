@@ -138,7 +138,7 @@ async function sendLibrary(room: Room, map: GameMap): Promise<void> {
   for (const c of map.cells) {
     if (c.task?.romId) romIds.add(c.task.romId);
     if (c.task?.saveId) saveIds.add(c.task.saveId);
-    /* v0.105: варианты задания (РЕТРОРАННЕР) — их ромы тоже уезжают сразу,
+    /* v0.105: варианты задания (СПРИНТЕР) — их ромы тоже уезжают сразу,
        чтобы общий запуск гонки открывался у гостей мгновенно, без needRom */
     for (const v of c.taskVariants ?? []) if (v?.romId) romIds.add(v.romId);
   }

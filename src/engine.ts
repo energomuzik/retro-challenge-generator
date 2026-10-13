@@ -79,6 +79,9 @@ export type Action =
   | { t: 'qJobDone'; id: string; cellIdx: number; win: boolean; byCode?: boolean } // QUEST: игрок закрыл ЛИЧНОЕ задание (доверие): победа — награда и прогресс, поражение — плата и счётчик провалов; v0.68 byCode — зачтено по памяти (условие CodeSearch). v0.104: и в БОГАЧЕ
   | { t: 'qJobLeave'; id: string; cellIdx: number } // QUEST: игрок ушёл из личного задания — v0.101: УЙТИ = ПОРАЖЕНИЕ (те же последствия, что win:false). v0.104: и в БОГАЧЕ (= пропуск)
   | { t: 'qPick'; id: string; cellIdx: number; v: number } // v0.104 БОГАЧ: ПЕРВЫЙ вошедший выбрал вариант задания ячейки — задание становится ЕДИНЫМ для всех
+  | { t: 'qRestart'; id: string; cellIdx: number } // v0.106 СПРИНТЕР: платный ПЕРЕЗАПУСК задания — 1 бронза (траты идут в зачёт пропуска)
+  | { t: 'qPostWinSkip'; id: string; cellIdx: number } // v0.106 СПРИНТЕР: победитель оставил прежнее задание на ячейке (окно после победы)
+  | { t: 'qCellTask'; id: string; cellIdx: number; task: TaskDef } // v0.106 СПРИНТЕР: победитель ставит СВОЁ задание на ячейку (вступит после минутной починки)
   | { t: 'qImmuneOn'; id: string; immId: string } // v0.104 БОГАЧ: игрок АКТИВИРОВАЛ иммунитет торговца (до старта задания) — пошли минуты срока
   | { t: 'qCardAck'; id: string } // QUEST: игрок подтвердил выпавшую карточку бонуса/ловушки
   | { t: 'dialogPick'; id: string; npcId: string; nodeId: string; optIdx: number } // QUEST: выбор игрока в диалоге NPC (награда/флаг/переход/концовка)
@@ -165,8 +168,11 @@ export function newSession(code: string, mapId: string, hostId: string, hostName
 export const cellTaskOf = (s: GameSession, map: GameMap, idx: number): TaskDef | null => {
   /* v0.104 БОГАЧ: задание ячейки — ВЫБРАННЫЙ вариант (0 = task, 1..2 = taskVariants).
      Пока выбор не сделан — задача ещё «не определена», возвращаем null (это же окно выбора
-     решает по cellTaskListOf). sessionTasks (восстановление разбитых ячеек) в БОГАЧЕ не пишется. */
+     решает по cellTaskListOf). v0.106: ЗАДАНИЕ ХОЗЯИНА важнее вариантов — победитель
+     Спринтера может поставить своё задание на ячейку (sessionTasks, как в Ретрополии). */
   if (map.mode === 'bogach') {
+    const st = s.sessionTasks[idx];
+    if (st) return st; // v0.106: своё задание хозяина ячейки
     const list = bogachTaskList(map, idx);
     if (!list.length) return null;
     const k = Math.max(0, Math.min(list.length - 1, s.qChosen?.[idx] ?? 0));
@@ -183,6 +189,14 @@ export const bogachTaskList = (map: GameMap, idx: number): TaskDef[] => {
   if (c.task) list.push(c.task);
   for (const v of c.taskVariants ?? []) if (v) list.push(v);
   return list;
+};
+
+/** v0.106 СПРИНТЕР: список вариантов С УЧЁТОМ задания хозяина (sessionTasks — одно задание,
+   окно выбора не открывается). Для остальных ячеек — как bogachTaskList. */
+export const bogachCellList = (s: GameSession, map: GameMap, idx: number): TaskDef[] => {
+  const st = s.sessionTasks[idx];
+  if (st) return [st];
+  return bogachTaskList(map, idx);
 };
 
 /* v0.99 СКРЫТЫЕ РОМЫ/ЗАДАНИЯ (cell.hideInfo): ОТКРЫТА ЛИ ячейка ДЛЯ ЭТОГО ЗРИТЕЛЯ.
@@ -455,6 +469,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         if (s.pendingCard && s.pendingCard.player === p.id) s.pendingCard = null;
         if (s.rubg?.jobs) delete s.rubg.jobs[p.id]; // личное задание мёртвого закрывается
         if (s.qJobs) delete s.qJobs[p.id]; // QUEST: личное задание мёртвого закрывается
+        if (s.qWait) delete s.qWait[p.id]; // v0.106: мёртвый не ждёт исхода
+        if (s.qSpent) delete s.qSpent[p.id]; // v0.106: траты мёртвого больше не нужны
+        if (s.qPostWin && s.qPostWin.pid === p.id) s.qPostWin = null; // v0.106: окно победителя мёртвого закрывается
         if (s.qBossHoldAt) delete s.qBossHoldAt[p.id]; // v0.54: заморозки патрулей мёртвого игрока не нужны
         if (s.qCards) delete s.qCards[p.id];
         s.awaitPost = false;
@@ -628,7 +645,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
      entryGate — расход ЗАХОДА на ячейку задания (map.entryLimit): исчерпан — задание не
      открывается; в соло-режимах исчерпание лимита = поражение партии. */
   const bogachWinCoins = (cellIdx: number): number => {
-    const tk = bogachTaskList(map, cellIdx)[0];
+    /* v0.106: награда — у ЗАДАННОГО, КОТОРОЕ ИГРАЛОСЬ (выбранный вариант / задание хозяина),
+       а не всегда первого в списке: у вариантов своя цена (окно выбора показывает её честно) */
+    const tk = cellTaskOf(s, map, cellIdx) ?? bogachTaskList(map, cellIdx)[0];
     if (tk?.winCoins !== undefined) return Math.max(0, Math.floor(tk.winCoins));
     if (map.taskWinCoins !== undefined) return Math.max(0, Math.floor(map.taskWinCoins));
     return BOGACH_WIN_COINS;
@@ -663,6 +682,83 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     p.coinsLeft = Math.max(0, (p.coinsLeft ?? 0) - amount);
     log(`🪙 ${p.name}: ${what} −${amount} бронзы — капитал ${coinsStr(p.coinsLeft)}`);
   };
+  /* ---------- v0.106 СПРИНТЕР: починка ячеек по времени, хозяева, ожидание пропустивших ----------
+     BROKEN_REPAIR_MS — минута починки разбитой ячейки (Джёрни и Спринтер — ходов нет,
+     таймер реального времени; в Ретрополии/Квесте как раньше — по ходам, поле ms не ставится).
+     tickBrokenTime — ленивый тик: вызывается при каждом движении/действии — оживляет ячейки,
+     у которых вышел срок, и вводит в силу задание хозяина (broken.task → sessionTasks).
+     bogachPayTo — платёж проигравшего с передачей 80% хозяину ячейки (20% ИСПАРЯЕТСЯ —
+     деньги тают, катка быстрее доходит до конца). bogachSkipPrice — цена пропуска
+     «сразу 5 ИЛИ потраченное». bogachJobOver — общий хвост конца задания:
+     списание потраченного, ожидание пропустившего и отпуск при полном разрешении. */
+  const BROKEN_REPAIR_MS = 60000;
+  const tickBrokenTime = (): void => {
+    if (!s.broken) return;
+    const now = Date.now();
+    for (const key of Object.keys(s.broken)) {
+      const idx = Number(key);
+      const br = s.broken[idx];
+      if (!br || !br.ms) continue; // без ms — починка по ходам (endTurnNow), это не её тик
+      if (now - (br.at ?? now) < br.ms) continue;
+      if (br.task) {
+        s.sessionTasks = s.sessionTasks ?? {};
+        s.sessionTasks[idx] = br.task;
+        const nm = s.players.find((x) => x.id === br.by)?.name ?? '';
+        log(`🧱 Ячейка №${idx + 1} починена — задание ${nm} вступило в силу (хозяин ячейки)`);
+      } else {
+        const own = s.captured[idx] ? s.players.find((x) => x.id === s.captured[idx])?.name ?? '' : '';
+        log(`🧱 Ячейка №${idx + 1} починена${own ? ` — хозяин ${own}, задание прежнее` : ' — задание вернулось'}${map.mode === 'bogach' ? ', варианты можно выбрать заново' : ''}`);
+      }
+      if (map.mode === 'bogach') delete s.qChosen?.[idx]; // новая гонка — варианты выбираются заново
+      delete s.broken[idx];
+    }
+  };
+  /** Платёж проигравшего НА ЧУЖОЙ ячейке: 80% уходит хозяину, 20% испаряется. */
+  const bogachPayTo = (p: PlayerState, amount: number, cellIdx: number, what: string): void => {
+    if (amount <= 0) return;
+    p.coinsLeft = Math.max(0, (p.coinsLeft ?? 0) - amount);
+    const ownerId = s.captured[cellIdx];
+    const owner = ownerId && ownerId !== p.id ? s.players.find((x) => x.id === ownerId && x.alive) : undefined;
+    if (owner) {
+      const share = Math.floor(amount * 0.8);
+      if (share > 0) owner.coinsLeft = Math.min(COINS_MAX, (owner.coinsLeft ?? 0) + share);
+      log(`🪙 ${p.name}: ${what} −${amount} бронзы — капитал ${coinsStr(p.coinsLeft)} · хозяину ${owner.name} +${share} (20% испарилось)`);
+    } else {
+      log(`🪙 ${p.name}: ${what} −${amount} бронзы — капитал ${coinsStr(p.coinsLeft)}`);
+    }
+  };
+  /** Цена пропуска/поражения «сразу 5 ИЛИ потраченное»: перезапуски по 1 бронзе идут в зачёт. */
+  const bogachSkipPrice = (p: PlayerState, cellIdx: number): number => {
+    const stake = taskStakeOf(cellIdx);
+    const spent = s.qSpent?.[p.id] ?? 0;
+    return Math.max(0, stake.loseC - spent);
+  };
+  /** Конец задания у ИГРОКА (не победа): ожидание + сброс потраченного. cellIdx — ячейка. */
+  const bogachJobWait = (p: PlayerState, cellIdx: number): void => {
+    if (s.qSpent) delete s.qSpent[p.id];
+    s.qWait = s.qWait ?? {};
+    s.qWait[p.id] = cellIdx;
+    log(`⏳ ${p.name} ждёт исхода на ячейке №${cellIdx + 1}: фишка замрёт, пока кто-то не победит или все не пропустят`);
+  };
+  /** Разрешение гонки ВСЕМ ПРОПУСТИЛИ: на ячейке не осталось играющих —
+   все ждущие отпускаются, выбор вариантов сбрасывается (можно зайти заново). */
+  const bogachReleaseIfAllSkipped = (cellIdx: number): void => {
+    const stillPlaying = Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === cellIdx);
+    if (stillPlaying || s.qPicks?.[cellIdx]) return;
+    const waiting = Object.entries(s.qWait ?? {}).filter(([, ci]) => ci === cellIdx);
+    if (!waiting.length) return;
+    for (const [pid] of waiting) delete s.qWait![pid];
+    delete s.qChosen?.[cellIdx]; // заново выбрать задание (новая гонка)
+    const names = waiting.map(([pid]) => s.players.find((q) => q.id === pid)?.name ?? '?').join(', ');
+    log(`🚪 Все пропустили задание №${cellIdx + 1} — ${names} свободны: можно зайти на ячейку и выбрать задание заново`);
+  };
+  /** Отпустить ждущих: кто-то ПОБЕДИЛ задание — гонка закончилась для всех. */
+  const bogachReleaseWaiters = (cellIdx: number): void => {
+    const waiting = Object.entries(s.qWait ?? {}).filter(([, ci]) => ci === cellIdx);
+    if (!waiting.length) return;
+    for (const [pid] of waiting) delete s.qWait![pid];
+    log(`🔓 Ожидание закончилось: пропустившие на ячейке №${cellIdx + 1} свободны — задание разрешилось`);
+  };
   /** ЛИМИТ ЗАХОДОВ: true — задание можно открывать (заход списан); false — лимит исчерпан.
       map.entryLimit 0/нет — без лимита. В соло-режимах исчерпание = ПОРАЖЕНИЕ партии. */
   const entryGate = (p: PlayerState): boolean => {
@@ -686,26 +782,30 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     if (s.qEntries[p.id] >= lim) log(`🚧 ${p.name}: последний заход на ячейки (${lim} из ${lim}) — дальше задания не откроются`);
     return true;
   };
-  /* ---------- v0.105: РЕТРОРАННЕР — открыть общее задание игроку / ВСЕЙ компании ----------
+  /* ---------- v0.105: СПРИНТЕР (внутр. ид bogach) — открыть общее задание игроку / ВСЕЙ компании ----------
    Задание ячейки ЕДИНОЕ для всех (выбранный вариант). Вызывается из входа на ячейку,
    из qPick (когда выбор сделан) и из поимки боссом.
    v0.105: детали задания НЕ ТРАНСЛИРУЮТСЯ — в общем логе только факт старта гонки,
-   без названия; каждый игрок видит задание только на своём экране. */
+   без названия; каждый игрок видит задание только на своём экране.
+   v0.106: пропустившие (qWait) в новую гонку не тащатся — они ждут исхода предыдущей. */
   const bogachStartJob = (pl: PlayerState, idx: number, silent = false): void => {
     const tk = cellTaskOf(s, map, idx);
     if (!tk) return;
+    if (s.qWait?.[pl.id] !== undefined) return; // пропустил — ждёт исхода, задания не берёт
     s.qJobs = s.qJobs ?? {};
     if (s.qJobs[pl.id]) return;
     s.qJobs[pl.id] = { cellIdx: idx, startedAt: Date.now() };
     if (!silent) log(`🎯 ${pl.name} взял задание — гонка на опережение!`);
   };
-  /* v0.105 РЕТРОРАННЕР: ОБЩИЙ ЗАПУСК — выбранное задание стартует у ВСЕЙ КОМПАНИИ
+  /* v0.105 СПРИНТЕР: ОБЩИЙ ЗАПУСК — выбранное задание стартует у ВСЕЙ КОМПАНИИ
    одновременно: у каждого свободного (без активного задания) игрока, где бы он ни был.
    Так работает гонка: сначала опереди всех на карте, потом опереди всех в игре. */
   const bogachMassStart = (idx: number): void => {
     let n = 0;
     for (const pl of s.players) {
       if (!pl.alive || pl.spect || s.qJobs?.[pl.id]) continue;
+      if (s.qWait?.[pl.id] !== undefined) continue; // v0.106: пропустившие ждут исхода — их гонка уже закончилась
+      if (s.captured?.[idx] === pl.id) continue; // v0.106: ХОЗЯИН ячейки отдыхает — в гонку на своей ячейке не втягивается
       bogachStartJob(pl, idx, true);
       n++;
     }
@@ -1064,11 +1164,13 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     s.turnNo = (s.turnNo ?? 1) + 1; // номер хода партии (для автосейвов)
     /* РАЗБИТЫЕ ЯЧЕЙКИ: тик восстановления — каждый ХОД ЛЮБОГО игрока.
        Без нового задания ячейка оживает через 2 хода (задание карты возвращается),
-       с заданием победителя — через 3 хода (его задание вступает в силу). */
+       с заданием победителя — через 3 хода (его задание вступает в силу).
+       v0.106: ячейки с ms ПОЧИНЯЮТСЯ ПО ВРЕМЕНИ (Джёрни/Спринтер — ходов нет) —
+       здесь они не тикают, их оживляет tickBrokenTime. */
     for (const key of Object.keys(s.broken ?? {})) {
       const idx = Number(key);
       const br = s.broken![idx];
-      if (!br) continue;
+      if (!br || br.ms) continue; // ms — починка по времени (tickBrokenTime), не по ходам
       br.left = (br.left ?? 0) - 1;
       if (br.left <= 0) {
         if (br.task) {
@@ -1256,9 +1358,20 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const ownerId = s.captured[ch.cellIdx];
     const owner = ownerId && ownerId !== p.id ? s.players.find((x) => x.id === ownerId && x.alive) : undefined;
     if (owner && (spentSec > 0 || spentTries > 0)) {
-      owner.secLeft += spentSec;
-      owner.triesLeft += spentTries;
-      log(`⚡ Ресурсы (${spentSec ? `${Math.round(spentSec / 60)} мин` : ''}${spentTries ? ` ${spentTries} поп.` : ''}) ушли хозяину ${owner.name}`);
+      /* v0.106: в Джёрни/Спринтере 20% ресурсов ИСПАРЯЕТСЯ (катка быстрее доходит до конца),
+         хозяин получает 80%. В Ретрополии/Квесте — как раньше, целиком. */
+      if (isJourneyLike(map.mode)) {
+        const oSec = Math.floor(spentSec * 0.8);
+        const oTries = Math.floor(spentTries * 0.8);
+        if (oSec > 0) owner.secLeft += oSec;
+        if (oTries > 0) owner.triesLeft += oTries;
+        const parts = [oSec ? `${Math.round(oSec / 60)} мин` : '', oTries ? `${oTries} поп.` : ''].filter(Boolean).join(' + ');
+        log(`⚡ Ресурсы (${parts || '0'}) ушли хозяину ${owner.name} — 20% испарилось`);
+      } else {
+        owner.secLeft += spentSec;
+        owner.triesLeft += spentTries;
+        log(`⚡ Ресурсы (${spentSec ? `${Math.round(spentSec / 60)} мин` : ''}${spentTries ? ` ${spentTries} поп.` : ''}) ушли хозяину ${owner.name}`);
+      }
     }
     /* пакости-правила на задании: «Без очков» и «Половина победы» */
     const t0 = cellTaskOf(s, map, ch.cellIdx);
@@ -1811,7 +1924,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       log(map.mode === 'rubg'
         ? `🪂 RUBG! ${s.players.length} бойцов на борту. Самолёт летит — ПРЫГАЙТЕ, где хотите! Ресурс — полоска HP, у каждого ОТМЫЧКА 🔑 для ящиков. Побеждает последний живой!`
         : map.mode === 'bogach'
-          ? `💰 РЕТРОРАННЕР! У каждого ${p0coins} монет и свободная ходьба. Кто ПЕРВЫЙ вбежит на ячейку задания — выберет игру, и она ЗАПУСТИТСЯ У ВСЕЙ КОМПАНИИ одновременно (задание никому не транслируется — увидите его у себя на экране). Кто первый пройдёт — +${Math.max(0, Math.floor(map.taskWinCoins ?? 10))} бронзы; остальные, кто ещё играл, остановятся и заплатят столько же. Пропуск −${Math.max(0, Math.floor(map.skipCoins ?? SKIP_COINS_DEFAULT))} бронзы. Кончились монеты — вылетел. ПОБЕДИТ ПОСЛЕДНИЙ НА НОГАХ!`
+          ? `💰 СПРИНТЕР! У каждого ${p0coins} монет и свободная ходьба. Кто ПЕРВЫЙ вбежит на ячейку задания — выберет игру, и она ЗАПУСТИТСЯ У ВСЕЙ КОМПАНИИ одновременно (задание никому не транслируется — увидите его у себя на экране). Кто первый пройдёт — +${Math.max(0, Math.floor(map.taskWinCoins ?? 10))} бронзы; остальные, кто ещё играл, остановятся и заплатят столько же. Пропуск — сразу ${Math.max(0, Math.floor(map.skipCoins ?? SKIP_COINS_DEFAULT))} бронзы или потраченное на задание (перезапуск — 1 бронза). Пропустил — жди исхода. Победа разбивает ячейку: минута починки — и она снова играет под твоим флагом. Кончились монеты — вылетел. ПОБЕДИТ ПОСЛЕДНИЙ НА НОГАХ!`
           : isQuestMode(map.mode)
           ? `🗺 QUEST! ${isSoloMode(map.mode) ? 'Играет хост — зрители смотрят трансляцию. ' : 'Каждый играет ИНДИВИДУАНО, трансляции нет. '}Задания — на доверии: вошёл в ячейку, играй и жми «Победа/Поражение». Побеждает ПЕРВЫЙ, кто выполнит КОНЦОВКУ${(map.endings ?? []).length ? ` (концовок: ${(map.endings ?? []).length})` : ''}!`
           : map.mode === 'classic1p'
@@ -1974,9 +2087,15 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const p = s.players.find((x) => x.id === a.id);
       if (!p || p.spect || !p.alive) break;
       if (s.moving || s.challenge || s.pendingCard || s.quiz || s.awaitPost || gatingFx()) break;
+      /* v0.106: починка разбитых ячеек ПО ВРЕМЕНИ (Джёрни/Спринтер — ходов нет).
+         Ленивый тик: движение постоянно — ячейки оживут сразу, как выйдет минута. */
+      if (isJourneyLike(map.mode)) tickBrokenTime();
       /* v0.104 БОГАЧ: вошёл в ячейку задания — СТОИШЬ и играешь задание (ходьба заморожена,
          пока не победил / не пропустил / не был остановлен победителем) */
       if (map.mode === 'bogach' && s.qJobs?.[p.id]) break;
+      /* v0.106 СПРИНТЕР: пропустил/проиграл — ЖДЁШЬ исхода задания, фишка не двигается
+         (отпустит победа кого-то или «все пропустили» — bogachRelease*) */
+      if (map.mode === 'bogach' && s.qWait?.[p.id] !== undefined) break;
       const mszW = map.mw ?? map.cols * CELL_PX;
       const mszH = map.mh ?? map.rows * CELL_PX;
       let x = Math.max(0, Math.min(mszW, Number(a.x) || 0));
@@ -2076,7 +2195,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
   /* пересёк ячейку задания? вход = прошлый центр был ВНЕ прямоугольника, новый — ВНУТРИ.
         КТО ПЕРВЫЙ пересёк — у того и задание: turn = этот игрок (все фишки замирают,
         остальные смотрят трансляцию — «всё как всегда»); после задания все снова ходят. */
-      /* v0.105 РЕТРОРАННЕР: ячейка задания ЕДИНАЯ для всех. Кто ПЕРВЫЙ вбежал — ВЫБИРАЕТ задание
+      /* v0.105 СПРИНТЕР: ячейка задания ЕДИНАЯ для всех. Кто ПЕРВЫЙ вбежал — ВЫБИРАЕТ задание
          (если вариантов 2–3), после выбора оно запускается У ВСЕЙ КОМПАНИИ одновременно (bogachMassStart).
          Пропуск — монеты (иммунитет/джокер — бесплатно); первый победил — награда ему,
          игры остальных обрываются с той же суммой. */
@@ -2098,9 +2217,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           p.pos = i;
           revealCell(s, p.id, i);
           if (c.type === 'task') {
+            if (s.broken?.[i]) continue; // v0.106: ячейка разбита и чинится (минута) — закрыта
+            if (s.captured[i] === p.id) continue; // v0.106: СВОЯ ячейка — отдых (хозяин не играет сам на себе)
             if (s.qCellDone[i] !== undefined) continue; // эту ячейку уже победили — закрыта навсегда
             if (s.qJobs?.[p.id]) continue; // уже играешь общее задание
-            const list = bogachTaskList(map, i);
+            const list = bogachCellList(s, map, i);
             if (!list.length) continue; // задания нет — передышка
             if (!entryGate(p)) continue; // лимит заходов исчерпан — ячейка молчит
             /* выбор ещё не сделан и вариантов 2–3 — ПЕРВЫЙ вошедший выбирает (окно qPick) */
@@ -2202,9 +2323,13 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!fx || fx.player !== a.id || fx.after !== 'post') break;
       if (s.broken?.[fx.cellIdx]) break;
       s.broken = s.broken ?? {};
-      s.broken[fx.cellIdx] = { by: fx.player, left: 2, at: Date.now() };
+      /* v0.106: в Джёрни/Спринтере ходов нет — починка ПО ВРЕМЕНИ (минута);
+         в Ретрополии/Квесте — по ходам (2 хода), как раньше */
+      s.broken[fx.cellIdx] = isJourneyLike(map.mode)
+        ? { by: fx.player, left: 0, at: Date.now(), ms: BROKEN_REPAIR_MS }
+        : { by: fx.player, left: 2, at: Date.now() };
       const wn = s.players.find((x) => x.id === fx.player)?.name ?? '';
-      log(`💥 ${wn} побеждает и РАЗБИВАЕТ ячейку №${fx.cellIdx + 1}!`);
+      log(`💥 ${wn} побеждает и РАЗБИВАЕТ ячейку №${fx.cellIdx + 1}${isJourneyLike(map.mode) ? ' — починка: 1 минута' : ''}!`);
       break;
     }
     /* ---------- БЕЗ КАРТЫ: челлендж без карты и SKILL CHALLENGE (25 случайных игр) ----------
@@ -2447,57 +2572,77 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       delete s.qJobs![p.id];
       /* ресурс партии: время списывается по факту (минуты за задание); монеты/HP — платёж по итогам; попытка — 1 за вход (v0.101: общий код с qJobLeave) */
       questSpendResources(p, job.startedAt);
-      /* v0.104 БОГАЧ: общее задание ячейки — победа ТОЛЬКО первого (+награда, ячейка закрывается,
-         игры остальных обрываются с той же суммой); поражение/уход — цена пропуска (иммунитет — бесплатно) */
+      /* v0.104 БОГАЧ (СПРИНТЕР): общее задание ячейки — победа ТОЛЬКО первого (+награда, ячейка
+         РАЗБИВАЕТСЯ и чинится минуту, хозяин — победитель, игры остальных обрываются с той же
+         суммой — В ПОЛЬЗУ ХОЗЯИНА, 20% испаряется); поражение/уход — цена пропуска «сразу 5
+         ИЛИ потраченное» (иммунитет — бесплатно), после — ОЖИДАНИЕ исхода (фишка замирает) */
       if (map.mode === 'bogach') {
         if (a.win) {
-          if (s.qCellDone[a.cellIdx] === undefined) {
-            const winC = bogachWinCoins(a.cellIdx);
-            if (winC > 0) { p.coinsLeft = Math.min(COINS_MAX, (p.coinsLeft ?? 0) + winC); log(`🪙 ${p.name} ПЕРВЫЙ прошёл задание — награда +${winC} бронзы, капитал ${coinsStr(p.coinsLeft)}`); }
-            else log(`🏆 ${p.name} ПЕРВЫЙ прошёл задание — награда не назначена`);
-            s.qDone = s.qDone ?? {};
-            const done = s.qDone[p.id] ?? [];
-            if (!done.includes(a.cellIdx)) done.push(a.cellIdx);
-            s.qDone[p.id] = done;
-            s.captured[a.cellIdx] = p.id; // визуальная отметка ячейки
-            s.qCellDone = s.qCellDone ?? {};
-            s.qCellDone[a.cellIdx] = p.id; // ячейка ЗАКРЫТА — задание больше не открывается никому
-            delete s.qPicks?.[a.cellIdx];
-            /* боссы на этой ячейке повержены (визуал/патрули — как в QUEST) */
-            for (const b of map.bosses ?? []) {
-              const bi = cellAtPoint(map, b.x, b.y);
-              if (bi !== a.cellIdx) continue;
-              s.qBossDown = s.qBossDown ?? {};
-              const lst = s.qBossDown[p.id] ?? [];
-              if (!lst.includes(b.id)) lst.push(b.id);
-              s.qBossDown[p.id] = lst;
-              s.qBossDownAt = s.qBossDownAt ?? {};
-              const downAt = s.qBossDownAt[p.id] = s.qBossDownAt[p.id] ?? {};
-              downAt[b.id] = Date.now();
-              if (s.qBossHoldAt?.[p.id]) delete s.qBossHoldAt[p.id][b.id];
-              const bdef = (map.bossLib ?? []).find((x) => x.id === b.bid);
-              const dms = bdef ? clipMs(bdef.defeated) : 0;
-              if (bdef && dms) pushFx({ kind: 'bossDef', player: p.id, cellIdx: a.cellIdx, bossId: b.id, ms: dms, after: 'none' });
-              if (bdef) log(`👹 Босс «${bdef.name}» ПОБЕЖДЕН игроком ${p.name}!`);
-            }
-            /* игры ВСЕХ остальных на этой ячейке ОБРЫВАЮТСЯ — каждый платит цену победителя */
-            let stopped = 0;
-            for (const [pid, j] of Object.entries(s.qJobs ?? {})) {
-              if (j.cellIdx !== a.cellIdx || pid === p.id) continue;
-              const loser = s.players.find((q) => q.id === pid);
-              if (!loser || !loser.alive || loser.spect) continue;
-              delete s.qJobs![pid];
-              bogachPay(loser, winC, `задание остановлено — победил ${p.name}`);
-              stopped++;
-            }
-            if (stopped) log(`⏹ Игры остановлены: ${stopped} игрок(ов) платят по ${winC} бронзы — гонка за награду закончилась`);
-          } else {
-            log(`ℹ ${p.name}: задание уже было закрыто — награда не начисляется`);
+          if (s.broken?.[a.cellIdx]) break; // ячейку уже победили (чинится) — повторный зачёт не нужен
+          const winC = bogachWinCoins(a.cellIdx);
+          if (winC > 0) { p.coinsLeft = Math.min(COINS_MAX, (p.coinsLeft ?? 0) + winC); log(`🪙 ${p.name} ПЕРВЫЙ прошёл задание — награда +${winC} бронзы, капитал ${coinsStr(p.coinsLeft)}`); }
+          else log(`🏆 ${p.name} ПЕРВЫЙ прошёл задание — награда не назначена`);
+          s.qDone = s.qDone ?? {};
+          const done = s.qDone[p.id] ?? [];
+          if (!done.includes(a.cellIdx)) done.push(a.cellIdx);
+          s.qDone[p.id] = done;
+          s.captured[a.cellIdx] = p.id; // ХОЗЯИН ячейки — победитель
+          delete s.qPicks?.[a.cellIdx];
+          if (s.qSpent) delete s.qSpent[p.id];
+          /* v0.106: ячейка РАЗБИВАЕТСЯ и ЧИНИТСЯ МИНУТУ (по времени, ходов в Спринтере нет);
+             после починки она снова играет — победитель поставит СВОЁ задание или оставит прежнее
+             (окно qPostWin) — пока ячейка закрыта, вариант не выбирается заново (qChosen тронем в починку) */
+          s.broken = s.broken ?? {};
+          s.broken[a.cellIdx] = { by: p.id, left: 0, at: Date.now(), ms: BROKEN_REPAIR_MS };
+          s.qPostWin = { pid: p.id, cellIdx: a.cellIdx };
+          log(`💥 ${p.name} разбивает ячейку №${a.cellIdx + 1}! Починка — 1 минута, потом ячейка снова играет (хозяин — ${p.name})`);
+          /* боссы на этой ячейке повержены (визуал/патрули — как в QUEST) */
+          for (const b of map.bosses ?? []) {
+            const bi = cellAtPoint(map, b.x, b.y);
+            if (bi !== a.cellIdx) continue;
+            s.qBossDown = s.qBossDown ?? {};
+            const lst = s.qBossDown[p.id] ?? [];
+            if (!lst.includes(b.id)) lst.push(b.id);
+            s.qBossDown[p.id] = lst;
+            s.qBossDownAt = s.qBossDownAt ?? {};
+            const downAt = s.qBossDownAt[p.id] = s.qBossDownAt[p.id] ?? {};
+            downAt[b.id] = Date.now();
+            if (s.qBossHoldAt?.[p.id]) delete s.qBossHoldAt[p.id][b.id];
+            const bdef = (map.bossLib ?? []).find((x) => x.id === b.bid);
+            const dms = bdef ? clipMs(bdef.defeated) : 0;
+            if (bdef && dms) pushFx({ kind: 'bossDef', player: p.id, cellIdx: a.cellIdx, bossId: b.id, ms: dms, after: 'none' });
+            if (bdef) log(`👹 Босс «${bdef.name}» ПОБЕЖДЕН игроком ${p.name}!`);
           }
+          /* игры ВСЕХ остальных на этой ячейке ОБРЫВАЮТСЯ — каждый платит цену победителя,
+             деньги — ХОЗЯИНУ (80%; 20% испаряется) */
+          let stopped = 0;
+          for (const [pid, j] of Object.entries(s.qJobs ?? {})) {
+            if (j.cellIdx !== a.cellIdx || pid === p.id) continue;
+            const loser = s.players.find((q) => q.id === pid);
+            if (!loser || !loser.alive || loser.spect) continue;
+            delete s.qJobs![pid];
+            if (s.qSpent) delete s.qSpent[pid];
+            bogachPayTo(loser, winC, a.cellIdx, `задание остановлено — победил ${p.name}`);
+            stopped++;
+          }
+          if (stopped) log(`⏹ Игры остановлены: ${stopped} игрок(ов) платят по ${winC} бронзы — гонка за награду закончилась`);
+          bogachReleaseWaiters(a.cellIdx); // ждущие пропуском — свободны: гонка разрешилась
         } else {
-          const stake = taskStakeOf(a.cellIdx);
-          bogachPay(p, stake.loseC, 'поражение в задании');
+          /* ПОРАЖЕНИЕ = ПРОПУСК (v0.106): цена «сразу 5 ИЛИ потраченное», после — ожидание */
+          const tk = cellTaskOf(s, map, a.cellIdx);
+          const im = immuneActiveOf(p.id, tk?.plat);
+          const joy = bogachSkipFreeJoy(p, tk?.plat);
+          if (im) {
+            log(`🛡 ${p.name} проиграл задание, но иммунитет ${taskPlatLabel(im.plat)} ещё ${Math.max(1, Math.ceil((im.activatedAt! + im.minutes * 60000 - Date.now()) / 60000))} мин — плата не берётся`);
+          } else if (joy) {
+            bogachConsumeJoy(p, tk?.plat);
+            log(`🛡 ${p.name} проиграл задание БЕСПЛАТНО — сгорела радость «${joy}»`);
+          } else {
+            bogachPayTo(p, bogachSkipPrice(p, a.cellIdx), a.cellIdx, 'поражение в задании (= пропуск)');
+          }
           log(`💢 ${p.name} проиграл задание${a.byCode ? ' — ПОРАЖЕНИЕ ПО КОДУ 🤖' : ''}`);
+          bogachJobWait(p, a.cellIdx);
+          bogachReleaseIfAllSkipped(a.cellIdx);
         }
         checkElim();
         break;
@@ -2565,9 +2710,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           bogachConsumeJoy(p, tk?.plat);
           log(`🛡 ${p.name} пропустил задание БЕСПЛАТНО — сгорела радость «${joy}»`);
         } else {
-          const stake = taskStakeOf(a.cellIdx);
-          bogachPay(p, stake.loseC, 'пропуск задания');
+          /* v0.106: ПРОПУСК — «сразу 5 ИЛИ потраченное»: перезапуски (по 1 бронзе) идут в зачёт */
+          bogachPayTo(p, bogachSkipPrice(p, a.cellIdx), a.cellIdx, 'пропуск задания');
         }
+        /* v0.106: после пропуска — ОЖИДАНИЕ исхода (кто-то победит или все пропустят) */
+        bogachJobWait(p, a.cellIdx);
+        bogachReleaseIfAllSkipped(a.cellIdx);
         checkElim();
         break;
       }
@@ -2585,9 +2733,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!p || !p.alive || p.spect) break;
       const pick = s.qPicks?.[a.cellIdx];
       if (!pick || pick.by !== p.id) break; // выбирает только тот, кто опередил всех
-      const list = bogachTaskList(map, a.cellIdx);
+      const list = bogachCellList(s, map, a.cellIdx);
       const v = Math.max(0, Math.min(list.length - 1, Math.floor(a.v)));
-      if (s.qCellDone[a.cellIdx] !== undefined || !list.length) { delete s.qPicks![a.cellIdx]; break; }
+      if (s.broken?.[a.cellIdx] || !list.length) { delete s.qPicks![a.cellIdx]; break; }
       s.qChosen = s.qChosen ?? {};
       s.qChosen[a.cellIdx] = v; // задание ячейки ЕДИНОЕ для всех
       delete s.qPicks![a.cellIdx];
@@ -2595,6 +2743,48 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
          пока она не запустится у него на экране */
       log(`🎲 ${p.name} опередил всех и выбрал игру — задание запускается для ВСЕЙ компании!`);
       bogachMassStart(a.cellIdx);
+      break;
+    }
+    /* ---------- v0.106 СПРИНТЕР: платный перезапуск, окно победителя, ожидание ---------- */
+    case 'qRestart': {
+      /* ПЕРЕЗАПУСК ЗАДАНИЯ — 1 БРОНЗА (Спринтер): игра перезагружается с сохранения,
+         монета — плата; траты идут в зачёт пропуска («сразу 5 ИЛИ потраченное») */
+      if (s.phase !== 'playing' || map.mode !== 'bogach') break;
+      const p = actor();
+      if (!p || !p.alive || p.spect) break;
+      const job = s.qJobs?.[p.id];
+      if (!job || job.cellIdx !== a.cellIdx) break;
+      if ((p.coinsLeft ?? 0) > 0) {
+        bogachPay(p, Math.min(1, p.coinsLeft ?? 0), 'перезапуск задания');
+        s.qSpent = s.qSpent ?? {};
+        s.qSpent[p.id] = (s.qSpent[p.id] ?? 0) + 1;
+        checkElim();
+      } else {
+        log(`ℹ ${p.name}: перезапуск бесплатен — монет нет (но и пропустить не выйдет: нечем платить)`); // монет 0 → банкрот, checkElim уже дёрнулся при платеже
+      }
+      break;
+    }
+    case 'qPostWinSkip': {
+      /* ОКНО ПОБЕДИТЕЛЯ: «ОСТАВИТЬ ПРЕЖНЕЕ» — задание ячейки не меняется,
+         ячейка доигрывает минуту починки и открывается с прежним заданием */
+      if (s.phase !== 'playing' || map.mode !== 'bogach') break;
+      const p = actor();
+      if (!p || !s.qPostWin || s.qPostWin.pid !== p.id || s.qPostWin.cellIdx !== a.cellIdx) break;
+      s.qPostWin = null;
+      log(`🧱 ${p.name} оставляет прежнее задание на ячейке №${a.cellIdx + 1} — ячейка чинится (1 минута) и откроется с ним же`);
+      break;
+    }
+    case 'qCellTask': {
+      /* ОКНО ПОБЕДИТЕЛЯ: «ПОСТАВИТЬ СВОЁ ЗАДАНИЕ» (как в Ретрополии) — после минутной
+         починки на ячейке играет задание хозяина (ром + сохранение победителя) */
+      if (s.phase !== 'playing' || map.mode !== 'bogach') break;
+      const p = actor();
+      if (!p || !s.qPostWin || s.qPostWin.pid !== p.id || s.qPostWin.cellIdx !== a.cellIdx) break;
+      if (!s.broken?.[a.cellIdx]) { s.qPostWin = null; break; } // окно устарело — ячейка уже починилась
+      const task: TaskDef = { ...a.task };
+      s.broken[a.cellIdx] = { by: p.id, left: 0, task, at: s.broken[a.cellIdx].at ?? Date.now(), ms: BROKEN_REPAIR_MS };
+      s.qPostWin = null;
+      log(`🛠 ${p.name} ставит СВОЁ задание на ячейку №${a.cellIdx + 1} — вступит в силу после починки (1 минута)`);
       break;
     }
     case 'qImmuneOn': {
@@ -2784,10 +2974,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         s.qJobs = s.qJobs ?? {};
         s.qJobs[p.id] = { cellIdx: bossCell, startedAt: Date.now() };
       } else if (map.mode === 'bogach') {
-        /* v0.104 БОГАЧ: босс доволок — пойманный играет ОБЩЕЕ задание ячейки босса (qJobs).
-           Ячейка закрыта/без задания — задание не откроется (босс просто оттащил). */
+        /* v0.104 БОГАЧ (СПРИНТЕР): босс доволок — пойманный играет ОБЩЕЕ задание ячейки босса (qJobs).
+           Ячейка чинится (разбита)/без задания/уже ждёт исхода — задание не откроется. */
         if (s.qJobs?.[p.id]) break;
-        if (s.qCellDone[bossCell] !== undefined) break; // ячейка уже закрыта
+        if (s.broken?.[bossCell]) break; // v0.106: ячейка чинится — задание не откроется
+        if (s.qCellDone[bossCell] !== undefined) break; // (страховка старых сессий)
+        if (s.qWait?.[p.id] !== undefined) break; // ждёт исхода своей гонки
         bogachStartJob(p, bossCell);
       } else {
         /* v0.76 JOURNEY: ОБЩЕЕ задание — те же проверки и тот же объект challenge, что при
@@ -3397,10 +3589,13 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           log(`😈 ${p.name} добавляет пакость «${card.name}» к заданию на ячейке №${a.cellIdx + 1}`);
         }
       }
-      /* Задание вступает в силу через 3 ХОДА любого игрока: до тех пор ячейка
+      /* Задание вступает в силу через 3 ХОДА любого игрока (Ретрополия/Квест — по ходам)
+         или через МИНУТУ (Джёрни/Спринтер — по времени): до тех пор ячейка
          остаётся разбитой и пустой (хозяин — победитель). */
       s.broken = s.broken ?? {};
-      s.broken[a.cellIdx] = { by: p.id, left: 3, task };
+      s.broken[a.cellIdx] = isJourneyLike(map.mode)
+        ? { by: p.id, left: 0, task, at: Date.now(), ms: BROKEN_REPAIR_MS }
+        : { by: p.id, left: 3, task };
       /* Боссы, стоящие на этой ячейке, ПОВЕРЖЕНЫ: ОДИН раз играется клип гибели
          (defeated, со своим звуком), потом босс навсегда замирает на его последнем кадре.
          У старых боссов без клипа гибели — как раньше: замирает на последнем кадре win. */
@@ -3420,7 +3615,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         if (bdef) log(`👹 Босс «${bdef.name}» ПОВЕРЖЕН${dms ? ' — гибнет' : ' — замер побеждённым'}`);
       }
       s.awaitPost = false;
-      log(`🛠 ${p.name} создаёт задание на ячейке №${a.cellIdx + 1} — вступит в силу через 3 хода (доп. ход сгорает)`);
+      log(`🛠 ${p.name} создаёт задание на ячейке №${a.cellIdx + 1} — вступит в силу ${isJourneyLike(map.mode) ? 'через минуту (починка ячейки)' : 'через 3 хода (доп. ход сгорает)'}`);
       if (!gatingFx()) endTurnNow(); // есть клип гибели босса — ход уйдёт после него (fxDone)
       break;
     }
