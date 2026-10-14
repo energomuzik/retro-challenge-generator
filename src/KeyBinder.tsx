@@ -66,12 +66,20 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
   const keysOf = () => prefs[keysField] as Record<string, string>;
   const padOf = () => prefs[padField] as Record<string, number>;
 
-  /* захват клавиши: NES — e.code; остальные — e.key (нижний регистр, как читает ядро) */
+  /* захват клавиши: NES — e.code; остальные — e.key (нижний регистр, как читает ядро).
+     v0.107: action 'quickLoad' — глобальная клавиша «Быстрой загрузки» (e.key, вне семейств). */
   useEffect(() => {
     if (!capture || capture.kind !== 'key') return;
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault();
       if (e.code === 'Escape') { setCapture(null); return; }
+      if (capture.action === 'quickLoad') {
+        const keyName = e.key === ' ' ? 'space' : e.key.toLowerCase();
+        update({ ...prefs, quickKey: keyName } as EmuPrefs);
+        setCapture(null);
+        sfx.coin();
+        return;
+      }
       if (isCode) {
         update({ ...prefs, [keysField]: { ...keysOf(), [capture.action]: e.code } } as EmuPrefs);
       } else {
@@ -112,7 +120,10 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
         const bi = gp.buttons.findIndex((b, i) => !st.baseline[i] && (b.pressed || b.value > 0.5));
         if (bi >= 0) {
           setPrefs((prev) => {
-            const next = { ...prev, [padField]: { ...(prev[padField] as Record<string, number>), [c.action]: bi } } as EmuPrefs;
+            /* v0.107: quickLoad — глобальная кнопка пада (вне семейств) */
+            const next = c.action === 'quickLoad'
+              ? ({ ...prev, quickPad: bi } as EmuPrefs)
+              : ({ ...prev, [padField]: { ...(prev[padField] as Record<string, number>), [c.action]: bi } } as EmuPrefs);
             saveEmuPrefs(next);
             return next;
           });
@@ -126,11 +137,24 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fam]);
 
-  /* сброс ТОЛЬКО текущего семейства (чужие раскладки не трогаем) */
+  /* сброс ТОЛЬКО текущего семейства (чужие раскладки не трогаем; быстрая загрузка не сбрасывается) */
   const reset = () => {
     update({ ...prefs, [keysField]: { ...defaults.keys }, [padField]: { ...defaults.pad } } as EmuPrefs);
     sfx.fail();
   };
+
+  /* v0.107: подписи глобальной «Быстрой загрузки» */
+  const quickKeyLabel = (() => {
+    const k = (prefs.quickKey ?? '').toLowerCase();
+    if (!k) return '—';
+    if (/^f\d{1,2}$/.test(k)) return k.toUpperCase();
+    if (k === 'space') return 'Пробел';
+    if (k === 'shift') return 'Shift';
+    if (k === 'control') return 'Ctrl';
+    if (k === 'alt') return 'Alt';
+    if (k === 'enter') return 'Enter';
+    return k.length === 1 ? k.toUpperCase() : k;
+  })();
 
   const btnCls = (active: boolean) =>
     `font-pixel text-[9px] px-2 py-1.5 border-2 transition-colors cursor-pointer min-w-[64px] text-center ${
@@ -161,6 +185,27 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
             </div>
           </div>
         ))}
+      </div>
+      {/* v0.107: ГЛОБАЛЬНАЯ кнопка «Быстрая загрузка» — одна на все консоли, вне раскладок */}
+      <div className="border-2 border-gold/50 bg-[rgba(255,207,63,0.06)] px-2.5 py-2">
+        <div className="tick-label text-gold mb-1">⚡ Быстрая загрузка · одна на все консоли</div>
+        <p className="text-[10px] text-dim leading-snug mb-2">В «Запуске эмулятора» — мгновенно грузит ВЫДЕЛЕННОЕ кликом сохранение; во время задания — перезапускает задание (в Спринтере — за 1 бронзу, как кнопка «Перезапуск»). Работает и когда фокус у эмулятора.</p>
+        <div className="grid grid-cols-2 gap-2 max-w-[320px]">
+          <button
+            onClick={() => { setCapture({ kind: 'key', action: 'quickLoad' }); sfx.hover(); }}
+            className={btnCls(capture?.kind === 'key' && capture.action === 'quickLoad')}
+            title="Назначить клавишу быстрой загрузки (по умолчанию F6)"
+          >
+            {capture?.kind === 'key' && capture.action === 'quickLoad' ? 'НАЖМИТЕ…' : quickKeyLabel}
+          </button>
+          <button
+            onClick={() => { setCapture({ kind: 'gpad', action: 'quickLoad' }); sfx.hover(); }}
+            className={btnCls(capture?.kind === 'gpad' && capture.action === 'quickLoad')}
+            title="Назначить кнопку геймпада быстрой загрузки"
+          >
+            {capture?.kind === 'gpad' && capture.action === 'quickLoad' ? 'КНОПКУ…' : prefs.quickPad !== undefined && prefs.quickPad >= 0 ? `ДЖОЙ ${prefs.quickPad}` : 'ДЖОЙ —'}
+          </button>
+        </div>
       </div>
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-[11px] text-dim max-w-md leading-relaxed">

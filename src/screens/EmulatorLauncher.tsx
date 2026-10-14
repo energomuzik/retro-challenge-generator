@@ -19,6 +19,7 @@ import {
   type PadFamily,
 } from '../input';
 import { sfx } from '../sound';
+import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
 
 const fmtSize = (b: number) => (b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} МБ` : `${Math.max(1, Math.round(b / 1024))} КБ`);
 
@@ -46,6 +47,8 @@ export default function EmulatorLauncher() {
   const [runKey, setRunKey] = useState(0);
   const [runState, setRunState] = useState<unknown>(undefined);
   const [running, setRunning] = useState(false);
+  /* v0.107: ВЫДЕЛЕННОЕ кликом сохранение (обводка) — для «⚡ Быстрой загрузки» */
+  const [selSaveId, setSelSaveId] = useState<string | null>(null);
   const [, forceUi] = useState(0);
   // единый API эмулятора EmulatorJS (и NES, и SEGA)
   const ejsApiRef = useRef<SegaApi | null>(null);
@@ -108,6 +111,8 @@ export default function EmulatorLauncher() {
   const removeEmptyRomFolder = (name: string) => setEmptyFoldersSaved((prev) => prev.filter((x) => x !== name));
 
   const rom = roms.find((r) => r.id === romId) ?? null;
+  /* v0.107: смена рома сбрасывает выделение сохранения */
+  useEffect(() => { setSelSaveId(null); }, [romId]);
   const isNes = rom?.ext === 'nes';
   // семейство раскладки текущего рома (NES/SEGA/SNES/GBA/PCE/Atari)
   const padFam: PadFamily = padFamilyOf(rom?.ext, rom?.fileName);
@@ -296,6 +301,18 @@ export default function EmulatorLauncher() {
     }
     void launch(s.state);
   };
+
+  /* ---------- v0.107: БЫСТРАЯ ЗАГРУЗКА ВЫДЕЛЕННОГО СОХРАНЕНИЯ ----------
+     Клик по сохранению — выделить (обводка); кнопка «⚡ Быстрая загрузка» и
+     глобальная клавиша/джой (Управление, по умолчанию F6) грузят его мгновенно —
+     без прокрутки к нужной карточке. */
+  const selSave = romSaves.find((x) => x.id === selSaveId) ?? null;
+  const quickKeyLbl = quickKeyLabelOf(loadEmuPrefs()); // v0.107: подпись клавиши быстрой загрузки
+  const quickLoadFire = () => {
+    if (selSave) { loadSave(selSave); return; }
+    toast(rom ? 'Сначала выделите сохранение — кликните по нему в списке' : 'Сначала выберите ром', 'err');
+  };
+  useQuickLoad(quickLoadFire);
 
   // Сброс: перезапуск ядра с начала (без состояния).
   const resetEmu = () => {
@@ -544,6 +561,8 @@ export default function EmulatorLauncher() {
           Ромы раскладываются по папкам-спойлерам (как тайлы): создайте папку кнопкой «+ Папка», выберите её в списке и загрузите сразу пачку файлов.
           Каждому рому можно дать ОБЛОЖКУ КАРТРИДЖА: 📷 — готовая картинка (размер и пропорции читаются из файла), ✂ — вырезать картридж из картинки ТОЧНО ТАК ЖЕ, как тайлы в редакторе карт: фон АВТО/палитра/пипетка, допуск, мин. размер, склейка частей — клик по вырезанному тайлу ставит его обложкой (пропорции честные, прозрачный фон остаётся прозрачным). В режиме КАРТИНОК (кнопка 🖼 на папке) ромы показываются фотографиями реальных картриджей, а кнопка ⛶ разворачивает большой список картинок в отдельном окне.
           Удаление папок, ромов, сохранений и УБИРАНИЕ ОБЛОЖЕК (✕) подчиняются режиму из «Опций», а Ctrl+Z вернёт последнее удалённое.
+          ПЕРЕИМЕНОВАНИЕ (✏) — у ЛЮБОГО сохранения: добавьте к «Уровню N»/«Боссу N» свои слова-пометки («Уровень 2 — башня») — в игре сразу видно, какой это уровень, даже если уровни выбираются в произвольном порядке.
+          ⚡ БЫСТРАЯ ЗАГРУЗКА: кликните по сохранению в списке — оно выделится обводкой; кнопка «⚡ Быстрая загрузка» (и назначенная в «Управлении» клавиша/джой, по умолчанию F6) грузит его мгновенно, даже когда играет эмулятор.
           БАЗА РОМОВ: кнопка «Сохранить базу» выгружает ВСЕ ромы одним файлом — вместе с обложками картриджей; «Загрузить базу» заливает такой файл целиком (уже существующие ромы не дублируются) — можно собрать базу на одном устройстве и перенести на другое без загрузки всего остального.
           {' '}CODESEARCH: запустите ром и нажмите CodeSearch — поиск по памяти игры в стиле ArtMoney: найдите адрес жизней/оружия/счётчика и соберите КОД УСЛОВИЯ для задания (вставляется в редакторе заданий — тогда задание зачтётся само, без «на доверии»).
         </p>
@@ -771,6 +790,21 @@ export default function EmulatorLauncher() {
             {rom && (
               <Panel title={`Сохранения «${rom.name}» · ${romSaves.length}`} icon={Ic.save(16)}>
                 <div className="p-3 space-y-2">
+                  {/* v0.107: БЫСТРАЯ ЗАГРУЗКА ВЫДЕЛЕННОГО — кнопка + подсказка клавиши.
+                      Сохранение выделяется КЛИКОМ по карточке (обводка) — тянуться вниз
+                      и искать нужное больше не нужно */}
+                  {romSaves.length > 0 && (
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <PxBtn
+                        color="gold"
+                        onClick={() => quickLoadFire()}
+                        title={selSave ? `Загрузить «${selSave.name}» прямо сейчас (слот ${selSave.slot})` : 'Сначала кликните по сохранению в списке — оно выделится обводкой'}
+                      >
+                        ⚡ Быстрая загрузка{selSave ? `: ${selSave.name}` : ''}{quickKeyLbl ? ` · ${quickKeyLbl}` : ''}
+                      </PxBtn>
+                      <span className="tick-label text-faint">выделяйте сохранение кликом — обведённое грузится кнопкой и клавишей</span>
+                    </div>
+                  )}
                   {/* v0.62: стереть ВСЕ сохранения этого рома одной кнопкой
                       (режим удаления из Опций: подтверждение/удержание; Ctrl+Z вернёт всё) */}
                   {romSaves.length > 0 && (
@@ -789,11 +823,17 @@ export default function EmulatorLauncher() {
                   <div className="grid sm:grid-cols-2 gap-2">
                   {romSaves.map((s) => {
                     const k = saveKindOf(s);
+                    const sel = selSaveId === s.id;
                     return (
-                      <div key={s.id} className="border-2 border-edge bg-panel px-3 py-2.5 flex items-center gap-2">
+                      <div
+                        key={s.id}
+                        onClick={() => { setSelSaveId(sel ? null : s.id); sfx.click(); }}
+                        className={`border-2 bg-panel px-3 py-2.5 flex items-center gap-2 cursor-pointer transition-colors ${sel ? 'border-gold shadow-[0_0_14px_rgba(255,207,63,0.35)]' : 'border-edge hover:border-gold/60'}`}
+                        title={sel ? 'Выделено — грузится «⚡ Быстрой загрузкой» и назначенной клавишей/джоем. Клик ещё раз — снять выделение' : 'Клик — выделить сохранение для быстрой загрузки'}
+                      >
                         <span className={`font-pixel text-[7px] px-1 py-0.5 shrink-0 ${SAVE_KIND_CLS[k]}`}>{SAVE_KIND_SHORT[k]}</span>
                         {renamingId === s.id ? (
-                          <div className="flex-1 min-w-0 flex items-center gap-1">
+                          <div className="flex-1 min-w-0 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                             <input
                               autoFocus
                               className="field-in w-full min-w-0 px-2 py-1 text-[12px]"
@@ -811,17 +851,24 @@ export default function EmulatorLauncher() {
                               <div className="font-display text-[11px] uppercase text-paper truncate">{s.name}</div>
                               <div className="tick-label text-faint">S{s.slot} · {new Date(s.createdAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</div>
                             </div>
-                            <GhostBtn small onClick={() => loadSave(s)}>{Ic.play(11)}</GhostBtn>
-                            {k === 'private' && (
-                              <GhostBtn small onClick={() => { setRenamingId(s.id); setRenameVal(s.name); }} title="Переименовать частное сохранение">{Ic.pen(11)}</GhostBtn>
-                            )}
-                            <HoldDeleteButton
-                              onFire={() => void delSave(s)}
-                              label={`сохранение «${s.name}» (слот ${s.slot})`}
-                              ariaLabel="Удалить сохранение"
-                              title="Удалить сохранение"
-                              className="text-faint hover:text-coral cursor-pointer"
-                            >{Ic.trash(14)}</HoldDeleteButton>
+                            <GhostBtn small onClick={(e) => { e.stopPropagation(); loadSave(s); }} title="Загрузить это сохранение прямо сейчас">{Ic.play(11)}</GhostBtn>
+                            {/* v0.107: ✏ у ЛЮБОГО сохранения — уровни/боссы получают слова-пометки («Уровень 2 — башня») */}
+                            <GhostBtn
+                              small
+                              onClick={(e) => { e.stopPropagation(); setRenamingId(s.id); setRenameVal(s.name); }}
+                              title={k === 'level' || k === 'boss'
+                                ? 'Переименовать: добавьте слова-пометку («Уровень 2 — башня») — игроки увидят, какой это уровень'
+                                : k === 'mytask' ? 'Переименовать «Моё задание»' : 'Переименовать частное сохранение'}
+                            >{Ic.pen(11)}</GhostBtn>
+                            <span onClick={(e) => e.stopPropagation()}>
+                              <HoldDeleteButton
+                                onFire={() => void delSave(s)}
+                                label={`сохранение «${s.name}» (слот ${s.slot})`}
+                                ariaLabel="Удалить сохранение"
+                                title="Удалить сохранение"
+                                className="text-faint hover:text-coral cursor-pointer"
+                              >{Ic.trash(14)}</HoldDeleteButton>
+                            </span>
                           </>
                         )}
                       </div>

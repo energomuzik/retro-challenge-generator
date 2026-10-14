@@ -451,6 +451,9 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     'HTMLCanvasElement.prototype.getContext=function(t,a){',
     'if(t==="webgl"||t==="webgl2"||t==="experimental-webgl"){a=Object.assign({},a,{preserveDrawingBuffer:true});}',
     'return _gc.call(this,t,a);};})();',
+    // v0.107: пересылка нажатий клавиш наружу (БЕЗ repeat) — «Быстрая загрузка» (F6 и др.)
+    // срабатывает даже когда фокус у эмулятора; ядро свои клавиши получает как раньше.
+    'window.addEventListener("keydown",function(e){if(e.repeat)return;try{parent.postMessage({type:"emu-key",key:e.key},"*");}catch(err){}},true);',
     'window.EJS_player="#game";',
     `window.EJS_core=${JSON.stringify(core)};`,
     // Слой переназначения клавиш: перехватывает нажатия ДО обработчика ядра и

@@ -36,6 +36,11 @@ export interface EmuPrefs {
   a26Pad: Record<A26Action, number>;
   gamepad: boolean;
   smoothing: boolean;
+  /* v0.107: ГЛОБАЛЬНАЯ кнопка «Быстрая загрузка» (вне раскладок консолей): клавиша (e.key в нижнем
+     регистре, по умолчанию F6) и кнопка геймпада (индекс W3C; undefined — не назначено).
+     «Запуск эмулятора» — грузит выделенное сохранение; во время задания — перезапускает задание. */
+  quickKey?: string;
+  quickPad?: number;
 }
 
 /* ---------- SEGA Genesis (Megadrive): 6 кнопок + Start, без Select ---------- */
@@ -361,6 +366,8 @@ export function consoleAspect(ext: string | undefined): number {
 
 const PREFS_KEY = 'retropolia-emu-prefs';
 export const PREFS_EVENT = 'retropolia-prefs-changed';
+/* v0.107: клавиша «Быстрой загрузки» по умолчанию — F6 (вне раскладок всех консолей) */
+export const QUICK_KEY_DEFAULT = 'f6';
 
 /* Самовосстановление раскладки: ОДИН физический индекс = ОДНО действие.
    Если в сохранённых настройках несколько действий висят на одной кнопке
@@ -389,6 +396,8 @@ export function loadEmuPrefs(): EmuPrefs {
     pceKeys: { ...DEFAULT_PCE_KEYS }, pcePad: { ...DEFAULT_PCE_GPAD },
     a26Keys: { ...DEFAULT_A26_KEYS }, a26Pad: { ...DEFAULT_A26_GPAD },
     gamepad: true, smoothing: false,
+    quickKey: QUICK_KEY_DEFAULT, // v0.107: F6 — быстрая загрузка (перезаписывается из localStorage)
+    quickPad: undefined,
   };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
@@ -409,6 +418,8 @@ export function loadEmuPrefs(): EmuPrefs {
       a26Pad: dedupePad(A26_ACTIONS, { ...base.a26Pad, ...(p.a26Pad ?? {}) }, DEFAULT_A26_GPAD),
       gamepad: p.gamepad !== false,
       smoothing: !!p.smoothing,
+      quickKey: typeof p.quickKey === 'string' && p.quickKey ? p.quickKey.toLowerCase() : QUICK_KEY_DEFAULT,
+      quickPad: typeof p.quickPad === 'number' && p.quickPad >= 0 ? p.quickPad : undefined,
     };
   } catch {
     return base;

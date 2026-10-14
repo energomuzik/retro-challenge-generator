@@ -26,6 +26,7 @@ import TradeWindow from './TradeWindow';
 import { nodeShowsQuests, nodeShowsShop } from '../dialogHubs';
 import { idbGet } from '../db';
 import { sfx } from '../sound';
+import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
 import { startLoop, stopLoop, syncLoops, stopGroup, killGroup, stopOneShot, playOneShot } from '../loopsnd';
 
 /* единичные векторы направлений фишки — для расчёта хода чужой фишки со СКОРОСТЬЮ КАРТЫ */
@@ -303,14 +304,11 @@ export default function GameScreen() {
   const myPick = isBogach && s && map ? (Object.entries(s.qPicks ?? {}).find(([, pk]) => pk.by === me)?.[0] ?? null) : null;
   const myPickIdx = myPick !== null ? Number(myPick) : -1;
   const myPickList = myPickIdx >= 0 ? bogachCellList(s!, map!, myPickIdx) : [];
-  /* v0.106 СПРИНТЕР: ожидание после пропуска/поражения, потраченное на задание, окно победителя */
+  /* v0.106 СПРИНТЕР: ожидание после пропуска/поражения, потраченное на задание */
   const myQWait = isBogach && s ? s.qWait?.[me] : undefined;
   const myQSpent = isBogach && s ? (s.qSpent?.[me] ?? 0) : 0;
-  const myPostWin = isBogach && s ? s.qPostWin : undefined;
-  const [postTplOpen, setPostTplOpen] = useState(false); // окно «своё задание» из окна победителя
-  /* v0.104 БОГАЧ: мои иммунитеты торговцев (ждут активации / тикают) */
+  /* v0.104 БОГАЧ: мои иммунитеты торговцев (ждут активации / тикают) — v0.107: живут в ИНВЕНТАРЕ */
   const myImmunes = (isBogach || isQuest) && s ? s.qImmunes?.[me] ?? [] : [];
-  const [immOpen, setImmOpen] = useState(false); // окно «Иммунитеты» (активация ТОЛЬКО до старта задания)
   const task = s && map && ch ? cellTaskOf(s, map, ch.cellIdx) : null;
   /* v0.70 ТОЛЬКО ПО КОДУ: у задания ручные кнопки отключены — победа/поражение решают только коды CodeSearch */
   const chCodeOnly = !!task?.codeOnly;
@@ -2402,6 +2400,30 @@ export default function GameScreen() {
   // свой ход, фишка стоит, кубики не брошены — можно осматривать карту перетаскиванием
   const canLookAround = !!s && !!mePlayer && myTurn && s.phase === 'playing' && !s.moving && !ch && !s.pendingCard && !s.quiz && !s.awaitPost && viewMode === 'follow' && !peekMap;
 
+  /* ---------- v0.107: БЫСТРАЯ ЗАГРУЗКА (глобальная клавиша, по умолчанию F6) ----------
+     Во время задания = ПЕРЕЗАПУСК задания: та же логика, что у кнопки «Перезапуск»
+     открытого окна (Спринтер — с платой 1 бронза; классика — через reloadSave; RUBG —
+     перезагрузка рома с сохранения). Где окна нет — клавиша молчит. */
+  const quickLoadFire = () => {
+    if (myQJob && myQTask) { // QUEST / БОГАЧ (СПРИНТЕР) — личное окно задания
+      ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null);
+      if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); // перезапуск — 1 бронза
+      sfx.alarm();
+      return;
+    }
+    if (myJob && myRubgTask) { // RUBG — личное задание
+      ejsApiRef.current?.loadSaveReliable((rSaveState as string | null) ?? null);
+      sfx.alarm();
+      return;
+    }
+    if (ch && s && map && myTurn && ch.status === 'playing' && canReload) { // классика (Ретрополия)
+      dispatch({ t: 'reloadSave', id: me });
+      sfx.alarm();
+    }
+  };
+  useQuickLoad(quickLoadFire);
+  const quickKeyLbl = quickKeyLabelOf(loadEmuPrefs()); // v0.107: подпись клавиши быстрой загрузки на кнопках «Перезапуск»
+
   // «закрытые» ячейки: не посещены и не захвачены — скрываем тип и картинку (опция)
   const mystery = useMemo(() => {
     if (!options.hideUnrevealed || !s || !map) return undefined;
@@ -2777,14 +2799,9 @@ export default function GameScreen() {
         </div>
         <div className="flex items-center gap-1.5 ml-auto">
           {myTurn && streaming && <span className="font-pixel text-[7px] text-coral blink-hard">LIVE</span>}
-          {/* v0.104 БОГАЧ: иммунитеты торговцев — активация до старта задания */}
-          {isBogach && (
-            <GhostBtn small onClick={() => { setImmOpen(true); sfx.click(); }} title="Купленные иммунитеты: активируйте ДО старта задания">
-              🛡 Иммунитеты{myImmunes.length > 0 ? ` · ${myImmunes.length}` : ''}
-            </GhostBtn>
-          )}
+          {/* v0.107: кнопка «🛡 Иммунитеты» убрана — иммунитеты переехали в «Инвентарь» */}
           <GhostBtn small onClick={() => { setInvOpen(true); sfx.click(); }}>
-            {Ic.grid(12)} Инвентарь{invCount > 0 ? ` · ${invCount}` : ''}{incomingTrades.length > 0 ? ' 💼' : ''}
+            {Ic.grid(12)} Инвентарь{invCount > 0 ? ` · ${invCount}` : ''}{incomingTrades.length > 0 ? ' 💼' : ''}{isBogach && myImmunes.length > 0 ? ` 🛡${myImmunes.length}` : ''}
           </GhostBtn>
           {/* КАРТА МИРА — доступна и в режиме комнат (v0.50.0): неоткрытые плитки скрывает туман исследования */}
           <GhostBtn small onClick={() => { setPeekMap(false); setWorldZoom(1); worldPanRef.current = { x: 0, y: 0 }; setViewMode((m) => (m === 'world' ? 'follow' : 'world')); }}>
@@ -3852,10 +3869,10 @@ export default function GameScreen() {
                           <GhostBtn
                             className="w-full"
                             disabled={!canReload}
-                            title={!canReload ? 'Ресурс закончился — перезапускать нечем. Пропустите задание (кнопка «Пропустить»)' : undefined}
+                            title={!canReload ? 'Ресурс закончился — перезапускать нечем. Пропустите задание (кнопка «Пропустить»)' : quickKeyLbl ? `Быстрая загрузка — клавиша ${quickKeyLbl}` : undefined}
                             onClick={() => dispatch({ t: 'reloadSave', id: me })}
                           >
-                            {Ic.rotate(13)} Перезапуск задания
+                            {Ic.rotate(13)} Перезапуск задания{quickKeyLbl ? ` · ⚡${quickKeyLbl}` : ''}
                           </GhostBtn>
                           <GhostBtn
                             className="w-full"
@@ -4244,7 +4261,7 @@ export default function GameScreen() {
                         </div>
                       </div>
                       <p className="text-[10px] text-faint">{isBogach
-                        ? `Гонка: вся компания играет ОДНУ игру одновременно, но задание НИКОМУ не транслируется — что за игра, видно только на вашем экране. Кто ПЕРВЫЙ пройдёт — +${bogachWin} бронзы${bogachWin ? '' : ' (награда не назначена)'}, остальные, кто ещё играл, остановятся и заплатят столько же (хозяину ячейки, 20% испарится). Перезапуск — 1 бронза (траты идут в зачёт). Пропуск/поражение — сразу ${skipCoinsNeed} бронзы или потраченное${myQSpent ? ` (уже потрачено: ${myQSpent})` : ''} — и фишка замрёт, пока задание не разрешится.${bogachFree ? ' У ВАС ИММУНИТЕТ: пропуск бесплатный.' : ''}`
+                        ? `Гонка: вся компания играет ОДНУ игру одновременно, но задание НИКОМУ не транслируется — что за игра, видно только на вашем экране. Кто ПЕРВЫЙ пройдёт — +${bogachWin} бронзы${bogachWin ? '' : ' (награда не назначена)'}, остальные, кто ещё играл, просто остановятся (на НИЧЕЙНОЙ ячейке никто ничего не платит). Ячейка ломается ДО КОНЦА КАТКИ. Перезапуск — 1 бронза (траты идут в зачёт). Пропуск/поражение — сразу ${skipCoinsNeed} бронзы или потраченное${myQSpent ? ` (уже потрачено: ${myQSpent})` : ''} — и фишка замрёт, пока задание не разрешится.${bogachFree ? ' У ВАС ИММУНИТЕТ: пропуск бесплатный.' : ''}`
                         : 'Режим доверия — победа и поражение на твоей совести. Каждый игрок проходит задания САМ: выполненные засчитываются только тебе (цели концовок и квестов — личные).'}</p>
                       {!qArmed ? (
                         <>
@@ -4278,15 +4295,15 @@ export default function GameScreen() {
                             </GhostBtn>
                             <GhostBtn
                               title={isBogach
-                                ? `Перезапустить игру с сохранения (или с начала) — стоит 1 бронзу (траты идут в зачёт пропуска)${myQSpent ? ` · уже потрачено: ${myQSpent}` : ''}`
-                                : 'Перезапустить игру с сохранения (или с начала)'}
+                                ? `Перезапустить игру с сохранения (или с начала) — стоит 1 бронзу (траты идут в зачёт пропуска)${myQSpent ? ` · уже потрачено: ${myQSpent}` : ''}${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`
+                                : `Перезапустить игру с сохранения (или с начала)${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`}
                               onClick={() => {
                                 ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null);
                                 if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); // v0.106: перезапуск — 1 бронза
                                 sfx.alarm();
                               }}
                             >
-                              {Ic.rotate(13)} Перезапуск{isBogach ? ' · 1🪙' : ''}
+                              {Ic.rotate(13)} Перезапуск{isBogach ? ' · 1🪙' : ''}{quickKeyLbl ? ` · ⚡${quickKeyLbl}` : ''}
                             </GhostBtn>
                             <GhostBtn
                               title={isBogach
@@ -4335,7 +4352,7 @@ export default function GameScreen() {
             <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.82)] p-3">
               <div className="pixel-panel pixel-corners p-4 w-full max-w-[560px] max-h-[92vh] overflow-y-auto">
                 <div className="font-display uppercase text-lg text-gold mb-1">🎲 Выберите задание ячейки №{myPickIdx + 1}</div>
-                <p className="text-[10px] text-dim leading-snug mb-3">Вы опередили всех — выбирайте игру для ВСЕЙ компании: она запустится у всех игроков ОДНОВРЕМЕННО. Выбор никому не транслируется, поэтому берите игру, в которой вы сильнее всех: кто первый её пройдёт — заберёт награду, а остальные остановятся и заплатят.</p>
+                <p className="text-[10px] text-dim leading-snug mb-3">Вы опередили всех — выбирайте игру для ВСЕЙ компании: она запустится у всех игроков ОДНОВРЕМЕННО. Выбор никому не транслируется, поэтому берите игру, в которой вы сильнее всех: кто первый её пройдёт — заберёт награду, а остальные просто остановятся (на ничейной ячейке никто не платит). Побеждённая ячейка ломается до конца катки.</p>
                 <div className="space-y-2">
                   {myPickList.map((tk, vi) => {
                     const rDef = st.roms.find((r) => r.id === tk.romId);
@@ -4358,35 +4375,7 @@ export default function GameScreen() {
             </div>
           )}
 
-          {/* ============ v0.104 БОГАЧ: ИММУНИТЕТЫ — активация ТОЛЬКО до старта задания ============ */}
-          {isBogach && immOpen && (
-            <Modal title="🛡 Мои иммунитеты" onClose={() => setImmOpen(false)}>
-              <p className="text-[11px] text-dim leading-snug mb-2">Куплены у торговцев. Активируйте ДО входа в ячейку задания — с активации тикает срок, и пропуск заданий этой платформы БЕСПЛАТНЫЙ, пока иммунитет действует. С активным заданием активировать нельзя.</p>
-              {myImmunes.length === 0 && <p className="text-[11px] text-faint">Иммунитетов нет — купите у торговца (товар «Иммунитет на платформу»).</p>}
-              <div className="space-y-1.5">
-                {myImmunes.map((im) => {
-                  const nowMs = Date.now();
-                  const leftMs = im.activatedAt ? im.activatedAt + im.minutes * 60000 - nowMs : 0;
-                  const active = !!im.activatedAt && leftMs > 0;
-                  return (
-                    <div key={im.id} className="flex items-center justify-between gap-2 border-2 border-edge px-2 py-1.5">
-                      <span className="text-[11px]">
-                        <b className="text-gold">🛡 {taskPlatLabel(im.plat)}</b> · {im.minutes} мин
-                        {active && <span className="text-teal"> · действует ещё {Math.max(1, Math.ceil(leftMs / 60000))} мин</span>}
-                        {im.activatedAt && !active && <span className="text-faint"> · срок вышел</span>}
-                      </span>
-                      {!im.activatedAt && (
-                        <PxBtn small color="teal" disabled={!!myQJob} title={myQJob ? 'Сначала завершите текущее задание' : 'Активировать иммунитет (запустится срок)'}
-                          onClick={() => { sfx.success(); dispatch({ t: 'qImmuneOn', id: me, immId: im.id }); }}>
-                          Активировать
-                        </PxBtn>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </Modal>
-          )}
+          {/* v0.107: окно «Мои иммунитеты» переехало в ИНВЕНТАРЬ (кнопка «Инвентарь» вверху) */}
         </>
       )}
 
@@ -4480,10 +4469,10 @@ export default function GameScreen() {
                         )}
                         <GhostBtn
                           className="w-full mt-2"
-                          title="Перезапустить игру с сохранения (или с начала, если сохранения нет) — как «Перезапуск задания» в других режимах"
+                          title={`Перезапустить игру с сохранения (или с начала, если сохранения нет) — как «Перезапуск задания» в других режимах${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`}
                           onClick={() => { ejsApiRef.current?.loadSaveReliable((rSaveState as string | null) ?? null); sfx.alarm(); }}
                         >
-                          {Ic.rotate(13)} Перезапуск задания
+                          {Ic.rotate(13)} Перезапуск задания{quickKeyLbl ? ` · ⚡${quickKeyLbl}` : ''}
                         </GhostBtn>
                       </>
                     )}
@@ -4852,32 +4841,8 @@ export default function GameScreen() {
         </>
       )}
 
-      {/* ============ v0.106 СПРИНТЕР: окно ПОБЕДИТЕЛЯ ячейки — поставить своё задание или оставить прежнее ============ */}
-      {myPostWin && !postTplOpen && (
-        <Modal title={`Ячейка №${myPostWin.cellIdx + 1} — ваша!`} icon={Ic.trophy(16)} w="max-w-lg">
-          <p className="text-[13px] text-dim mb-1">
-            Победа! Ячейка разбита и чинится <b className="text-paper">1 минуту</b> — потом снова играет, хозяин — вы.
-            Проигравшие на ней будут отдавать вам ресурсы (20% испаряется).
-          </p>
-          <p className="text-[11px] text-faint mb-4">Пока чинится — решите: поставить СВОЁ задание (ром и сохранение из вашей библиотеки) или оставить прежнее. Остальные игроки не ждут — ходят свободно.</p>
-          <div className="grid grid-cols-2 gap-3">
-            <button onClick={() => { sfx.coin(); dispatch({ t: 'qPostWinSkip', id: me, cellIdx: myPostWin.cellIdx }); }} className="pixel-panel pixel-corners p-4 text-left hover:border-gold hover:-translate-y-0.5 transition-all cursor-pointer group">
-              <span className="text-gold">{Ic.dice(22)}</span>
-              <div className="font-display uppercase text-paper group-hover:text-gold mt-2 text-sm">Оставить прежнее</div>
-              <div className="text-[10px] text-dim mt-1">Задание ячейки не меняется — после починки играют его (варианты выберут заново)</div>
-            </button>
-            <button onClick={() => { sfx.click(); setPostTplOpen(true); }} className="pixel-panel pixel-corners p-4 text-left hover:border-magma hover:-translate-y-0.5 transition-all cursor-pointer group">
-              <span className="text-magma">{Ic.cart(22)}</span>
-              <div className="font-display uppercase text-paper group-hover:text-magma mt-2 text-sm">Поставить своё задание</div>
-              <div className="text-[10px] text-dim mt-1">Ром + сохранение из библиотеки — вступит в силу после починки (1 минута)</div>
-            </button>
-          </div>
-          <div className="text-center mt-3">
-            <GhostBtn small onClick={() => { dispatch({ t: 'qPostWinSkip', id: me, cellIdx: myPostWin.cellIdx }); }}>{Ic.cross(12)} Решить позже (= оставить прежнее)</GhostBtn>
-          </div>
-        </Modal>
-      )}
-      {myPostWin && postTplOpen && <TemplateModal bogach cellIdx={myPostWin.cellIdx} onClose={() => setPostTplOpen(false)} />}
+      {/* v0.107: окно победителя «поставить своё задание / оставить прежнее» УБРАНО —
+          в Спринтере ячейка после победы ломается ДО КОНЦА КАТКИ (решать больше нечего) */}
 
       {tplOpen && <TemplateModal cellIdx={active?.pos ?? 0} onClose={() => setTplOpen(false)} />}
 
@@ -4988,7 +4953,7 @@ function DieFace({ v, dropping, delay, rolling, blank, frame }: { v: number; dro
 
 /* ---------- шаблон нового задания ---------- */
 
-function TemplateModal({ cellIdx, onClose, bogach }: { cellIdx: number; onClose: () => void; bogach?: boolean }) {
+function TemplateModal({ cellIdx, onClose }: { cellIdx: number; onClose: () => void }) {
   const { roms, saves, session, selfId } = useApp();
   const [romId, setRomId] = useState('');
   const [saveId, setSaveId] = useState('');
@@ -5017,10 +4982,9 @@ function TemplateModal({ cellIdx, onClose, bogach }: { cellIdx: number; onClose:
       desc: desc.trim() || 'Задание, придуманное игроком на этой сессии.',
       joy: (joyId || undefined) as TaskDef['joy'],
     };
-    /* v0.106: в Спринтере — qCellTask (задание хозяина вступает после минутной починки);
-       в остальных режимах — setCellTask (как в Ретрополии) */
-    if (bogach) dispatch({ t: 'qCellTask', id: useApp.getState().selfId, cellIdx, task });
-    else dispatch({ t: 'setCellTask', id: useApp.getState().selfId, cellIdx, task, cardId: chaosCardId || undefined });
+    /* v0.107: окно победителя Спринтера удалено — TemplateModal живёт только как «своё задание»
+       на свою ячейку в Ретрополии/Джёрни/Квесте (setCellTask, как раньше) */
+    dispatch({ t: 'setCellTask', id: useApp.getState().selfId, cellIdx, task, cardId: chaosCardId || undefined });
     sfx.success();
     onClose();
   };
@@ -5032,7 +4996,7 @@ function TemplateModal({ cellIdx, onClose, bogach }: { cellIdx: number; onClose:
         <div className="font-display uppercase tracking-wide text-magma text-sm mb-3 flex items-center gap-2">
           {Ic.cart(16)} Шаблон задания · ячейка №{cellIdx + 1}
         </div>
-        <p className="text-[11px] text-dim mb-3">{bogach ? 'Ром и сохранение из библиотеки — задание хозяина ячейки: после минутной починки на ней будут играть ВСЕ вошедшие, а проигравшие отдадут вам ресурсы. Действует до конца сессии.' : 'Ром и сохранение из библиотеки — как в папках с шаблонами. Задание действует до конца этой сессии.'}</p>
+        <p className="text-[11px] text-dim mb-3">Ром и сохранение из библиотеки — как в папках с шаблонами. Задание действует до конца этой сессии.</p>
         <div className="space-y-3">
           <Field label="Ром (по папкам)">
             <select className="field-in w-full px-2 py-2 text-sm" value={romId} onChange={(e) => { setRomId(e.target.value); setSaveId(''); }}>
@@ -5070,8 +5034,7 @@ function TemplateModal({ cellIdx, onClose, bogach }: { cellIdx: number; onClose:
           <Field label="Описание">
             <textarea className="field-in w-full px-3 py-2 text-sm h-16 resize-none" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Пройти босса с одной полоской здоровья…" />
           </Field>
-          {!bogach && (
-            <Field label="Пакость из инвентаря (необязательно, максимум одна)">
+          <Field label="Пакость из инвентаря (необязательно, максимум одна)">
               {chaosCards.length === 0 ? (
                 <p className="text-[11px] text-dim">В инвентаре нет пакостных карточек — они выпадают на ячейках-шансах.</p>
               ) : (
@@ -5095,8 +5058,7 @@ function TemplateModal({ cellIdx, onClose, bogach }: { cellIdx: number; onClose:
                 </div>
               )}
               {chaosCardId && <p className="text-[10.5px] text-magma mt-1">Карточка будет потрачена — следующий играющий здесь получит пакость.</p>}
-            </Field>
-          )}
+          </Field>
           <Field label="Радость за прохождение (награда прошедшему, максимум одна)">
             <select className="field-in w-full px-2 py-2 text-sm" value={joyId} onChange={(e) => { setJoyId(e.target.value); sfx.hover(); }}>
               <option value="">— без радости —</option>
@@ -5108,7 +5070,7 @@ function TemplateModal({ cellIdx, onClose, bogach }: { cellIdx: number; onClose:
           </Field>
           <div className="flex justify-end gap-2 pt-1">
             <GhostBtn onClick={onClose}>Отмена</GhostBtn>
-            <PxBtn color="magma" onClick={apply}>{Ic.check(14)} {bogach ? 'Поставить на ячейку' : 'Заменить задание'}</PxBtn>
+            <PxBtn color="magma" onClick={apply}>{Ic.check(14)} Заменить задание</PxBtn>
           </div>
         </div>
       </div>
@@ -5157,6 +5119,9 @@ function InventoryModal({ onClose }: { onClose: () => void }) {
   const active = s.players[s.turn % s.players.length];
   const myTurn = !!active && active.id === me;
   const inv = mePlayer?.inventory ?? [];
+  /* v0.107: иммунитеты торговцев в инвентаре */
+  const myImmunesInv = s.qImmunes?.[me] ?? [];
+  const myQJobInv = s.qJobs?.[me];
   const trades = s.trades ?? [];
   const isOpen = (o: { status: string }) => o.status === 'pending' || o.status === 'countered';
   const reservedIds = new Set(trades.filter(isOpen).map((o) => o.cardId));
@@ -5284,6 +5249,38 @@ function InventoryModal({ onClose }: { onClose: () => void }) {
                       title={hpFull ? 'Полоска HP полна' : `Выпить: +${meta.hp}% HP`}
                       onClick={() => dispatch({ t: 'rubgUseItem', id: me!, itemId: it.id })}
                     >Выпить</PxBtn>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ---------- v0.107 БОГАЧ/КВЕСТ: МОИ ИММУНИТЕТЫ (переехали из кнопки в HUD) ---------- */}
+        {map && (isBogachMode(map.mode) || isQuestMode(map.mode)) && (
+          <div className="border-2 border-gold/50 bg-[rgba(255,207,63,0.05)] px-3 py-2.5 mb-4 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="tick-label text-gold">🛡 Мои иммунитеты{myImmunesInv.length > 0 ? ` · ${myImmunesInv.length}` : ''}</span>
+              <span className="tick-label text-faint">куплены у торговцев · активируйте ДО входа в задание</span>
+            </div>
+            <p className="text-[10px] text-dim leading-snug">С активации тикает срок: пропуск заданий этой платформы БЕСПЛАТНЫЙ, пока иммунитет действует. С активным заданием активировать нельзя.</p>
+            {myImmunesInv.length === 0 && <div className="text-[11px] text-faint">Иммунитетов нет — купите у торговца (товар «Иммунитет на платформу»).</div>}
+            {myImmunesInv.map((im) => {
+              const nowMs = Date.now();
+              const leftMs = im.activatedAt ? im.activatedAt + im.minutes * 60000 - nowMs : 0;
+              const active = !!im.activatedAt && leftMs > 0;
+              return (
+                <div key={im.id} className="flex items-center justify-between gap-2 border-2 border-edge px-2 py-1.5">
+                  <span className="text-[11px]">
+                    <b className="text-gold">🛡 {taskPlatLabel(im.plat)}</b> · {im.minutes} мин
+                    {active && <span className="text-teal"> · действует ещё {Math.max(1, Math.ceil(leftMs / 60000))} мин</span>}
+                    {im.activatedAt && !active && <span className="text-faint"> · срок вышел</span>}
+                  </span>
+                  {!im.activatedAt && (
+                    <PxBtn small color="teal" disabled={!!myQJobInv} title={myQJobInv ? 'Сначала завершите текущее задание' : 'Активировать иммунитет (запустится срок)'}
+                      onClick={() => { sfx.success(); dispatch({ t: 'qImmuneOn', id: me, immId: im.id }); }}>
+                      Активировать
+                    </PxBtn>
                   )}
                 </div>
               );
