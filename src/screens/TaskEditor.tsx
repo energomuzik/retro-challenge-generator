@@ -81,6 +81,9 @@ export default function TaskEditor() {
   const [fLoseCoins, setFLoseCoins] = useState('');
   const [fWinHp, setFWinHp] = useState('');
   const [fLoseHp, setFLoseHp] = useState('');
+  /* v0.108: ТАЙМЕР ЗАДАНИЯ (пакость редактора) — минуты и секунды в формате М:СС; пусто = без таймера */
+  const [fTimerMin, setFTimerMin] = useState('');
+  const [fTimerSec, setFTimerSec] = useState('');
   // форма карточки
   const [cName, setCName] = useState('');
   const [cDesc, setCDesc] = useState('');
@@ -138,6 +141,8 @@ export default function TaskEditor() {
     setFLoseCoins(tdef?.loseCoins !== undefined ? String(tdef.loseCoins) : '');
     setFWinHp(tdef?.winHp !== undefined ? String(tdef.winHp) : '');
     setFLoseHp(tdef?.loseHp !== undefined ? String(tdef.loseHp) : '');
+    setFTimerMin(tdef?.timerSec !== undefined && tdef.timerSec > 0 ? String(Math.floor(tdef.timerSec / 60)) : '');
+    setFTimerSec(tdef?.timerSec !== undefined && tdef.timerSec > 0 ? String(tdef.timerSec % 60) : '');
     setVLabel(cell.label ?? '');
     setVColor(cell.color ?? '');
     setVImg(cell.imageId ?? '');
@@ -393,6 +398,13 @@ export default function TaskEditor() {
       loseCoins: fLoseCoins !== '' ? Math.max(0, Math.floor(Number(fLoseCoins) || 0)) : undefined,
       winHp: fWinHp !== '' ? Math.max(0, Math.floor(Number(fWinHp) || 0)) : undefined,
       loseHp: fLoseHp !== '' ? Math.max(0, Math.floor(Number(fLoseHp) || 0)) : undefined,
+      /* v0.108: таймер задания (секунды); пусто/0 — таймера нет */
+      ...((() => {
+        const tm = Math.max(0, Math.floor(Number(fTimerMin) || 0));
+        const ts = Math.min(59, Math.max(0, Math.floor(Number(fTimerSec) || 0)));
+        const total = tm * 60 + ts;
+        return total > 0 ? { timerSec: total } : {};
+      })()),
       /* v0.68: зачёт по коду — условие по памяти эмулятора (CodeSearch) */
       ...(fCond ? { code: fCond } : {}),
       /* v0.68: поражение по коду — условие провала задания (CodeSearch) */
@@ -999,6 +1011,24 @@ export default function TaskEditor() {
                           <label className="flex items-center gap-1 text-[10px] text-coral" title="Плата за проигрыш в этом задании, % HP (QUEST и ресурс «полоска HP»)">
                             ❤ проигрыш HP<input type="number" min={0} placeholder="стандарт" className="field-in w-full px-1.5 py-1 text-[11px]" value={fLoseHp} onChange={(e) => setFLoseHp(e.target.value)} />
                           </label>
+                        </div>
+                      </div>
+                    </Field>
+                    {/* v0.108: ТАЙМЕР ЗАДАНИЯ — лимит времени в формате М:СС */}
+                    <Field label="Таймер задания М:СС (необязательно)">
+                      <div className="space-y-1 border-2 border-[rgba(255,93,115,0.4)] px-2 py-2">
+                        <p className="text-[10px] text-dim leading-tight">
+                          Лимит времени на выполнение: в окне задания тикает обратный отсчёт. На нуле —
+                          <b className="text-paper"> поражение</b>; у заданий «только по коду» — <b className="text-paper">перезапуск</b>;
+                          в Квесте (доверие) таймер <b className="text-paper">мигает</b>, игрок решает сам. Оба поля пусты = таймера нет.
+                        </p>
+                        <div className="flex items-center gap-1.5">
+                          <input type="number" min={0} max={99} placeholder="мин" className="field-in w-16 px-1.5 py-1 text-[11px]" value={fTimerMin} onChange={(e) => setFTimerMin(e.target.value)} title="Минуты (0–99)" />
+                          <span className="text-[11px] text-dim font-pixel">:</span>
+                          <input type="number" min={0} max={59} placeholder="сек" className="field-in w-16 px-1.5 py-1 text-[11px]" value={fTimerSec} onChange={(e) => setFTimerSec(e.target.value)} title="Секунды (0–59)" />
+                          {(fTimerMin !== '' || fTimerSec !== '') && (
+                            <GhostBtn small onClick={() => { setFTimerMin(''); setFTimerSec(''); }} title="Убрать таймер">{Ic.cross(11)}</GhostBtn>
+                          )}
                         </div>
                       </div>
                     </Field>

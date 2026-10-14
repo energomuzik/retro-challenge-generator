@@ -2409,11 +2409,13 @@ export default function GameScreen() {
       ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null);
       if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); // перезапуск — 1 бронза
       sfx.alarm();
+      setTimerRestartTick((x) => x + 1); // v0.108: перезапуск задания — таймер заново
       return;
     }
     if (myJob && myRubgTask) { // RUBG — личное задание
       ejsApiRef.current?.loadSaveReliable((rSaveState as string | null) ?? null);
       sfx.alarm();
+      setTimerRestartTick((x) => x + 1); // v0.108: перезапуск задания — таймер заново
       return;
     }
     if (ch && s && map && myTurn && ch.status === 'playing' && canReload) { // классика (Ретрополия)
@@ -2423,6 +2425,78 @@ export default function GameScreen() {
   };
   useQuickLoad(quickLoadFire);
   const quickKeyLbl = quickKeyLabelOf(loadEmuPrefs()); // v0.107: подпись клавиши быстрой загрузки на кнопках «Перезапуск»
+
+  /* ---------- v0.108: ТАЙМЕР ЗАДАНИЯ (пакость редактора «Таймер М:СС») ----------
+     Лимит времени на выполнение ставит АВТОР в редакторе заданий (в донате и при замене
+     задания таймер недоступен). Тикает локально у каждого игрока и только пока эмулятор
+     не на паузе; заново — при каждом (пере)запуске задания (в т.ч. быстрой загрузкой F6).
+     Исход по нулю зависит от режима:
+     • QUEST (задания на доверии) — таймер МИГАЕТ, игрок сам жмёт «Победа/Поражение»;
+     • «только по коду» — автоматический ПЕРЕЗАПУСК задания (таймер начинается заново);
+     • остальные — автоматическое ПОРАЖЕНИЕ (те же последствия, что у кнопки поражения). */
+  const [timerRestartTick, setTimerRestartTick] = useState(0);
+  const [timerLeft, setTimerLeft] = useState<number | null>(null);
+  const timerFiredRef = useRef(false);
+  const timerSpec = useMemo(() => {
+    if (ch && task?.timerSec && ch.status === 'playing') return { key: `c${ch.cellIdx}:${task.saveId ?? ''}`, sec: task.timerSec, kind: 'classic' as const };
+    if (myQJob && myQTask?.timerSec && qArmed) return { key: `q${myQJob.cellIdx}:${myQTask.saveId ?? ''}`, sec: myQTask.timerSec, kind: (isQuest ? 'trust' : 'sprinter') as 'trust' | 'sprinter' };
+    if (myJob && myRubgTask?.timerSec && rubgJobArmed) return { key: `r${myJob.cellIdx}:${myRubgTask.saveId ?? ''}`, sec: myRubgTask.timerSec, kind: 'rubg' as const };
+    return null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ch, task, myQJob, myQTask, myJob, myRubgTask, qArmed, rubgJobArmed, isQuest]);
+  const timerOn = !timerSpec ? false : timerSpec.kind === 'classic' ? true : timerSpec.kind === 'rubg' ? rJobOn : qJobOn;
+  const timerOnRef = useRef(false);
+  timerOnRef.current = timerOn;
+  const timerSpecKey = timerSpec ? `${timerSpec.key}|${ch?.reloadId ?? 0}|${timerRestartTick}` : null;
+  const timerExpireRef = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    if (!timerSpec) { setTimerLeft(null); return; }
+    timerFiredRef.current = false;
+    setTimerLeft(timerSpec.sec);
+    const iv = setInterval(() => {
+      if (!timerOnRef.current) return; // пауза эмулятора — таймер стоит
+      setTimerLeft((v) => {
+        if (v === null || v <= 0) return v;
+        if (v <= 1) { if (!timerFiredRef.current) { timerFiredRef.current = true; timerExpireRef.current(); } return 0; }
+        return v - 1;
+      });
+    }, 1000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timerSpecKey]);
+  timerExpireRef.current = () => {
+    if (!timerSpec) return;
+    if (timerSpec.kind === 'trust') return; // задания на доверии: таймер только мигает — игрок решает сам
+    if (timerSpec.kind === 'classic' && ch) {
+      if (chCodeOnly) { dispatch({ t: 'reloadSave', id: me }); sfx.alarm(); setTimerRestartTick((x) => x + 1); }
+      else { sfx.fail(); dispatch({ t: 'skip', id: me, instant: false, spentMs: info?.ms ?? 0, loads: info?.loads ?? 0 }); }
+      return;
+    }
+    if (timerSpec.kind === 'rubg' && myJob) {
+      if (rCodeOnly) { ejsApiRef.current?.loadSaveReliable((rSaveState as string | null) ?? null); sfx.alarm(); setTimerRestartTick((x) => x + 1); }
+      else { sfx.fail(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false }); }
+      return;
+    }
+    if (timerSpec.kind === 'sprinter' && myQJob) {
+      if (qCodeOnly) { ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null); if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); sfx.alarm(); setTimerRestartTick((x) => x + 1); }
+      else { sfx.fail(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false }); }
+    }
+  };
+  const timerFmt = (v: number | null) => {
+    if (v === null) return '';
+    const m = Math.floor(v / 60);
+    const s = v % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  };
+  /* бейдж таймера: на доверии — мигает всегда, в остальных — красное мигание на последних 10 секундах */
+  const timerBadge = timerLeft !== null && timerSpec ? (
+    <span
+      className={`font-pixel text-[10px] px-2 py-1.5 border-2 flex items-center gap-1 ${timerSpec.kind === 'trust' || timerLeft <= 10 ? 'animate-pulse border-[rgba(255,93,115,0.8)] text-coral' : 'border-edge text-dim'}`}
+      title={timerSpec.kind === 'trust' ? 'Таймер задания: время вышло — решайте сами (режим доверия)' : timerLeft <= 10 ? 'Время почти вышло!' : 'Таймер задания (время на выполнение)'}
+    >
+      ⏱ {timerFmt(timerLeft)}
+    </span>
+  ) : null;
 
   // «закрытые» ячейки: не посещены и не захвачены — скрываем тип и картинку (опция)
   const mystery = useMemo(() => {
@@ -3600,6 +3674,7 @@ export default function GameScreen() {
             <span className="hud-chip pixel-corners px-2.5 py-1.5 font-display text-[10px] uppercase text-gold flex items-center gap-1.5 min-w-0" title="Игрок, который выполняет это задание">
               {active && <><PlayerIcon pid={active.id} size={18} /> ИГРАЕТ: {active.name}</>}
             </span>
+            {timerBadge}
             {taskSizeBtns}
           </div>
           <div className="grid md:grid-cols-[220px_1fr] gap-4">
@@ -4219,6 +4294,7 @@ export default function GameScreen() {
                     <div className={`font-display uppercase text-lg break-words min-w-0 flex items-center gap-2 ${isBogach ? 'text-gold' : 'text-teal'}`}>
                       <PlayerIcon pid={me} size={20} /> {isBogach ? '💰 ОБЩЕЕ ЗАДАНИЕ' : '🧭 ЗАДАНИЕ'} · {myQTask.title}
                     </div>
+                    {timerBadge}
                     {taskSizeBtns}
                     <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myQJob.cellIdx + 1} · {isBogach ? 'играет ВСЯ компания — гонка!' : 'играешь ТОЛЬКО ты'}</span>
                   </div>
@@ -4247,7 +4323,7 @@ export default function GameScreen() {
                       ext={(qRomDef?.fileName.split('.').pop() ?? 'md').toLowerCase()}
                       core={qRomDef?.ext === 'nes' ? 'nes' : undefined}
                       remapSpec={remapSpec}
-                      chaos={[]}
+                      chaos={myQTask?.chaos ? [myQTask.chaos] : []} /* v0.108: пакость задания действует и в личных окнах (Денди в Спринтере/Квесте) */
                       initialState={(qSaveState as string | null) ?? null}
                       paused={!qArmed || peekMap || qPaused}
                       pausedHint={!qArmed ? 'Нажмите «Старт игры»' : qPaused && !peekMap ? 'ПАУЗА — нажмите «Продолжить»' : undefined}
@@ -4301,6 +4377,7 @@ export default function GameScreen() {
                                 ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null);
                                 if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); // v0.106: перезапуск — 1 бронза
                                 sfx.alarm();
+                                setTimerRestartTick((x) => x + 1); // v0.108: таймер заново
                               }}
                             >
                               {Ic.rotate(13)} Перезапуск{isBogach ? ' · 1🪙' : ''}{quickKeyLbl ? ` · ⚡${quickKeyLbl}` : ''}
@@ -4396,6 +4473,7 @@ export default function GameScreen() {
                   <div className="font-display uppercase text-lg text-gold break-words min-w-0 flex items-center gap-2">
                     <PlayerIcon pid={me} size={20} /> 🎮 ЛИЧНОЕ ЗАДАНИЕ · {myRubgTask.title}
                   </div>
+                  {timerBadge}
                   {taskSizeBtns}
                   <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myJob.cellIdx + 1} · играешь ТОЛЬКО ты</span>
                 </div>
@@ -4426,7 +4504,7 @@ export default function GameScreen() {
                       ext={(rRomDef?.fileName.split('.').pop() ?? 'md').toLowerCase()}
                       core={rRomDef?.ext === 'nes' ? 'nes' : undefined}
                       remapSpec={remapSpec}
-                      chaos={[]}
+                      chaos={myRubgTask?.chaos ? [myRubgTask.chaos] : []} /* v0.108: пакость задания действует и в РУБГ */
                       initialState={(rSaveState as string | null) ?? null}
                       paused={!rubgJobArmed || peekMap || rubgPaused}
                       pausedHint={!rubgJobArmed ? 'Нажмите «Старт игры»' : rubgPaused && !peekMap ? 'ПАУЗА — нажмите «Продолжить»' : undefined}
@@ -4470,7 +4548,7 @@ export default function GameScreen() {
                         <GhostBtn
                           className="w-full mt-2"
                           title={`Перезапустить игру с сохранения (или с начала, если сохранения нет) — как «Перезапуск задания» в других режимах${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`}
-                          onClick={() => { ejsApiRef.current?.loadSaveReliable((rSaveState as string | null) ?? null); sfx.alarm(); }}
+                          onClick={() => { ejsApiRef.current?.loadSaveReliable((rSaveState as string | null) ?? null); sfx.alarm(); setTimerRestartTick((x) => x + 1); }}
                         >
                           {Ic.rotate(13)} Перезапуск задания{quickKeyLbl ? ` · ⚡${quickKeyLbl}` : ''}
                         </GhostBtn>
