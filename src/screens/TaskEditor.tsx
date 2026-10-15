@@ -6,7 +6,7 @@ import { idbGet, idbPut, uid } from '../db';
 import { cartridgeArt, cardArt, fileToDataUrl } from '../assets';
 import type { CardDef, CardEffect, CellType, ChaosKind, CodeOp, CodeType, EffectType, GameMap, MemCond, RomDef, SaveKind, TaskDef } from '../types';
 import { CHAOS_LIST, chaosLabel, mkChaosCard, JOY_LIST, SAVE_KIND_CLS, SAVE_KIND_LABEL, SAVE_KIND_SHORT, saveKindOf, taskPlatOfExt, DONATE_DICE_ONLY } from '../types';
-import { hasDice, loadPool, savePool, subscribeBogach, type BogachPool } from '../bogach'; // v0.109: кубиковые пакости только в Ретрополии; v0.112: пул донатов в редакторе
+import { hasDice, loadPool, savePool, subscribeBogach, sideBtnsOn, type BogachPool } from '../bogach'; // v0.109: кубиковые пакости только в Ретрополии; v0.112: пул донатов в редакторе; v0.114: мини-кнопки 💰 скрываются
 import { BogachPanel } from './BogachPanel'; // v0.112: панель «💰 Донаты» — та же, что у хоста в партии
 import { CODE_TYPE_LABEL, OP_LABEL, formatCond, hex8, memCondText, parseCond, parseHex } from '../memcode';
 import { renumberByPath, fixLinksAfterDelete } from '../render';
@@ -306,6 +306,10 @@ export default function TaskEditor() {
   const [bogOpen, setBogOpen] = useState(false);
   const [pool, setPool] = useState<BogachPool>(() => loadPool());
   useEffect(() => subscribeBogach(() => setPool(loadPool())), []);
+  /* v0.114: МИНИ-КНОПКИ 💰 в списках слева — ПО УМОЛЧАНИЮ СКРЫТЫ (обычному создателю карт
+     они не нужны и путают). Пул набирается из кнопки «💰 Донаты» в тулбаре — там дерево
+     выбора. Включаются галочкой в панели донатов — и кнопки появляются здесь. */
+  const poolBtns = sideBtnsOn();
   const poolRomSet = useMemo(() => new Set(pool.roms), [pool.roms]);
   const poolSaveSet = useMemo(() => new Set(pool.saves), [pool.saves]);
   const commitPool = (p: BogachPool) => { setPool(p); savePool(p); };
@@ -345,7 +349,8 @@ export default function TaskEditor() {
         {/* v0.61: 📷 обложка картриджа прямо в строке рома; v0.63: ✂ — вырезатель тайлов как в редакторе карт,
             ✕ убрать обложку — по правилам удаления из Опций */}
         <div className="absolute top-1 right-1 flex items-center gap-1 bg-[rgba(4,6,14,0.72)] px-1 rounded-sm">
-          {/* v0.112: 💰 — ром в пул донатов (номер — в панели «💰 Донаты») */}
+          {/* v0.112: 💰 — ром в пул донатов (v0.114: скрывается галочкой в панели донатов) */}
+          {poolBtns && (
           <button
             onClick={() => { togglePoolRom(r.id); sfx.click(); }}
             title={inPool ? `«${r.name}» в пуле донатов — РОМ №${poolNo}. Клик — убрать из пула` : `Добавить «${r.name}» в пул донатов`}
@@ -353,6 +358,7 @@ export default function TaskEditor() {
           >
             {inPool ? `💰№${poolNo}` : '💰'}
           </button>
+          )}
           <CoverPickBtn onPick={(file) => void setRomCoverFor(r, file)} title={r.cover ? 'Заменить обложку картриджа' : 'Загрузить обложку картриджа (готовая картинка)'} className="text-[10px] leading-none py-0.5 text-faint" />
           <CoverCropBtn onPick={(file) => setRomCropJob({ rom: r, file })} title="✂ Вырезать картридж из картинки — вырезатель тайлов, как в редакторе карт" className="text-[10px] leading-none py-0.5 text-faint" />
           {r.cover && (
@@ -393,7 +399,8 @@ export default function TaskEditor() {
                         </div>
                         <div className="tick-label text-faint mt-0.5">S{sv.slot} · {new Date(sv.createdAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}{inPool ? ` · в пуле №${poolNo}` : ''}</div>
                       </button>
-                      {/* v0.112: 💰 — сохранение в пул донатов */}
+                      {/* v0.112: 💰 — сохранение в пул донатов (v0.114: скрывается галочкой в панели донатов) */}
+                      {poolBtns && (
                       <button
                         onClick={() => { togglePoolSave(sv.id); sfx.click(); }}
                         title={inPool ? `«${sv.name}» в пуле донатов — СЕЙВ №${poolNo}. Клик — убрать из пула` : `Добавить «${sv.name}» в пул донатов`}
@@ -401,6 +408,7 @@ export default function TaskEditor() {
                       >
                         💰
                       </button>
+                      )}
                     </div>
                   );
                 })}
@@ -749,7 +757,8 @@ export default function TaskEditor() {
                         >
                           <span className="text-[11px] leading-none">⛶</span>
                         </button>
-                        {/* v0.112: 💰 — ВСЯ папка в пул донатов (или снять целиком) */}
+                        {/* v0.112: 💰 — ВСЯ папка в пул донатов (v0.114: скрывается галочкой в панели донатов) */}
+                        {poolBtns && (
                         <button
                           type="button"
                           onClick={() => { togglePoolFolder(f); sfx.click(); }}
@@ -758,6 +767,7 @@ export default function TaskEditor() {
                         >
                           💰
                         </button>
+                        )}
                       </>
                     )}
                   </div>
@@ -809,9 +819,12 @@ export default function TaskEditor() {
             )}
             {roms.length > 0 && romFolders.length > 0 && (
               <p className="text-[10px] text-gold leading-tight mt-1">
-                💰 у папки/рома/сохранения — добавить в ПУЛ ДОНАТОВ зрителей (номера — в панели «💰 Донаты» вверху).
+                {poolBtns
+                  ? '💰 у папки/рома/сохранения — добавить в ПУЛ ДОНАТОВ зрителей (номера — в панели «💰 Донаты» вверху). '
+                  : ''}
                 Папки раскрываются кликом — внутри ромы; клик по рому выбирает его для этого задания.
                 Доступны ромы <PlatName>NES</PlatName>, <PlatName>SEGA</PlatName> (<PlatName>Mega Drive</PlatName> / <PlatName>Master System</PlatName> / <PlatName>GAME GEAR</PlatName>), <PlatName>SNES</PlatName>, <PlatName>Game Boy/Color</PlatName>, <PlatName>GBA</PlatName>, <PlatName>SEGA 32X</PlatName>, <PlatName>Atari 2600</PlatName>, <PlatName>PC Engine</PlatName>; кнопка 🖼 у папки покажет ромы КАРТИНКАМИ картриджей/обложек, у каждого рома есть 📷 (готовая картинка) и ✂ (вырезать картридж из картинки тем же вырезателем, что тайлы в редакторе карт — клик по вырезанному тайлу ставит его обложкой).
+                {!poolBtns && ' Пул донатов набирается в панели «💰 Донаты» вверху — там дерево: папка → ром → сохранения.'}
               </p>
             )}
           </div>

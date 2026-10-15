@@ -35,6 +35,19 @@ export const savePool = (p: BogachPool) => {
   notify();
 };
 
+/* ---------- v0.114: мини-кнопки 💰 в списках РЕДАКТОРА (можно спрятать) ----------
+   По умолчанию СКРЫТЫ: обычному создателю карт они не нужны и путают. Пул набирается
+   из кнопки «💰 Донаты» (панель — там дерево выбора). Кто ведёт донаты — включит
+   галочкой в панели донатов, и мини-кнопки вернутся в списки слева. */
+const SIDE_KEY = 'bogach-sidebtns';
+let sideBtns = (() => { try { return localStorage.getItem(SIDE_KEY) === '1'; } catch { return false; } })();
+export const sideBtnsOn = (): boolean => sideBtns;
+export const setSideBtns = (v: boolean) => {
+  sideBtns = v;
+  try { localStorage.setItem(SIDE_KEY, v ? '1' : '0'); } catch { /* noop */ }
+  notify();
+};
+
 /* ---------- статус двери/слушателя для панели ---------- */
 export interface BogachResult {
   id: string; ts: number; ok: boolean; text: string; reason?: string; sum?: number; name?: string; manual?: boolean;

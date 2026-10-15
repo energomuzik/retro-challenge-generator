@@ -14,35 +14,39 @@ import { sfx } from '../sound';
 
 /* ---------- создание игры ---------- */
 
-/* КАРТА ПЕРЕД ПАРТИЕЙ: перечитываем её из базы и подтягиваем СВЕЖИЕ снимки фишек
-   и БОССОВ из библиотеки. Фишка/босс при вшивании в карту копируются СНИМКОМ — если
-   их потом редактировали (например, добавили 5-ю/6-ю анимации или клип гибели босса
-   со звуком), партия жила со старым снимком, и спектакль не находил клип/звук.
-   Теперь при создании/восстановлении комнаты версия из библиотеки подставляется
-   автоматически; тех, кого в библиотеке уже нет, не трогаем (играет то, что вшито). */
-const freshMapWithTokens = async (mapId: string): Promise<GameMap | null> => {
+/* СВЕЖИЕ ОПРЕДЕЛЕНИЯ фишек/боссов/NPC из библиотеки — поверх ЛЮБОЙ базовой карты:
+   и библиотечной, и карты ИЗ СЕЙВА (v0.114). Фишка/босс при вшивании в карту копируются
+   СНИМКОМ — если их потом редактировали, партия должна играть свежую версию из библиотеки.
+   Тех, кого в библиотеке уже нет, не трогаем (играет то, что вшито). */
+const refreshMapLibs = async (base: GameMap): Promise<GameMap> => {
   try {
-    const fresh = await idbGet<GameMap>('maps', mapId);
-    if (!fresh) return null;
     const lib = (await idbAll<TokenDef>('tokens')).map((e) => e.value);
     const libById = new Map(lib.map((t) => [t.id, t]));
-    const toks = fresh.mapTokens ?? [];
+    const toks = base.mapTokens ?? [];
     const bossLib = (await idbAll<BossAnimDef>('bossAnims')).map((e) => e.value);
     const bossById = new Map(bossLib.map((b) => [b.id, b]));
-    const blib = fresh.bossLib ?? [];
+    const blib = base.bossLib ?? [];
     const npcLibAll = (await idbAll<NpcAnimDef>('npcAnims')).map((e) => e.value);
     const npcById = new Map(npcLibAll.map((n) => [n.id, n]));
-    const nlib = fresh.npcLib ?? [];
+    const nlib = base.npcLib ?? [];
     const toksChanged = toks.some((t) => libById.has(t.id));
     const bossChanged = blib.some((b) => bossById.has(b.id));
     const npcChanged = nlib.some((n) => npcById.has(n.id));
-    if (!toksChanged && !bossChanged && !npcChanged) return fresh;
+    if (!toksChanged && !bossChanged && !npcChanged) return base;
     return {
-      ...fresh,
+      ...base,
       mapTokens: toksChanged ? toks.map((t) => (libById.has(t.id) ? (JSON.parse(JSON.stringify(libById.get(t.id))) as TokenDef) : t)) : toks,
       bossLib: bossChanged ? blib.map((b) => (bossById.has(b.id) ? bossLibEntryOf(bossById.get(b.id)!) : b)) : blib,
       npcLib: npcChanged ? nlib.map((n) => (npcById.has(n.id) ? npcLibEntryOf(npcById.get(n.id)!) : n)) : nlib,
     };
+  } catch { return base; }
+};
+
+const freshMapWithTokens = async (mapId: string): Promise<GameMap | null> => {
+  try {
+    const fresh = await idbGet<GameMap>('maps', mapId);
+    if (!fresh) return null;
+    return await refreshMapLibs(fresh);
   } catch { return null; }
 };
 
@@ -229,6 +233,7 @@ export function CreateScreen() {
       const code = genRoomCode();
       const session = newSession(code, map.id, st.selfId, st.options.name);
       openRoom(code, true, { session, map });
+      rememberLastRoom(code); // v0.114: последняя комната — вернуться после F5
       /* v0.100: своя мини-иконка — в карту иконок и всем подключённым */
       if (st.options.pIcon) {
         useApp.getState().setIcon(st.selfId, st.options.pIcon);
@@ -458,11 +463,16 @@ export function CreateScreen() {
 
 export function JoinScreen() {
   const { setScreen, toast, options, setOptions } = useApp();
-  const [code, setCode] = useState('');
+  /* v0.114: ПОМНИМ ПОСЛЕДНЮЮ КОМНАТУ — после вылета/F5 игрок возвращается одним кликом:
+     код подставлен, роль вернётся по имени (если партия ещё открыта). Код комнаты —
+     единственный «пропуск»: кто его не знает, тот не войдёт. */
+  const lastRoom = (() => { try { return String(JSON.parse(localStorage.getItem('retropolia-lastroom') ?? '""') || ''); } catch { return ''; } })();
+  const [code, setCode] = useState(lastRoom);
 
   const join = () => {
     const c = code.trim().toUpperCase();
     if (c.length !== 4) { toast('Введите код из 4 символов', 'err'); return; }
+    rememberLastRoom(c);
     const st = useApp.getState();
     const room = openRoom(c, false, { session: null, map: null });
     room.send('action', { t: 'hello', id: st.selfId, name: options.name });
@@ -493,6 +503,12 @@ export function JoinScreen() {
                 onKeyDown={(e) => { if (e.key === 'Enter') join(); }}
               />
             </Field>
+            {lastRoom && (
+              <p className="text-[11px] text-teal leading-snug">
+                ↩ Код последней твоей комнаты ({lastRoom}) уже подставлен — если партия ещё открыта,
+                нажимай «Войти»: вернёшься к своему игроку (фишка, ресурсы и история при тебе).
+              </p>
+            )}
             <Field label="Адрес сервера (если создатель дал ссылку на свой сервер)">
               <input
                 className="field-in w-full px-3 py-2 font-display text-sm tracking-wide"
@@ -514,6 +530,12 @@ export function JoinScreen() {
   );
 }
 
+/* v0.114: ПОМНИМ ПОСЛЕДНЮЮ КОМНАТУ — код подставляется в «Подключении» сам,
+   чтобы вернуться после вылета/F5 (код можно скрыть глазиком — чужие не войдут) */
+export const rememberLastRoom = (code: string) => {
+  try { localStorage.setItem('retropolia-lastroom', JSON.stringify(code)); } catch { /* noop */ }
+};
+
 /* ---------- загруженные партии ---------- */
 
 export function LoadScreen() {
@@ -534,15 +556,28 @@ export function LoadScreen() {
        по коду и заявляют, кем они играли. Только потом хост восстанавливает партию. */
     const savedHost = s.state.players.find((p) => p.isHost) ?? s.state.players[0];
     void (async () => {
-      const selMap = maps.find((m) => m.id === s.state.mapId);
-      if (!selMap) { toast('Карта этой партии не найдена в библиотеке', 'err'); return; }
-      const map = (await freshMapWithTokens(selMap.id)) ?? selMap; // карта + свежие снимки фишек
+      /* v0.114: КАРТА ЕДЕТ ИЗ СЕЙВА — библиотека больше не нужна, а донат-замены
+         ячеек (они живут только в sessionMap) восстанавливаются. Сейвы старых
+         версий (без карты в сейве) — прежний поиск по библиотеке: по id, затем по имени. */
+      let map: GameMap | null = null;
+      if (s.map && Array.isArray(s.map.cells) && s.map.cells.length) {
+        map = await refreshMapLibs(s.map);
+      } else {
+        const ms = useApp.getState().maps;
+        const selMap = ms.find((m) => m.id === s.state.mapId) ?? ms.find((m) => m.name === s.mapName);
+        if (!selMap) {
+          toast('В сейве нет карты (старое сохранение) и в библиотеке её нет — импортируй файл игры кнопкой «Загрузить игру» и попробуй снова', 'err');
+          return;
+        }
+        map = (await freshMapWithTokens(selMap.id)) ?? selMap; // карта + свежие снимки фишек
+      }
       const code = genRoomCode();
       const session = newSession(code, map.id, st.selfId, st.options.name);
       /* ВАЖНО: openRoom внутри вызывает leaveRoom(), который очищает resumeSnap и
          resumeClaims. Поэтому устанавливаем их ПОСЛЕ открытия комнаты, иначе снапшот
          сотрётся и партия запустится заново. */
       openRoom(code, true, { session, map });
+      rememberLastRoom(code);
       const st2 = useApp.getState();
       st2.setResumeSnap(s);
       /* автоматически призываем хоста к его сохранённой роли, чтобы кнопка
@@ -1268,7 +1303,9 @@ export async function saveSessionSnapshot(name: string) {
   if (!st.session || !st.sessionMap) return;
   const snap: SessionSnapshot = {
     id: uid('snap'), name, mapName: st.sessionMap.name, code: st.session.code,
-    state: st.session, createdAt: Date.now(),
+    state: st.session,
+    map: st.sessionMap, // v0.114: карта внутри сейва — восстановление без библиотеки + донат-замены ячеек
+    createdAt: Date.now(),
   };
   await idbPut('sessions', snap.id, snap);
   void idbGet; // сохраняем ссылку на импорт

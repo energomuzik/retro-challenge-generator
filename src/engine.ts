@@ -118,6 +118,90 @@ function normPlayer(p: PlayerState) {
   if (p.stealth === undefined) p.stealth = false;
 }
 
+/* v0.114: ПЕРЕМАПЛИВАНИЕ id игрока во ВСЕХ структурах состояния. getNew возвращает
+   новый id или null — записи с null (выбывшие игроки) удаляются. Два случая:
+   • восстановление партии: savedId → заявленный текущий id (claims);
+   • переподключение после вылета/F5: старый id страницы → новый (тот же игрок).
+   Без этого «все остальное не восстанавливается»: поля ссылаются на старые id,
+   которых в партии больше нет (игроки получают новые id при каждом запуске сайта). */
+function remapPlayerRefs(base: GameSession, getNew: (id: string) => string | null): void {
+  const rk = <T,>(obj: Record<string, T> | undefined): Record<string, T> | undefined => {
+    if (!obj) return obj;
+    const out: Record<string, T> = {};
+    for (const [k, v] of Object.entries(obj)) { const nk = getNew(k); if (nk) out[nk] = v; }
+    return out;
+  };
+  const rv = (obj: Record<string, string> | undefined): Record<string, string> | undefined => {
+    if (!obj) return obj;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(obj)) { const nv = getNew(v); if (nv) out[k] = nv; }
+    return out;
+  };
+  base.captured = (rv(base.captured) ?? {}) as GameSession['captured'];
+  base.qDone = rk(base.qDone);
+  base.qRevealed = rk(base.qRevealed);
+  base.qJobs = rk(base.qJobs);
+  base.qBossDown = rk(base.qBossDown);
+  base.qFlags = rk(base.qFlags);
+  base.qFails = rk(base.qFails);
+  base.qCards = rk(base.qCards);
+  base.dlgSeen = rk(base.dlgSeen);
+  base.qBossDownAt = rk(base.qBossDownAt);
+  base.qBossHoldAt = rk(base.qBossHoldAt);
+  base.qKeys = rk(base.qKeys);
+  base.qCaptureCell = rk(base.qCaptureCell);
+  base.qCaptureCd = rk(base.qCaptureCd);
+  base.qCaptureAt = rk(base.qCaptureAt);
+  base.qTaskAt = rk(base.qTaskAt);
+  base.qImmunes = rk(base.qImmunes);
+  base.qEntries = rk(base.qEntries);
+  base.qWait = rk(base.qWait);
+  base.qSpent = rk(base.qSpent);
+  base.journeyPos = rk(base.journeyPos);
+  base.rollOffValues = rk(base.rollOffValues) ?? {};
+  base.rollOffReady = (base.rollOffReady ?? []).map((id) => getNew(id)).filter(Boolean) as string[];
+  base.qCellDone = (rv(base.qCellDone) ?? {}) as GameSession['qCellDone'];
+  /* cutsceneDone: ключи «pid:cutId» (или «start:cutId» — общий) — мапим только префикс */
+  if (base.cutsceneDone) {
+    const csOut: Record<string, number> = {};
+    for (const [k, v] of Object.entries(base.cutsceneDone)) {
+      const ci = k.indexOf(':');
+      if (ci <= 0) { csOut[k] = v; continue; }
+      const nk = getNew(k.slice(0, ci));
+      csOut[nk ? nk + k.slice(ci) : k] = v;
+    }
+    base.cutsceneDone = csOut;
+  }
+  if (base.rubg) {
+    base.rubg.jobs = rk(base.rubg.jobs);
+    base.rubg.stopCd = rk(base.rubg.stopCd);
+    base.rubg.boxBan = rk(base.rubg.boxBan);
+    base.rubg.stealth = (base.rubg.stealth ?? []).map((id) => getNew(id)).filter(Boolean) as string[];
+    if (base.rubg.steals) {
+      const stOut: NonNullable<GameSession['rubg']>['steals'] = {};
+      for (const [victim, st] of Object.entries(base.rubg.steals)) {
+        const nv = getNew(victim);
+        const th = getNew((st as { thief?: string })?.thief ?? '');
+        if (nv && th) stOut[nv] = { ...(st as object), thief: th } as typeof st;
+      }
+      base.rubg.steals = stOut;
+    }
+  }
+  if (base.qPicks) {
+    const pkOut: Record<string, { by: string; ts: number }> = {};
+    for (const [k, v] of Object.entries(base.qPicks)) { const nb = getNew(v.by); if (nb) pkOut[k] = { ...v, by: nb }; }
+    base.qPicks = pkOut as GameSession['qPicks'];
+  }
+  if (base.broken) {
+    for (const v of Object.values(base.broken)) v.by = getNew(v.by) ?? '';
+  }
+  base.trades = (base.trades ?? [])
+    .filter((tr) => getNew(tr.from) && getNew(tr.to))
+    .map((tr) => ({ ...tr, from: getNew(tr.from)!, to: getNew(tr.to)! }));
+  base.winner = base.winner ? getNew(base.winner) : base.winner;
+  base.fxs = []; // мимолётные анимации прошлой сессии — не переигрываем
+}
+
 const CELL_PX = CELL; // клетка сетки поля
 
 /* прямоугольник ячейки в px поля (для JOURNEY: «фишка пересекла ячейку»;
@@ -266,6 +350,15 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         return { ...p, id: curId, isHost: curId === hostCurId, name: lobbyP?.name ?? p.name, tokenImg: lobbyP?.tokenImg ?? p.tokenImg, ready: true };
       });
     if (base.players.length === 0) return s0;
+    /* v0.114 ГЛАВНЫЙ ФИКС ВОССТАНОВЛЕНИЯ: игрокам присваиваются НОВЫЕ id (после перезапуска
+       страницы selfId всегда новый), а ВСЕ поля состояния, привязанные к id, оставались
+       со СОХРАНЁННЫМИ id — из-за этого терялось ВСЁ, кроме ресурсов (те лежат внутри самих
+       игроков): хозяева ячейки становились «нейтральными» (captured хранит id хозяина),
+       история/прогресс (qDone), позиции фишек (journeyPos), ключи/флаги/квесты/торги не
+       находили своих игроков. Перемапливаем savedId → новый id во ВСЕХ структурах; записи
+       НЕпризванных (выбывших) игроков удаляются. Тот же механизм возвращает игрока при
+       переподключении по имени (case 'hello' ниже). */
+    remapPlayerRefs(base, (id) => claimedBy.get(id) ?? null);
     const savedTurnId = a.snap.state.players[a.snap.state.turn % a.snap.state.players.length]?.id;
     const targetCurId = savedTurnId ? claimedBy.get(savedTurnId) : undefined;
     const ti = targetCurId ? base.players.findIndex((p) => p.id === targetCurId) : 0;
@@ -1874,7 +1967,27 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       /* SKILL CHALLENGE и одиночный JOURNEY: зрители могут подключаться и ВО ВРЕМЯ партии —
         они добавляются как spect (ходов не получают, смотрят поле и трансляцию) */
       const spectJoin = isSoloMode(map.mode) && (s.phase === 'playing' || s.phase === 'rollOff');
-      if (s.phase !== 'lobby' && !spectJoin) return s0;
+      if (s.phase !== 'lobby' && !spectJoin) {
+        /* v0.114 ПЕРЕПОДКЛЮЧЕНИЕ ПОСЛЕ ВЫЛЕТА/F5: игрок вернулся в ту же комнату по коду —
+           узнаём его по ИМЕНИ и возвращаем СОХРАНЁННУЮ роль: тот же игрок (фишка, ресурсы,
+           история) продолжает играть под новым id страницы. Код комнаты знает только команда
+           (хост может скрыть код — чужие без него не войдут), а роль узнаётся по имени игрока
+           этой партии — незнакомец с кодом всё равно не получит чужую фишку. */
+        if (s.phase === 'playing' || s.phase === 'rollOff') {
+          const nm = String(a.name ?? '').trim().toUpperCase();
+          const back = nm ? s.players.find((p) => p.name.trim().toUpperCase() === nm && p.id !== a.id) : undefined;
+          if (back) {
+            const oldId = back.id;
+            back.id = a.id;
+            remapPlayerRefs(s, (id) => (id === oldId ? a.id : id)); // все ссылки на старый id — на новый
+            log(`🔄 ${a.name.toUpperCase()} вернулся в партию — фишка, ресурсы и история при нём`);
+            break;
+          }
+          log(`🚪 ${String(a.name ?? '?').toUpperCase()} стучится посреди партии — незнакомца не впускаем (свои возвращаются по имени)`);
+          return s;
+        }
+        return s0;
+      }
       if (s.players.some((p) => p.id === a.id)) return s0;
       if (!spectJoin && s.players.length >= 4) return s0;
       if (spectJoin && s.players.length >= 8) return s0;

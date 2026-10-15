@@ -12,7 +12,7 @@ import { DONATE_CHAOS } from '../types';
 import { SAVE_KIND_CLS, SAVE_KIND_LABEL, SAVE_KIND_SHORT, saveKindOf } from '../types';
 import type { GameMap, RomDef, SaveDef } from '../types';
 import { CartridgeBadge } from '../cartridge';
-import { loadPool, savePool, setMinimalka, applyDonat, buildShpargalka, subscribeBogach, getBogachStatus, enableDoor, disableDoor, type BogachPool } from '../bogach';
+import { loadPool, savePool, setMinimalka, applyDonat, buildShpargalka, subscribeBogach, getBogachStatus, enableDoor, disableDoor, sideBtnsOn, setSideBtns, type BogachPool } from '../bogach';
 import { BOGACH_BAT } from '../bogachBat';
 
 export function BogachPanel({ onClose, editorMap }: { onClose: () => void; editorMap?: GameMap | null }) {
@@ -30,6 +30,7 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
   const [formErr, setFormErr] = useState('');
   const [shp, setShp] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [openRom, setOpenRom] = useState<string | null>(null); // v0.114: раскрытый ром в дереве
 
   const romFolders = useMemo(() => [...new Set(roms.map((r) => r.folder ?? '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')), [roms]);
   const looseRoms = roms.filter((r) => !r.folder);
@@ -38,29 +39,27 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
   const poolSaveSet = useMemo(() => new Set(pool.saves), [pool.saves]);
   const commitPool = (p: BogachPool) => { setPool(p); savePool(p); };
 
-  /* v0.112: галочки пула — ром/папка/сейв/сейвы рома; папка снимается ЦЕЛИКОМ, если всё внутри отмечено */
-  const togglePoolRom = (id: string) => {
-    commitPool(poolRomSet.has(id) ? { ...pool, roms: pool.roms.filter((x) => x !== id) } : { ...pool, roms: [...pool.roms, id] });
-    sfx.click();
-  };
-  const togglePoolFolder = (f: string) => {
-    const ids = roms.filter((r) => r.folder === f).map((r) => r.id);
-    const allIn = ids.length > 0 && ids.every((id) => poolRomSet.has(id));
-    commitPool(allIn
-      ? { ...pool, roms: pool.roms.filter((x) => !ids.includes(x)) }
-      : { ...pool, roms: [...pool.roms, ...ids.filter((id) => !poolRomSet.has(id))] });
-    sfx.click();
-  };
+  /* v0.112: галочки пула — ром/папка/сейв; v0.114: ОДНО ДЕРЕВО «папка → ром → сохранения»:
+     галочка РОМА = ром + все его сохранения; галочка ПАПКИ = все ромы и все сохранения внутри */
   const togglePoolSave = (id: string) => {
     commitPool(poolSaveSet.has(id) ? { ...pool, saves: pool.saves.filter((x) => x !== id) } : { ...pool, saves: [...pool.saves, id] });
     sfx.click();
   };
-  const togglePoolRomSaves = (romId: string) => {
-    const ids = saves.filter((s) => s.romId === romId).map((s) => s.id);
-    const allIn = ids.length > 0 && ids.every((id) => poolSaveSet.has(id));
+  const toggleRomAll = (romId: string) => {
+    const sids = saves.filter((s) => s.romId === romId).map((s) => s.id);
+    const allIn = poolRomSet.has(romId) && (sids.length === 0 || sids.every((id) => poolSaveSet.has(id)));
     commitPool(allIn
-      ? { ...pool, saves: pool.saves.filter((x) => !ids.includes(x)) }
-      : { ...pool, saves: [...pool.saves, ...ids.filter((id) => !poolSaveSet.has(id))] });
+      ? { roms: pool.roms.filter((x) => x !== romId), saves: pool.saves.filter((x) => !sids.includes(x)) }
+      : { roms: [...new Set([...pool.roms, romId])], saves: [...new Set([...pool.saves, ...sids])] });
+    sfx.click();
+  };
+  const toggleFolderAll = (f: string) => {
+    const rids = roms.filter((r) => r.folder === f).map((r) => r.id);
+    const sids = saves.filter((s) => rids.includes(s.romId)).map((s) => s.id);
+    const allIn = rids.every((id) => poolRomSet.has(id)) && sids.every((id) => poolSaveSet.has(id));
+    commitPool(allIn
+      ? { roms: pool.roms.filter((x) => !rids.includes(x)), saves: pool.saves.filter((x) => !sids.includes(x)) }
+      : { roms: [...new Set([...pool.roms, ...rids])], saves: [...new Set([...pool.saves, ...sids])] });
     sfx.click();
   };
   const clearPoolRoms = () => { commitPool({ ...pool, roms: [] }); sfx.click(); };
@@ -128,22 +127,6 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
     } catch { /* noop */ }
   };
 
-  /* v0.112: строка галочки рома — метка «РОМ №N» = номер, который донатер пишет в команде */
-  const romCheckRow = (r: RomDef) => {
-    const inPool = poolRomSet.has(r.id);
-    const no = pool.roms.indexOf(r.id) + 1;
-    return (
-      <label key={r.id} className="flex items-center gap-1.5 px-1 py-0.5 cursor-pointer hover:bg-[rgba(255,207,63,0.07)]">
-        <input type="checkbox" className="accent-[var(--color-gold)] cursor-pointer shrink-0" checked={inPool} onChange={() => togglePoolRom(r.id)} />
-        <CartridgeBadge rom={r} h={14} />
-        <span className="text-[11px] text-paper truncate flex-1">{r.name}</span>
-        {inPool
-          ? <span className="font-pixel text-[8px] text-gold shrink-0">РОМ №{no}</span>
-          : <span className="tick-label text-faint shrink-0">{(r.ext ?? '').toUpperCase()}</span>}
-      </label>
-    );
-  };
-
   /* v0.112: строка галочки сохранения — метка «СЕЙВ №N» */
   const saveCheckRow = (sv: SaveDef) => {
     const inPool = poolSaveSet.has(sv.id);
@@ -155,6 +138,48 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
         <span className="text-[11px] text-paper truncate flex-1">{sv.name}</span>
         {inPool && <span className="font-pixel text-[8px] text-gold shrink-0">СЕЙВ №{no}</span>}
       </label>
+    );
+  };
+
+  /* v0.114: строка РОМА в дереве: галочка = ром + все его сохранения; ▸ раскрывает сейвы */
+  const romTreeRow = (r: RomDef) => {
+    const svs = saves.filter((s) => s.romId === r.id);
+    const sids = svs.map((s) => s.id);
+    const inCnt = sids.filter((id) => poolSaveSet.has(id)).length;
+    const romIn = poolRomSet.has(r.id);
+    const allIn = romIn && (sids.length === 0 || inCnt === sids.length);
+    const no = pool.roms.indexOf(r.id) + 1;
+    const open = openRom === r.id;
+    return (
+      <div key={`tr-${r.id}`}>
+        <div className="flex items-center gap-1.5 px-1 py-0.5 hover:bg-[rgba(255,207,63,0.07)]">
+          <input
+            type="checkbox"
+            className="accent-[var(--color-gold)] cursor-pointer shrink-0"
+            checked={allIn}
+            ref={(el) => { if (el) el.indeterminate = (romIn && inCnt < sids.length) || (!romIn && inCnt > 0); }}
+            onChange={() => toggleRomAll(r.id)}
+            title={allIn ? 'Снять ром и все его сохранения' : 'Добавить ром и ВСЕ его сохранения'}
+          />
+          <CartridgeBadge rom={r} h={14} />
+          <span className="text-[11px] text-paper truncate flex-1">{r.name}</span>
+          {romIn
+            ? <span className="font-pixel text-[8px] text-gold shrink-0">РОМ №{no}</span>
+            : <span className="tick-label text-faint shrink-0">{(r.ext ?? '').toUpperCase()}</span>}
+          {svs.length > 0 && (
+            <button
+              onClick={() => { setOpenRom(open ? null : r.id); sfx.click(); }}
+              className={`tick-label cursor-pointer shrink-0 px-1 hover:text-gold ${open ? 'text-gold' : 'text-faint'}`}
+              title={open ? 'Скрыть сохранения рома' : 'Показать сохранения рома — отметить нужные'}
+            >
+              {open ? '▾' : '▸'} сейвы {inCnt}/{svs.length}
+            </button>
+          )}
+        </div>
+        {open && svs.length > 0 && (
+          <div className="pl-6 ml-3 border-l-2 border-edge">{svs.map((sv) => saveCheckRow(sv))}</div>
+        )}
+      </div>
     );
   };
 
@@ -170,6 +195,10 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
               и заработает в партии. Кнопка «💰 Донаты» появится и в игре у хоста: там будут статус слушателя,
               ручная форма и шпаргалка. Батник скачивается ниже — он один и тот же.
             </p>
+            <label className="flex items-start gap-1.5 mt-1.5 cursor-pointer select-none" title="Мини-кнопки 💰 у папок/ромов/сейвов в левой панели редактора — для тех, кто ведёт донаты; остальным они не нужны и по умолчанию скрыты">
+              <input type="checkbox" className="accent-[var(--color-gold)] cursor-pointer mt-0.5" checked={sideBtnsOn()} onChange={(e) => { setSideBtns(e.target.checked); sfx.click(); }} />
+              <span className="text-[10px] text-dim leading-snug">Показывать кнопки 💰 в списках слева редактора — галочка в один клик добавляет игру/сохранение в пул (обычному создателю карт они не нужны — поэтому по умолчанию спрятаны)</span>
+            </label>
           </div>
         ) : !status.wanted ? (
           <div className="border-2 border-edge px-3 py-2.5 space-y-1.5">
@@ -253,7 +282,7 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
         {/* ---------- ПУЛ РОМОВ ---------- */}
         <Field label={`Пул ромов для донатов (${pool.roms.length}) — номер донатера = строка`}>
           <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
-            {pool.roms.length === 0 && <p className="text-[11px] text-dim">Пусто — отметь игры галочками ниже: папка целиком или отдельные ромы.</p>}
+            {pool.roms.length === 0 && <p className="text-[11px] text-dim">Пусто — отметь игры в дереве ниже.</p>}
             {pool.roms.map((rid, i) => {
               const r = roms.find((x) => x.id === rid);
               return (
@@ -265,45 +294,49 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
               );
             })}
           </div>
-          {/* v0.112: БЫСТРЫЙ ВЫБОР ГАЛОЧКАМИ — папка целиком или отдельные ромы */}
+          {/* v0.114: ОДНО ДЕРЕВО ВЫБОРА: папка → ром → сохранения (вместо двух раздельных списков) */}
           <div className="mt-2 border-2 border-edge px-2 py-2">
             <div className="flex items-center justify-between gap-2">
-              <span className="tick-label text-gold">☑ Быстрый выбор галочками</span>
-              {pool.roms.length > 0 && (
-                <button onClick={clearPoolRoms} className="tick-label text-faint hover:text-coral cursor-pointer" title="Убрать из пула сразу все ромы">очистить пул</button>
+              <span className="tick-label text-gold">☑ Дерево выбора: папка → ром → сохранения</span>
+              {(pool.roms.length > 0 || pool.saves.length > 0) && (
+                <button onClick={() => { commitPool({ roms: [], saves: [] }); sfx.click(); }} className="tick-label text-faint hover:text-coral cursor-pointer" title="Очистить весь пул: ромы и сохранения">очистить всё</button>
               )}
             </div>
             <p className="text-[9.5px] text-faint mt-0.5 leading-snug">
-              Галочка = ром в пуле донатов; папка — отметить или снять всё внутри. Золотая метка «РОМ №N» —
-              номер, который донатер пишет в команде. Порядок номеров = порядок в списке выше.
+              Галочка РОМА = игра и ВСЕ её сохранения сразу; нажми «▸ сейвы» — раскроется список,
+              можно отметить только нужные. Галочка ПАПКИ = все ромы и все сохранения внутри.
+              Золотые метки «РОМ №N»/«СЕЙВ №N» — номера для команды донатера.
             </p>
-            <div className="mt-1 space-y-1.5 max-h-56 overflow-y-auto pr-1">
+            <div className="mt-1 space-y-1.5 max-h-72 overflow-y-auto pr-1">
               {romFolders.map((f) => {
                 const inF = roms.filter((r) => r.folder === f);
-                const inCnt = inF.filter((r) => poolRomSet.has(r.id)).length;
-                const allIn = inCnt === inF.length;
+                const fids = inF.map((r) => r.id);
+                const fSaves = saves.filter((s) => fids.includes(s.romId));
+                const total = inF.length + fSaves.length;
+                const got = inF.filter((r) => poolRomSet.has(r.id)).length + fSaves.filter((s) => poolSaveSet.has(s.id)).length;
+                const allIn = total > 0 && got === total;
                 return (
                   <div key={`bf-${f}`}>
-                    <label className="flex items-center gap-1.5 px-1 py-0.5 cursor-pointer hover:bg-[rgba(255,207,63,0.07)]" title={allIn ? `Снять ВСЮ папку «${f}» с пула` : `Добавить ВСЮ папку «${f}» в пул`}>
+                    <label className="flex items-center gap-1.5 px-1 py-0.5 cursor-pointer hover:bg-[rgba(255,207,63,0.07)]" title={allIn ? `Снять ВСЮ папку «${f}»` : `Добавить ВСЮ папку «${f}»: ромы и все сохранения`}>
                       <input
                         type="checkbox"
                         className="accent-[var(--color-gold)] cursor-pointer shrink-0"
                         checked={allIn}
-                        ref={(el) => { if (el) el.indeterminate = inCnt > 0 && !allIn; }}
-                        onChange={() => togglePoolFolder(f)}
+                        ref={(el) => { if (el) el.indeterminate = got > 0 && !allIn; }}
+                        onChange={() => toggleFolderAll(f)}
                       />
                       <span className="text-[11px] shrink-0">📁</span>
                       <span className="font-display text-[10px] uppercase text-dim truncate">{f}</span>
-                      <span className="tick-label text-faint ml-auto shrink-0">{inCnt}/{inF.length}</span>
+                      <span className="tick-label text-faint ml-auto shrink-0">{got}/{total}</span>
                     </label>
-                    <div className="pl-5">{inF.map((r) => romCheckRow(r))}</div>
+                    <div className="pl-5">{inF.map((r) => romTreeRow(r))}</div>
                   </div>
                 );
               })}
               {looseRoms.length > 0 && (
                 <div>
                   <div className="tick-label text-faint px-1 py-0.5">Без папки · {looseRoms.length}</div>
-                  <div>{looseRoms.map((r) => romCheckRow(r))}</div>
+                  <div>{looseRoms.map((r) => romTreeRow(r))}</div>
                 </div>
               )}
               {roms.length === 0 && (
@@ -316,7 +349,7 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
         {/* ---------- ПУЛ СОХРАНЕНИЙ ---------- */}
         <Field label={`Пул сохранений для донатов (${pool.saves.length}) — 0 в донате = с начала игры`}>
           <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
-            {pool.saves.length === 0 && <p className="text-[11px] text-dim">Пусто — отметь галочками ниже: уровни, боссов, именные. Частные тоже можно: уедут гостям с картой.</p>}
+            {pool.saves.length === 0 && <p className="text-[11px] text-dim">Пусто — отметь сохранения в дереве выше (▸ сейвы у рома). Частные тоже можно: уедут гостям с картой.</p>}
             {pool.saves.map((sid, i) => {
               const sv = saves.find((x) => x.id === sid);
               const rn = sv ? roms.find((x) => x.id === sv.romId)?.name ?? '' : '';
@@ -329,47 +362,10 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
               );
             })}
           </div>
-          {/* v0.112: БЫСТРЫЙ ВЫБОР ГАЛОЧКАМИ — сохранения сгруппированы по ромам */}
-          <div className="mt-2 border-2 border-edge px-2 py-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="tick-label text-gold">☑ Быстрый выбор галочками</span>
-              {pool.saves.length > 0 && (
-                <button onClick={clearPoolSaves} className="tick-label text-faint hover:text-coral cursor-pointer" title="Убрать из пула сразу все сохранения">очистить пул</button>
-              )}
-            </div>
-            <p className="text-[9.5px] text-faint mt-0.5 leading-snug">
-              Галочка = сохранение в пуле; ром — отметить или снять все его сохранения. Золотая метка «СЕЙВ №N» —
-              номер для команды донатера (0 = с начала игры).
-            </p>
-            <div className="mt-1 space-y-1.5 max-h-56 overflow-y-auto pr-1">
-              {roms.map((r) => {
-                const list = saves.filter((s) => s.romId === r.id);
-                if (!list.length) return null;
-                const inCnt = list.filter((s) => poolSaveSet.has(s.id)).length;
-                const allIn = inCnt === list.length;
-                return (
-                  <div key={`bs-${r.id}`}>
-                    <label className="flex items-center gap-1.5 px-1 py-0.5 cursor-pointer hover:bg-[rgba(255,207,63,0.07)]" title={allIn ? `Снять ВСЕ сохранения «${r.name}» с пула` : `Добавить ВСЕ сохранения «${r.name}» в пул`}>
-                      <input
-                        type="checkbox"
-                        className="accent-[var(--color-gold)] cursor-pointer shrink-0"
-                        checked={allIn}
-                        ref={(el) => { if (el) el.indeterminate = inCnt > 0 && !allIn; }}
-                        onChange={() => togglePoolRomSaves(r.id)}
-                      />
-                      <span className="text-[11px] shrink-0">🎮</span>
-                      <span className="font-display text-[10px] uppercase text-dim truncate">{r.name}</span>
-                      <span className="tick-label text-faint ml-auto shrink-0">{inCnt}/{list.length}</span>
-                    </label>
-                    <div className="pl-5">{list.map((sv) => saveCheckRow(sv))}</div>
-                  </div>
-                );
-              })}
-              {saves.length === 0 && (
-                <p className="text-[11px] text-dim">Сохранений нет — запустите ромы в эмуляторе и запишите состояния, тогда их можно будет отметить здесь.</p>
-              )}
-            </div>
-          </div>
+          <p className="text-[9.5px] text-faint mt-1">
+            Сохранения набираются в дереве выше: у рома кнопка «▸ сейвы» — раскрой и отметь нужные
+            (или галочка рома — возьмёт все сразу). Порядок номеров = порядок в этом списке.
+          </p>
         </Field>
 
         {/* ---------- РУЧНАЯ ФОРМА (только в партии) ---------- */}

@@ -125,6 +125,9 @@ async function autosaveSession(next: GameSession) {
     mapName: st.sessionMap.name,
     code: next.code,
     state: next,
+    /* v0.114: КАРТА ЕДЕТ ВНУТРЬ СЕЙВА — восстановление не зависит от библиотеки
+       (сейв работает на любом устройстве), а донат-замены ячеек не теряются */
+    map: st.sessionMap,
     createdAt: now,
     auto: true,
     slot,
