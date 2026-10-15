@@ -7,6 +7,7 @@ import { sfx } from '../sound';
 import { DONATE_CHAOS } from '../types';
 import { SAVE_KIND_LABEL, saveKindOf } from '../types';
 import { loadPool, savePool, setMinimalka, applyDonat, buildShpargalka, subscribeBogach, getBogachStatus, type BogachPool } from '../bogach';
+import { BOGACH_BAT } from '../bogachBat';
 
 export function BogachPanel({ onClose }: { onClose: () => void }) {
   const { roms, saves, sessionMap, room } = useApp();
@@ -74,6 +75,19 @@ export function BogachPanel({ onClose }: { onClose: () => void }) {
 
   const doorLabel = status.door === 'open' ? 'СЛУШАТЕЛЬ НА СВЯЗИ' : status.door === 'connecting' ? 'СЛУШАТЕЛЬ НЕ ЗАПУЩЕН (жду…)' : 'ДВЕРЬ ЗАКРЫТА';
 
+  /* v0.111: батник v2.0 вшит в игру и отдаётся Blob-ом — на сайте файлов нет, ничего публиковать не нужно */
+  const dlBat = () => {
+    try {
+      const blob = new Blob([BOGACH_BAT], { type: 'application/octet-stream' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'bogach-donat.bat';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      sfx.click();
+    } catch { /* noop */ }
+  };
+
   return (
     <Modal title="Богач · донаты" icon={Ic.cart(16)} onClose={onClose} w="max-w-3xl">
       <div className="space-y-4">
@@ -97,6 +111,34 @@ export function BogachPanel({ onClose }: { onClose: () => void }) {
             </div>
           )}
         </div>
+
+        {/* ---------- ИНТЕРАКТИВ СО ЗРИТЕЛЯМИ (v0.111): один батник под спойлером ---------- */}
+        <Field label="Интерактив со зрителями — донаты меняют задания ячеек">
+          <details className="border-2 border-edge px-3 py-2">
+            <summary className="cursor-pointer select-none font-pixel text-[10px] text-gold hover:text-paper">▸ Как подключить донаты себе: описание и один батник</summary>
+            <p className="text-[10px] text-dim mt-2 leading-snug">
+              Зритель донатит через DonatePay от минималки и пишет в тексте доната команду
+              «донат режим ЯЧЕЙКА РОМ СЕЙВ ПАКОСТЬ» — игра на этой ячейке меняется у всей компании в реальном
+              времени: ром из твоего пула, сохранение, пакость 0–30. Задание донатер не пишет — играет вшитое в
+              карту. Обычные донаты без команды не трогаются — алерты OBS работают как работали. У каждого хоста —
+              свой DonatePay и своя выручка.
+            </p>
+            <div className="mt-2">
+              <PxBtn small color="gold" onClick={dlBat}>{Ic.download(12)} Скачать bogach-donat.bat — ОДИН файл</PxBtn>
+            </div>
+            <ol className="text-[10px] text-dim mt-1.5 space-y-0.5 list-decimal list-inside">
+              <li>Положи батник в любую папку (например C:\bogach) и запусти. Если браузер дописал «.txt» — сотри его.</li>
+              <li>Батник сам развернёт слушателя и подсказки (instrukcia-bogach.txt, bogach-dlya-strima.txt) и сам скачает Node.js (~30 МБ, один раз) — качать больше ничего не нужно.</li>
+              <li>Батник сам создаст .env и откроет Блокнот — впиши СВОЙ ключ: donatepay.ru → Настройки → API → DONATEPAY_KEY=ключ → Ctrl+S.</li>
+              <li>Держи окно открытым весь стрим (свернуть можно). Здесь появится «СЛУШАТЕЛЬ НА СВЯЗИ» — заполни пул ромов/сейвов и минималку.</li>
+            </ol>
+            <p className="text-[10px] text-faint mt-1.5">
+              Безопасно: ключ живёт только в .env на твоём компьютере — сайт и игроки его не видят; слушатель общается
+              только с donatepay.ru и этой вкладкой; чужие сайты управлять им не могут — только эта игра. При каждом
+              запуске батник сам проверяет папку и доделывает, чего не хватает.
+            </p>
+          </details>
+        </Field>
 
         {/* ---------- МИНИМАЛКА ---------- */}
         <Field label="Минималка доната (₽) — сумма, с которой команда срабатывает">

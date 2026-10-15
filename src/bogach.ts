@@ -79,7 +79,7 @@ const doorConnect = () => {
   sock.onopen = () => {
     if (ws !== sock) return;
     setStatus({ door: 'open' });
-    botSend({ t: 'tab', room: doorRoom, app: 103 });
+    botSend({ t: 'tab', room: doorRoom, app: 104 });
     // сразу скажем слушателю актуальную минималку панели (у кого новее — тот прав)
     const own = Number(localStorage.getItem('bogach-min') ?? '');
     if (Number.isFinite(own) && own > 0) botSend({ t: 'min', v: own });
