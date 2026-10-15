@@ -2,7 +2,10 @@
    пул ромов/сейвов, конвейер применения донат-команды и шпаргалка для стрима.
    Слушатель (bogach-donat.bat + bogach-listener.js + .env с ключом DonatePay)
    крутится на компьютере стримера: сам опрашивает DonatePay и передаёт команды
-   сюда через ws://127.0.0.1:8765. Ключ и донаты НЕ покидают компьютер. */
+   сюда через ws://127.0.0.1:8765. Ключ и донаты НЕ покидают компьютер.
+   v0.113: дверь ОТКРЫВАЕТСЯ ТОЛЬКО ПО КНОПКЕ «Включить донаты» в панели —
+   при создании комнаты браузер больше НЕ спрашивает доступ к локальной сети;
+   вопрос появляется один раз, когда хост сам захотел донаты. */
 import { useApp } from './store';
 import { dispatch, sendBig } from './useGame';
 import type { TaskDef, MapMode, ChaosKind, GameMap } from './types';
@@ -38,13 +41,16 @@ export interface BogachResult {
 }
 export interface BogachStatus {
   door: 'off' | 'connecting' | 'open'; // дверь вкладки к слушателю
+  wanted: boolean; // v0.113: хост ВКЛЮЧИЛ донаты (иначе дверь не открывается вовсе)
   key: boolean; // слушатель нашёл ключ в .env
   min: number; // минималка слушателя
   interval: number; // интервал опроса DonatePay, с
   processed: number; // команд принято слушателем за запуск
   results: BogachResult[]; // последние 8 результатов
 }
-const status: BogachStatus = { door: 'off', key: false, min: 50, interval: 15, processed: 0, results: [] };
+const DOOR_WANT_KEY = 'bogach-door-wanted';
+let doorWanted = (() => { try { return localStorage.getItem(DOOR_WANT_KEY) === '1'; } catch { return false; } })();
+const status: BogachStatus = { door: 'off', wanted: doorWanted, key: false, min: 50, interval: 15, processed: 0, results: [] };
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((cb) => cb());
 export const subscribeBogach = (cb: () => void): (() => void) => { listeners.add(cb); return () => { listeners.delete(cb); }; };
@@ -81,6 +87,9 @@ const doorConnect = () => {
     setStatus({ door: 'open' });
     // v0.112: версия игры в рукопожатии — из APP_VERSION (раньше каменела на 104)
     botSend({ t: 'tab', room: doorRoom, app: APP_VERSION });
+    // v0.113: сразу и статус-пинг (не ждать 15 с — слушатель сразу маршрутизирует донаты)
+    const st0 = useApp.getState();
+    botSend({ t: 'ping', room: doorRoom, visible: document.visibilityState === 'visible', host: !!st0.room?.isHost, live: !!st0.session && st0.session.phase !== 'lobby' });
     // сразу скажем слушателю актуальную минималку панели (у кого новее — тот прав)
     const own = Number(localStorage.getItem('bogach-min') ?? '');
     if (Number.isFinite(own) && own > 0) botSend({ t: 'min', v: own });
@@ -111,7 +120,7 @@ const doorRetry = () => {
   retryTimer = window.setTimeout(() => { retryTimer = null; doorConnect(); }, 5000);
 };
 
-/** Запустить дверь (хост открыл партию). */
+/** Запустить дверь (хост включил донаты в панели или хост новой партии с уже включёнными). */
 export const startDoor = (roomCode: string) => {
   doorOn = true;
   doorRoom = roomCode;
@@ -139,6 +148,25 @@ export const stopDoor = () => {
 };
 
 const onVis = () => botSend({ t: 'ping', room: doorRoom, visible: document.visibilityState === 'visible' });
+
+/* ---------- v0.113: дверь по кнопке — без запроса браузера при создании комнаты ----------
+   Публичный сайт подключается к 127.0.0.1 — Chrome спрашивает разрешение на локальную сеть.
+   Раньше вопрос выскакивал у ВСЕХ при создании комнаты. Теперь донаты выключены по умолчанию:
+   дверь открывается только кнопкой «Включить донаты» в панели (enableDoor) — и вопрос видит
+   только тот, кто захотел донаты. Выбор запоминается: следующие партии подключаются сами. */
+export const isDoorWanted = (): boolean => doorWanted;
+export const enableDoor = (roomCode: string) => {
+  doorWanted = true;
+  try { localStorage.setItem(DOOR_WANT_KEY, '1'); } catch { /* noop */ }
+  setStatus({ wanted: true });
+  startDoor(roomCode);
+};
+export const disableDoor = () => {
+  doorWanted = false;
+  try { localStorage.setItem(DOOR_WANT_KEY, '0'); } catch { /* noop */ }
+  setStatus({ wanted: false });
+  stopDoor();
+};
 
 /** Панель сменила минималку — сообщим слушателю и запомним. */
 export const setMinimalka = (v: number) => {

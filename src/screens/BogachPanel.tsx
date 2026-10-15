@@ -12,7 +12,7 @@ import { DONATE_CHAOS } from '../types';
 import { SAVE_KIND_CLS, SAVE_KIND_LABEL, SAVE_KIND_SHORT, saveKindOf } from '../types';
 import type { GameMap, RomDef, SaveDef } from '../types';
 import { CartridgeBadge } from '../cartridge';
-import { loadPool, savePool, setMinimalka, applyDonat, buildShpargalka, subscribeBogach, getBogachStatus, type BogachPool } from '../bogach';
+import { loadPool, savePool, setMinimalka, applyDonat, buildShpargalka, subscribeBogach, getBogachStatus, enableDoor, disableDoor, type BogachPool } from '../bogach';
 import { BOGACH_BAT } from '../bogachBat';
 
 export function BogachPanel({ onClose, editorMap }: { onClose: () => void; editorMap?: GameMap | null }) {
@@ -111,6 +111,10 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
 
   const doorLabel = status.door === 'open' ? 'СЛУШАТЕЛЬ НА СВЯЗИ' : status.door === 'connecting' ? 'СЛУШАТЕЛЬ НЕ ЗАПУЩЕН (жду…)' : 'ДВЕРЬ ЗАКРЫТА';
 
+  /* v0.113: дверь донатов включается кнопкой — без вопроса браузера при создании комнаты */
+  const turnOn = () => { enableDoor(room?.code ?? ''); sfx.click(); };
+  const turnOff = () => { disableDoor(); sfx.click(); };
+
   /* v0.111: батник v2.0 вшит в игру и отдаётся Blob-ом — на сайте файлов нет, ничего публиковать не нужно */
   const dlBat = () => {
     try {
@@ -167,15 +171,34 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
               ручная форма и шпаргалка. Батник скачивается ниже — он один и тот же.
             </p>
           </div>
+        ) : !status.wanted ? (
+          <div className="border-2 border-edge px-3 py-2.5 space-y-1.5">
+            <div className="font-pixel text-[10px] text-dim">● ДОНАТЫ ВЫКЛЮЧЕНЫ</div>
+            <p className="text-[10px] text-dim leading-snug">
+              Игра не связывается с батником — поэтому при создании комнаты браузер больше ничего не спрашивает.
+              Хочешь донаты от зрителей — нажми кнопку: браузер ОДИН раз спросит доступ к локальной сети
+              (это безопасная связь только с твоим же компьютером — с батником, который слушает донаты) —
+              разреши, и появится «СЛУШАТЕЛЬ НА СВЯЗИ».
+            </p>
+            <div>
+              <PxBtn small color="teal" onClick={turnOn}>🔌 Включить донаты — подключить слушателя</PxBtn>
+            </div>
+          </div>
         ) : (
           <div className="border-2 border-edge px-3 py-2.5 space-y-1.5">
             <div className="flex items-center gap-2 flex-wrap font-pixel text-[10px]">
               <span className={status.door === 'open' ? 'text-teal' : 'text-dim'}>● {doorLabel}</span>
               <span className={status.key ? 'text-teal' : 'text-magma'}>· ключ .env: {status.key ? 'найден' : 'НЕ найден — проверь .env рядом с батником'}</span>
+              <button onClick={turnOff} className="ml-auto tick-label text-faint hover:text-coral cursor-pointer" title="Отвязать игру от батника до следующего включения">выключить донаты</button>
             </div>
             <div className="font-pixel text-[9px] text-dim">
               минималка слушателя: {status.min} ₽ · опрос DonatePay каждые {status.interval} с · команд принято: {status.processed}
             </div>
+            <p className="text-[9.5px] text-faint leading-snug">
+              ws://127.0.0.1:8765 в браузере открывать НЕ нужно и не получится — это не сайт, а внутренний адрес
+              батника на твоём компьютере: вкладка игры подключается к нему сама. В окне батника можно написать код
+              комнаты (например {room?.code ?? 'NNNN'}) и нажать Enter — донаты без слова «комната» уйдут в неё.
+            </p>
             {status.results.length > 0 && (
               <div className="space-y-0.5 max-h-28 overflow-y-auto">
                 {status.results.map((r) => (
@@ -207,7 +230,8 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
               <li>Положи батник в любую папку (например C:\bogach) и запусти. Если браузер дописал «.txt» — сотри его.</li>
               <li>Батник сам развернёт слушателя и подсказки (instrukcia-bogach.txt, bogach-dlya-strima.txt) и сам скачает Node.js (~30 МБ, один раз) — качать больше ничего не нужно.</li>
               <li>Батник сам создаст .env и откроет Блокнот — впиши СВОЙ ключ: donatepay.ru → Настройки → API → DONATEPAY_KEY=ключ → Ctrl+S.</li>
-              <li>Держи окно открытым весь стрим (свернуть можно). В партии появится «СЛУШАТЕЛЬ НА СВЯЗИ» — пул и минималку можно было заполнить здесь заранее, галочками.</li>
+              <li>В игре открой панель «💰 Донаты» и нажми «🔌 Включить донаты» — браузер один раз спросит доступ к локальной сети (связь с батником на твоём ПК) — разреши. В окне батника можно написать код комнаты — донаты без «комната» уйдут в неё.</li>
+              <li>Держи окно открытым весь стрим (свернуть можно). В панели появится «СЛУШАТЕЛЬ НА СВЯЗИ» — пул и минималку можно было заполнить здесь заранее, галочками.</li>
             </ol>
             <p className="text-[10px] text-faint mt-1.5">
               Безопасно: ключ живёт только в .env на твоём компьютере — сайт и игроки его не видят; слушатель общается

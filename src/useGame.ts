@@ -5,7 +5,7 @@ import { applyAction, type Action } from './engine';
 import type { GameMap, GameSession, NetMsg, RomDef, SaveDef, SessionSnapshot } from './types';
 import { APP_VERSION } from './types';
 import { idbGet, idbPut } from './db';
-import { startDoor, loadPool } from './bogach';
+import { startDoor, loadPool, isDoorWanted } from './bogach';
 
 /* base64 <-> ArrayBuffer для передачи ромов по сети */
 function bufToB64(buf: ArrayBuffer): string {
@@ -400,8 +400,11 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
 
   app.boot(room, isHost, initial.session, initial.map);
   /* v0.109 БОГАЧ: у хоста партии открывается «дверь донатов» — локальный
-     WebSocket к слушателю (батнику) на компьютере стримера */
-  if (isHost) startDoor(code);
+     WebSocket к слушателю (батнику) на компьютере стримера.
+     v0.113: ТОЛЬКО если хост уже включил донаты кнопкой в панели — иначе
+     браузер при создании комнаты спрашивает доступ к локальной сети,
+     и это сбивает с толку. Не включал — вопроса нет. */
+  if (isHost && isDoorWanted()) startDoor(code);
   if (initial.session && initial.session.phase !== 'lobby') useApp.getState().setScreen('game');
   if (isHost && initial.session && initial.map) {
     sendBig(room, 'map', initial.map);
