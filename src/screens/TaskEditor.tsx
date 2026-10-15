@@ -5,7 +5,8 @@ import { cellAtPoint, drawBoard, fitView } from '../render';
 import { idbGet, idbPut, uid } from '../db';
 import { cartridgeArt, cardArt, fileToDataUrl } from '../assets';
 import type { CardDef, CardEffect, CellType, ChaosKind, CodeOp, CodeType, EffectType, GameMap, MemCond, RomDef, SaveKind, TaskDef } from '../types';
-import { CHAOS_LIST, chaosLabel, mkChaosCard, JOY_LIST, SAVE_KIND_CLS, SAVE_KIND_LABEL, SAVE_KIND_SHORT, saveKindOf, taskPlatOfExt } from '../types';
+import { CHAOS_LIST, chaosLabel, mkChaosCard, JOY_LIST, SAVE_KIND_CLS, SAVE_KIND_LABEL, SAVE_KIND_SHORT, saveKindOf, taskPlatOfExt, DONATE_DICE_ONLY } from '../types';
+import { hasDice } from '../bogach'; // v0.109: кубиковые пакости/радости только в Ретрополии
 import { CODE_TYPE_LABEL, OP_LABEL, formatCond, hex8, memCondText, parseCond, parseHex } from '../memcode';
 import { renumberByPath, fixLinksAfterDelete } from '../render';
 import { HoldDeleteButton, rememberDeleted } from '../delGuard';
@@ -382,6 +383,17 @@ export default function TaskEditor() {
     if (codeConflict) {
       sfx.fail();
       toast('Зачёт и поражение — ОДНО И ТО ЖЕ условие: измените или уберите одно из них', 'err');
+      return;
+    }
+    /* v0.109: НЕПРАВИЛЬНАЯ ПАКОСТЬ/РАДОСТЬ — кубиковые только в Ретрополии: не сохраняем */
+    if (fChaos && DONATE_DICE_ONLY.includes(fChaos as ChaosKind) && !hasDice(map.mode)) {
+      sfx.fail();
+      toast(`Не правильная пакость: «${chaosLabel(fChaos as ChaosKind)}» — в этом режиме нет кубиков`, 'err');
+      return;
+    }
+    if (fJoy === 'joy-diePlus' && !hasDice(map.mode)) {
+      sfx.fail();
+      toast('Не правильная радость: «+1 кубик» — в этом режиме нет кубиков', 'err');
       return;
     }
     let imageId: string | undefined = fImg || undefined;

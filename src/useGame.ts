@@ -5,6 +5,7 @@ import { applyAction, type Action } from './engine';
 import type { GameMap, GameSession, NetMsg, RomDef, SaveDef, SessionSnapshot } from './types';
 import { APP_VERSION } from './types';
 import { idbGet, idbPut } from './db';
+import { startDoor, loadPool } from './bogach';
 
 /* base64 <-> ArrayBuffer для передачи ромов по сети */
 function bufToB64(buf: ArrayBuffer): string {
@@ -41,7 +42,7 @@ const rxChunks = new Map<string, { parts: string[]; got: number; n: number; time
 /* последние отправленные наборы — чтобы ответить на needResend без пересборки */
 const txCache = new Map<string, { t: string; json: string }>();
 
-function sendBig(room: Room, t: string, p: unknown) {
+export function sendBig(room: Room, t: string, p: unknown) {
   const json = JSON.stringify(p);
   const n = Math.max(1, Math.ceil(json.length / CHUNK_SIZE));
   const key = `${room.selfId}-${t}-${Date.now().toString(36)}`;
@@ -142,6 +143,11 @@ async function sendLibrary(room: Room, map: GameMap): Promise<void> {
        чтобы общий запуск гонки открывался у гостей мгновенно, без needRom */
     for (const v of c.taskVariants ?? []) if (v?.romId) romIds.add(v.romId);
   }
+  /* v0.109 БОГАЧ: пул донатов — ромы и сохранения (включая ЧАСТНЫЕ) уезжают гостям
+     вместе с библиотекой карты, чтобы донат-задания открывались без ожидания */
+  const pool = loadPool();
+  for (const rid of pool.roms) romIds.add(rid);
+  for (const sid of pool.saves) saveIds.add(sid);
   const st = useApp.getState();
   const roms = st.roms.filter((r) => romIds.has(r.id));
   /* Гости должны видеть в игре (после захвата ячейки) все «уровни / боссы / моё задание»
@@ -393,6 +399,9 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
     : createRoom(code, isHost, app.selfId, onMsg, (info) => useApp.getState().setNetInfo(info), useApp.getState().options.relay, useApp.getState().options.turn);
 
   app.boot(room, isHost, initial.session, initial.map);
+  /* v0.109 БОГАЧ: у хоста партии открывается «дверь донатов» — локальный
+     WebSocket к слушателю (батнику) на компьютере стримера */
+  if (isHost) startDoor(code);
   if (initial.session && initial.session.phase !== 'lobby') useApp.getState().setScreen('game');
   if (isHost && initial.session && initial.map) {
     sendBig(room, 'map', initial.map);

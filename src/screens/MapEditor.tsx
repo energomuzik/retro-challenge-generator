@@ -13,8 +13,9 @@ import { extractTilesFromImage, scaleTileImg } from '../tilecut';
 import { METHOD_HINTS, METHOD_LABELS, methodFactors, runUpscale, upscaleWarn, type ScaleMethod } from '../upscaler'; // v0.98: апскейлер пиксель-картинок
 import type { ExtractInfo } from '../tilecut';
 import { idbDel, idbGet, idbPut, uid } from '../db';
-import type { AnimDef, BossAnimDef, CellDef, CellType, CustomChallenge, CutsceneDef, GameMap, MapEnding, MapTileInfo, NpcAnimDef, NpcLibEntry, NpcQuest, NpcShopOffer, PatrolDef, PlacedAnim, PlacedBoss, PlacedNpc, PlateBg, PortalZone, QuestGoal, QuestGoalKind, RubgItemKind, Stamp, TileGrid, TilePlay, TokenDef, TileGroup, TileImg, WallRect } from '../types';
-import { frameWallsOf } from '../types';
+import type { AnimDef, BossAnimDef, CellDef, CellType, CustomChallenge, CutsceneDef, GameMap, MapEnding, MapTileInfo, NpcAnimDef, NpcLibEntry, NpcQuest, NpcShopOffer, PatrolDef, PlacedAnim, PlacedBoss, PlacedNpc, PlateBg, PortalZone, QuestGoal, QuestGoalKind, RubgItemKind, Stamp, TaskDef, TileGrid, TilePlay, TokenDef, TileGroup, TileImg, WallRect } from '../types';
+import { frameWallsOf, chaosLabel, DONATE_DICE_ONLY } from '../types';
+import { hasDice } from '../bogach'; // v0.109: карта с кубиковыми пакостями/радостями в режиме без кубиков не сохраняется
 import { baseModeOf, bossLibEntryOf, challengeSummaryLines, coinsStr, doorKeyHex, isJourneyLike, isQuestMode, isSoloMode, mapModeModified, MAP_MODES, MAP_MODES_TOP, MAX_FIELD, MODE_PRESETS, normResMode, npcLibEntryOf, PLATE_SIZES, questGoalText, soloVariantOf, tileGridDims, tileRectOf, tilePlayOf, TILE_PLAY_OPTS, DOOR_KEYS, RUBG_ITEMS, RUBG_ZONE_PHASES, rubgFmtZone } from '../types';
 import type { MapMode } from '../types';
 import { HoldDeleteButton, rememberDeleted, TileSizeBtns, useKeyDelete } from '../delGuard';
@@ -3150,6 +3151,25 @@ export default function MapEditor() {
   /* ─── панели ─── */
   const saveMap = async () => {
     if (!map) return;
+    /* v0.109: НЕПРАВИЛЬНЫЕ ПАКОСТИ/РАДОСТИ — кубиковые имеют смысл только в Ретрополии.
+       Карта с ними НЕ СОХРАНЯЕТСЯ: автору показывается, на какой ячейке что не так. */
+    if (!hasDice(map.mode)) {
+      for (const c of map.cells) {
+        const list: TaskDef[] = [...(c.task ? [c.task] : []), ...(c.taskVariants ?? [])];
+        for (const t of list) {
+          if (t.chaos && DONATE_DICE_ONLY.includes(t.chaos)) {
+            sfx.fail();
+            toast(`Не правильная пакость: «${chaosLabel(t.chaos)}» на ячейке №${c.n} — в этом режиме нет кубиков. Карта не сохранена`, 'err');
+            return;
+          }
+          if (t.joy === 'joy-diePlus') {
+            sfx.fail();
+            toast(`Не правильная радость: «+1 кубик» на ячейке №${c.n} — в этом режиме нет кубиков. Карта не сохранена`, 'err');
+            return;
+          }
+        }
+      }
+    }
     await persist(map);
     toast('Карта сохранена', 'ok');
   };

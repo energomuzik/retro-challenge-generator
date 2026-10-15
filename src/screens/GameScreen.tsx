@@ -26,6 +26,9 @@ import TradeWindow from './TradeWindow';
 import { nodeShowsQuests, nodeShowsShop } from '../dialogHubs';
 import { idbGet } from '../db';
 import { sfx } from '../sound';
+import { BogachPanel } from './BogachPanel'; // v0.109 БОГАЧ: панель донатов хоста
+import { hasDice } from '../bogach'; // v0.109: проверка пакостей/радостей «только для кубиков»
+import { DONATE_DICE_ONLY } from '../types';
 import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
 import { startLoop, stopLoop, syncLoops, stopGroup, killGroup, stopOneShot, playOneShot } from '../loopsnd';
 
@@ -212,6 +215,7 @@ export default function GameScreen() {
   const [stream, setStream] = useState<StreamPacket | null>(null);
   const [tick, setTick] = useState(0); // тик таймера: перерисовка + двигает nearNpc (патрули)
   const [tplOpen, setTplOpen] = useState(false);
+  const [bogOpen, setBogOpen] = useState(false); // v0.109 БОГАЧ: панель донатов
 
   const viewRef = useRef({ x: 0, y: 0, zoom: 1 });
   const dispRef = useRef<Record<string, { x: number; y: number }>>({});
@@ -2886,6 +2890,12 @@ export default function GameScreen() {
               {Ic.save(12)} Сохранить
             </GhostBtn>
           )}
+          {/* v0.109 БОГАЧ: панель донатов — только у хоста партии */}
+          {room.isHost && (
+            <GhostBtn small onClick={() => { setBogOpen(true); sfx.click(); }} title="Богач: донаты, минималка, пул игр и шпаргалка для стрима">
+              {Ic.cart(12)} Донаты
+            </GhostBtn>
+          )}
           <GhostBtn small onClick={() => { st.leaveRoom(); st.setScreen('menu'); }}>{Ic.home(12)}</GhostBtn>
         </div>
       </div>
@@ -4294,6 +4304,12 @@ export default function GameScreen() {
                     <div className={`font-display uppercase text-lg break-words min-w-0 flex items-center gap-2 ${isBogach ? 'text-gold' : 'text-teal'}`}>
                       <PlayerIcon pid={me} size={20} /> {isBogach ? '💰 ОБЩЕЕ ЗАДАНИЕ' : '🧭 ЗАДАНИЕ'} · {myQTask.title}
                     </div>
+                    {/* v0.109: в других режимах во время игры написано, какая пакость применена */}
+                    {myQTask.chaos && (
+                      <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-magma shrink-0" title={CHAOS_LIST.find((c) => c.kind === myQTask.chaos)?.desc}>
+                        😈 {chaosLabel(myQTask.chaos)}
+                      </span>
+                    )}
                     {timerBadge}
                     {taskSizeBtns}
                     <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myQJob.cellIdx + 1} · {isBogach ? 'играет ВСЯ компания — гонка!' : 'играешь ТОЛЬКО ты'}</span>
@@ -4473,6 +4489,12 @@ export default function GameScreen() {
                   <div className="font-display uppercase text-lg text-gold break-words min-w-0 flex items-center gap-2">
                     <PlayerIcon pid={me} size={20} /> 🎮 ЛИЧНОЕ ЗАДАНИЕ · {myRubgTask.title}
                   </div>
+                  {/* v0.109: в других режимах во время игры написано, какая пакость применена */}
+                  {myRubgTask.chaos && (
+                    <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-magma shrink-0" title={CHAOS_LIST.find((c) => c.kind === myRubgTask.chaos)?.desc}>
+                      😈 {chaosLabel(myRubgTask.chaos)}
+                    </span>
+                  )}
                   {timerBadge}
                   {taskSizeBtns}
                   <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myJob.cellIdx + 1} · играешь ТОЛЬКО ты</span>
@@ -4923,6 +4945,8 @@ export default function GameScreen() {
           в Спринтере ячейка после победы ломается ДО КОНЦА КАТКИ (решать больше нечего) */}
 
       {tplOpen && <TemplateModal cellIdx={active?.pos ?? 0} onClose={() => setTplOpen(false)} />}
+      {/* v0.109 БОГАЧ: панель донатов (статус слушателя, минималка, пул, ручная форма, шпаргалка) */}
+      {bogOpen && <BogachPanel onClose={() => setBogOpen(false)} />}
 
       {/* ---------- v0.56: КАТ-СЦЕНА — кино-полосы (v0.60 — без плашки;
            v0.61 — у «Растворяющихся» тоже РЕЗКИЙ край: сплошной чёрный без градиента;
@@ -5032,7 +5056,7 @@ function DieFace({ v, dropping, delay, rolling, blank, frame }: { v: number; dro
 /* ---------- шаблон нового задания ---------- */
 
 function TemplateModal({ cellIdx, onClose }: { cellIdx: number; onClose: () => void }) {
-  const { roms, saves, session, selfId } = useApp();
+  const { roms, saves, session, selfId, sessionMap } = useApp();
   const [romId, setRomId] = useState('');
   const [saveId, setSaveId] = useState('');
   const [title, setTitle] = useState('');
@@ -5052,6 +5076,19 @@ function TemplateModal({ cellIdx, onClose }: { cellIdx: number; onClose: () => v
     const romIsNes = roms.find((r) => r.id === romId)?.ext === 'nes';
     if (!romId || (romIsNes && !saveId)) {
       useApp.getState().toast(romIsNes ? 'Выберите ром и сохранение' : 'Выберите ром', 'err');
+      return;
+    }
+    /* v0.109: НЕПРАВИЛЬНАЯ ПАКОСТЬ/РАДОСТЬ при замене задания — кубиковые карточки
+       и «+1 кубик» бессмысленны в режимах без кубиков: не применяем, просим другую */
+    const card = chaosCards.find((c) => c.id === chaosCardId);
+    if (card?.chaos && DONATE_DICE_ONLY.includes(card.chaos) && !hasDice(sessionMap?.mode)) {
+      sfx.fail();
+      useApp.getState().toast(`Выбери другую, эта не верная: пакость «${card.name}» — в этом режиме нет кубиков`, 'err');
+      return;
+    }
+    if (joyId === 'joy-diePlus' && !hasDice(sessionMap?.mode)) {
+      sfx.fail();
+      useApp.getState().toast('Выбери другую, эта не верная: радость «+1 кубик» — в этом режиме нет кубиков', 'err');
       return;
     }
     const task: TaskDef = {

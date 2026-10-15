@@ -4,6 +4,7 @@ import type { NetInfo, Room } from './net';
 import { idbAll, idbGet, idbPut } from './db';
 import { builtinTiles } from './assets';
 import { setVolume } from './sound';
+import { stopDoor } from './bogach';
 
 export type Screen =
   | 'menu' | 'create' | 'join' | 'load' | 'lobby' | 'game' | 'challenge'
@@ -210,6 +211,7 @@ export const useApp = create<AppState>()((set, get) => ({
   leaveRoom: () => {
     const r = get().room;
     if (r) r.close();
+    stopDoor(); // v0.109 БОГАЧ: дверь донатов закрывается вместе с партией
     set({ room: null, session: null, sessionMap: null, romCache: {}, saveCache: {}, romReadyTick: 0, sync: {}, diceShake: null, resumeClaims: {}, resumeSnap: null, netInfo: { online: false, local: true, links: 0, signal: 'connecting', attempts: 0 } });
   },
 

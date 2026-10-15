@@ -91,6 +91,7 @@ export type Action =
   | { t: 'bossHold'; id: string; bossId: string; on: boolean } // v0.54 БОСС ЖДЁТ КОНЦА РАЗГОВОРА: on — диалог открыт рядом с боссом: босс ЗАМИРАЕТ и не ловит; off — разговор закончен: игрок всё ещё вплотную — босс ЛОВИТ, иначе патруль продолжается
   | { t: 'bossTaskGo'; id: string } // v0.56 ОТЛОЖЕННЫЙ ЗАПУСК ЗАДАНИЯ БОССА: клиент пойманного игрока сообщает «фишку ДОТАЩИЛИ и прошла секунда» — хост проверяет qTaskAt и открывает задание босса
   | { t: 'cutsceneSeen'; id: string; key: string } // v0.56 КАТ-СЦЕНА показана (старт карты/пересечение зоны): хост помечает «виденное» (s.cutsceneDone) — за сессию не повторяется
+  | { t: 'donatLog'; text: string } // v0.109 БОГАЧ: строка в общий лог о применённом донате (хост применяет задание карты сам и рассылает карту; действием — только лог, чтобы состояние уехало гостям)
 
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
 const rnd6 = () => 1 + Math.floor(Math.random() * 6);
@@ -3059,6 +3060,15 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         }
       }
       log(`👹 Задание босса${bossNameOf(bossId)} НАЧАЛОСЬ для игрока ${p.name} — босс доволок фишку до места.`);
+      break;
+    }
+    case 'donatLog': {
+      /* v0.109 БОГАЧ: строка лога о применённом донате. Задание ячейки хост кладёт
+         в КАРТУ сам (cells[].task) и рассылает карту всем; сюда попадает только
+         текст для общего лога, чтобы он уехал гостям вместе с состоянием. */
+      if (s.phase === 'lobby') break;
+      const dtext = String(a.text ?? '').slice(0, 300);
+      if (dtext) log(`💰 ${dtext}`);
       break;
     }
     case 'cutsceneSeen': {
