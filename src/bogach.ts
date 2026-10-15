@@ -5,8 +5,8 @@
    сюда через ws://127.0.0.1:8765. Ключ и донаты НЕ покидают компьютер. */
 import { useApp } from './store';
 import { dispatch, sendBig } from './useGame';
-import type { TaskDef, MapMode, ChaosKind } from './types';
-import { DONATE_CHAOS, DONATE_UNIVERSAL_NUMS, DONATE_DICE_ONLY, taskPlatOfExt } from './types';
+import type { TaskDef, MapMode, ChaosKind, GameMap } from './types';
+import { DONATE_CHAOS, DONATE_UNIVERSAL_NUMS, DONATE_DICE_ONLY, taskPlatOfExt, APP_VERSION } from './types';
 
 /* ---------- режимы с кубиками: только Ретрополия (и её соло-вариант) ---------- */
 export const hasDice = (m?: MapMode): boolean => m === 'classic' || m === 'classic1p';
@@ -79,7 +79,8 @@ const doorConnect = () => {
   sock.onopen = () => {
     if (ws !== sock) return;
     setStatus({ door: 'open' });
-    botSend({ t: 'tab', room: doorRoom, app: 104 });
+    // v0.112: версия игры в рукопожатии — из APP_VERSION (раньше каменела на 104)
+    botSend({ t: 'tab', room: doorRoom, app: APP_VERSION });
     // сразу скажем слушателю актуальную минималку панели (у кого новее — тот прав)
     const own = Number(localStorage.getItem('bogach-min') ?? '');
     if (Number.isFinite(own) && own > 0) botSend({ t: 'min', v: own });
@@ -266,9 +267,12 @@ async function handleDonat(m: DonatMsg) {
 }
 
 /* ---------- ШПАРГАЛКА ДЛЯ СТРИМА ---------- */
-export function buildShpargalka(): string {
+/** v0.112: mapOverride — карта из РЕДАКТОРА ЗАДАНИЙ (панель «💰 Донаты» открыта кнопкой
+    в тулбаре редактора): шпаргалка строится по её ячейкам ещё до партии. Без параметра —
+    по карте активной партии, как раньше. */
+export function buildShpargalka(mapOverride?: GameMap | null): string {
   const st = useApp.getState();
-  const map = st.sessionMap;
+  const map = mapOverride !== undefined ? mapOverride : st.sessionMap;
   const pool = loadPool();
   const code = st.room?.code ?? 'NNNN';
   const L: string[] = [];
@@ -301,14 +305,14 @@ export function buildShpargalka(): string {
   } else L.push('  (карта не открыта — шпаргалка генерируется в партии)');
   L.push('');
   L.push('ПУЛ РОМОВ (номер = РОМ):');
-  if (pool.roms.length === 0) L.push('  (пуст — заполни в панели «💰 Донаты»)');
+  if (pool.roms.length === 0) L.push('  (пуст — заполни галочками в панели «💰 Донаты»: в партии или в редакторе заданий)');
   pool.roms.forEach((rid, i) => {
     const r = st.roms.find((x) => x.id === rid);
     L.push(`  ${i + 1} — ${r?.name ?? rid} (${(r?.ext ?? '?').toUpperCase()})`);
   });
   L.push('');
   L.push('ПУЛ СОХРАНЕНИЙ (номер = СЕЙВ, 0 = с начала):');
-  if (pool.saves.length === 0) L.push('  (пуст — заполни в панели «💰 Донаты»)');
+  if (pool.saves.length === 0) L.push('  (пуст — заполни галочками в панели «💰 Донаты»: в партии или в редакторе заданий)');
   pool.saves.forEach((sid, i) => {
     const sv = st.saves.find((x) => x.id === sid);
     const rn = sv ? st.roms.find((x) => x.id === sv.romId)?.name ?? '' : '';

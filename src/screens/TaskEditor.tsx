@@ -6,7 +6,8 @@ import { idbGet, idbPut, uid } from '../db';
 import { cartridgeArt, cardArt, fileToDataUrl } from '../assets';
 import type { CardDef, CardEffect, CellType, ChaosKind, CodeOp, CodeType, EffectType, GameMap, MemCond, RomDef, SaveKind, TaskDef } from '../types';
 import { CHAOS_LIST, chaosLabel, mkChaosCard, JOY_LIST, SAVE_KIND_CLS, SAVE_KIND_LABEL, SAVE_KIND_SHORT, saveKindOf, taskPlatOfExt, DONATE_DICE_ONLY } from '../types';
-import { hasDice } from '../bogach'; // v0.109: кубиковые пакости/радости только в Ретрополии
+import { hasDice, loadPool, savePool, subscribeBogach, type BogachPool } from '../bogach'; // v0.109: кубиковые пакости только в Ретрополии; v0.112: пул донатов в редакторе
+import { BogachPanel } from './BogachPanel'; // v0.112: панель «💰 Донаты» — та же, что у хоста в партии
 import { CODE_TYPE_LABEL, OP_LABEL, formatCond, hex8, memCondText, parseCond, parseHex } from '../memcode';
 import { renumberByPath, fixLinksAfterDelete } from '../render';
 import { HoldDeleteButton, rememberDeleted } from '../delGuard';
@@ -298,6 +299,25 @@ export default function TaskEditor() {
   const romFolders = useMemo(() => [...new Set(roms.map((r) => r.folder ?? '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')), [roms]);
   const looseRoms = useMemo(() => roms.filter((r) => !r.folder), [roms]);
   const romsIn = (folder: string) => roms.filter((r) => r.folder === folder);
+
+  /* v0.112: БОГАЧ В РЕДАКТОРЕ — пул донатов набирается галочками прямо в левой панели
+     (кнопка 💰 у папки/рома/сохранения) и в панели «💰 Донаты» из тулбара. Хранение прежнее —
+     localStorage браузера: в партии панель хоста видит ТОТ ЖЕ пул. */
+  const [bogOpen, setBogOpen] = useState(false);
+  const [pool, setPool] = useState<BogachPool>(() => loadPool());
+  useEffect(() => subscribeBogach(() => setPool(loadPool())), []);
+  const poolRomSet = useMemo(() => new Set(pool.roms), [pool.roms]);
+  const poolSaveSet = useMemo(() => new Set(pool.saves), [pool.saves]);
+  const commitPool = (p: BogachPool) => { setPool(p); savePool(p); };
+  const togglePoolRom = (id: string) => commitPool(poolRomSet.has(id) ? { ...pool, roms: pool.roms.filter((x) => x !== id) } : { ...pool, roms: [...pool.roms, id] });
+  const togglePoolSave = (id: string) => commitPool(poolSaveSet.has(id) ? { ...pool, saves: pool.saves.filter((x) => x !== id) } : { ...pool, saves: [...pool.saves, id] });
+  const togglePoolFolder = (f: string) => {
+    const ids = romsIn(f).map((r) => r.id);
+    const allIn = ids.length > 0 && ids.every((id) => poolRomSet.has(id));
+    commitPool(allIn
+      ? { ...pool, roms: pool.roms.filter((x) => !ids.includes(x)) }
+      : { ...pool, roms: [...pool.roms, ...ids.filter((id) => !poolRomSet.has(id))] });
+  };
   const pickRom = (r: { id: string }) => {
     setFRom(r.id);
     setFSave('');
@@ -306,6 +326,8 @@ export default function TaskEditor() {
   const romPanelRow = (r: RomDef) => {
     const sel = fRom === r.id;
     const svCount = saves.filter((s) => s.romId === r.id).length;
+    const inPool = poolRomSet.has(r.id); // v0.112: ром в пуле донатов
+    const poolNo = pool.roms.indexOf(r.id) + 1;
     return (
       <div key={r.id}>
         <div className={`relative border-2 px-2.5 py-2 transition-colors ${sel ? 'border-gold bg-gold/10' : 'border-edge bg-panel hover:border-edge2'}`}>
@@ -318,11 +340,19 @@ export default function TaskEditor() {
             <CartridgeBadge rom={r} h={18} />
             <span className={`font-display text-[11px] uppercase truncate ${sel ? 'text-gold' : 'text-paper'}`}>{sel ? '✓ ' : ''}{r.name}</span>
           </div>
-          <div className="tick-label text-faint mt-1">{cartLabelOf(r)} · сохранений: {svCount}</div>
+          <div className="tick-label text-faint mt-1">{cartLabelOf(r)} · сохранений: {svCount}{inPool ? ` · в пуле донатов №${poolNo}` : ''}</div>
         </button>
         {/* v0.61: 📷 обложка картриджа прямо в строке рома; v0.63: ✂ — вырезатель тайлов как в редакторе карт,
             ✕ убрать обложку — по правилам удаления из Опций */}
         <div className="absolute top-1 right-1 flex items-center gap-1 bg-[rgba(4,6,14,0.72)] px-1 rounded-sm">
+          {/* v0.112: 💰 — ром в пул донатов (номер — в панели «💰 Донаты») */}
+          <button
+            onClick={() => { togglePoolRom(r.id); sfx.click(); }}
+            title={inPool ? `«${r.name}» в пуле донатов — РОМ №${poolNo}. Клик — убрать из пула` : `Добавить «${r.name}» в пул донатов`}
+            className={`text-[10px] leading-none py-0.5 cursor-pointer ${inPool ? 'text-gold' : 'text-faint hover:text-gold'}`}
+          >
+            {inPool ? `💰№${poolNo}` : '💰'}
+          </button>
           <CoverPickBtn onPick={(file) => void setRomCoverFor(r, file)} title={r.cover ? 'Заменить обложку картриджа' : 'Загрузить обложку картриджа (готовая картинка)'} className="text-[10px] leading-none py-0.5 text-faint" />
           <CoverCropBtn onPick={(file) => setRomCropJob({ rom: r, file })} title="✂ Вырезать картридж из картинки — вырезатель тайлов, как в редакторе карт" className="text-[10px] leading-none py-0.5 text-faint" />
           {r.cover && (
@@ -341,26 +371,37 @@ export default function TaskEditor() {
             >
               <span className={`text-[10px] shrink-0 ${romSavesOpen ? 'text-gold' : 'text-faint'}`}>{romSavesOpen ? '▾' : '▸'}</span>
               <span className="tick-label text-dim">💾 Сохранения · {svCount}</span>
-              <span className="tick-label text-faint ml-auto">клик — выбрать</span>
+              <span className="tick-label text-faint ml-auto">клик — выбрать · 💰 — в пул</span>
             </button>
             {romSavesOpen && (
               <div className="space-y-1 mt-1">
                 {saves.filter((sv) => sv.romId === r.id).map((sv) => {
                   const k = saveKindOf(sv);
                   const picked = fSave === sv.id;
+                  const inPool = poolSaveSet.has(sv.id); // v0.112: сейв в пуле донатов
+                  const poolNo = pool.saves.indexOf(sv.id) + 1;
                   return (
-                    <button
-                      key={sv.id}
-                      onClick={() => { setFSave(sv.id); sfx.hover(); }}
-                      title={`Выбрать «${sv.name}» для этого задания`}
-                      className={`w-full text-left border-2 px-2 py-1.5 cursor-pointer transition-colors ${picked ? 'border-gold bg-gold/10' : 'border-edge bg-panel hover:border-edge2'}`}
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <span className={`font-pixel text-[7px] px-1 py-0.5 shrink-0 ${SAVE_KIND_CLS[k]}`}>{SAVE_KIND_SHORT[k]}</span>
-                        <span className={`font-display text-[10px] uppercase truncate ${picked ? 'text-gold' : 'text-paper'}`}>{picked ? '✓ ' : ''}{sv.name}</span>
-                      </div>
-                      <div className="tick-label text-faint mt-0.5">S{sv.slot} · {new Date(sv.createdAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</div>
-                    </button>
+                    <div key={sv.id} className="flex items-stretch gap-1">
+                      <button
+                        onClick={() => { setFSave(sv.id); sfx.hover(); }}
+                        title={`Выбрать «${sv.name}» для этого задания`}
+                        className={`flex-1 min-w-0 text-left border-2 px-2 py-1.5 cursor-pointer transition-colors ${picked ? 'border-gold bg-gold/10' : 'border-edge bg-panel hover:border-edge2'}`}
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span className={`font-pixel text-[7px] px-1 py-0.5 shrink-0 ${SAVE_KIND_CLS[k]}`}>{SAVE_KIND_SHORT[k]}</span>
+                          <span className={`font-display text-[10px] uppercase truncate ${picked ? 'text-gold' : 'text-paper'}`}>{picked ? '✓ ' : ''}{sv.name}</span>
+                        </div>
+                        <div className="tick-label text-faint mt-0.5">S{sv.slot} · {new Date(sv.createdAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}{inPool ? ` · в пуле №${poolNo}` : ''}</div>
+                      </button>
+                      {/* v0.112: 💰 — сохранение в пул донатов */}
+                      <button
+                        onClick={() => { togglePoolSave(sv.id); sfx.click(); }}
+                        title={inPool ? `«${sv.name}» в пуле донатов — СЕЙВ №${poolNo}. Клик — убрать из пула` : `Добавить «${sv.name}» в пул донатов`}
+                        className={`shrink-0 border-2 px-1.5 font-pixel text-[10px] leading-none cursor-pointer transition-colors ${inPool ? 'border-gold text-gold bg-gold/10' : 'border-edge text-faint hover:text-gold hover:border-edge2'}`}
+                      >
+                        💰
+                      </button>
+                    </div>
                   );
                 })}
               </div>
@@ -655,6 +696,10 @@ export default function TaskEditor() {
           ))}
         </select>
         <div className="ml-auto flex gap-2">
+          {/* v0.112: «💰 Донаты» — та же панель, что у хоста в партии: батник + пул галочками — ещё до запуска */}
+          <GhostBtn onClick={() => { setBogOpen(true); sfx.click(); }} title="Панель «💰 Донаты»: батник Богача и пул ромов/сейвов для донатов зрителей">
+            💰 Донаты{pool.roms.length + pool.saves.length > 0 ? ` · ${pool.roms.length + pool.saves.length}` : ''}
+          </GhostBtn>
           <GhostBtn onClick={() => void persist(map)}>{Ic.save(14)} Сохранить</GhostBtn>
           <PxBtn color={issues.length ? 'dim' : 'magma'} onClick={() => void completeMap()}>{Ic.check(14)} Завершить карту</PxBtn>
         </div>
@@ -703,6 +748,15 @@ export default function TaskEditor() {
                           className="text-faint hover:text-gold cursor-pointer shrink-0 px-0.5"
                         >
                           <span className="text-[11px] leading-none">⛶</span>
+                        </button>
+                        {/* v0.112: 💰 — ВСЯ папка в пул донатов (или снять целиком) */}
+                        <button
+                          type="button"
+                          onClick={() => { togglePoolFolder(f); sfx.click(); }}
+                          title={inF.every((r) => poolRomSet.has(r.id)) ? `Убрать ВСЮ папку «${f}» из пула донатов` : `Добавить ВСЮ папку «${f}» в пул донатов (${inF.filter((r) => poolRomSet.has(r.id)).length}/${inF.length} отмечено)`}
+                          className={`font-pixel text-[10px] leading-none cursor-pointer shrink-0 px-0.5 ${inF.every((r) => poolRomSet.has(r.id)) ? 'text-gold' : inF.some((r) => poolRomSet.has(r.id)) ? 'text-gold/60' : 'text-faint hover:text-gold'}`}
+                        >
+                          💰
                         </button>
                       </>
                     )}
@@ -755,6 +809,7 @@ export default function TaskEditor() {
             )}
             {roms.length > 0 && romFolders.length > 0 && (
               <p className="text-[10px] text-gold leading-tight mt-1">
+                💰 у папки/рома/сохранения — добавить в ПУЛ ДОНАТОВ зрителей (номера — в панели «💰 Донаты» вверху).
                 Папки раскрываются кликом — внутри ромы; клик по рому выбирает его для этого задания.
                 Доступны ромы <PlatName>NES</PlatName>, <PlatName>SEGA</PlatName> (<PlatName>Mega Drive</PlatName> / <PlatName>Master System</PlatName> / <PlatName>GAME GEAR</PlatName>), <PlatName>SNES</PlatName>, <PlatName>Game Boy/Color</PlatName>, <PlatName>GBA</PlatName>, <PlatName>SEGA 32X</PlatName>, <PlatName>Atari 2600</PlatName>, <PlatName>PC Engine</PlatName>; кнопка 🖼 у папки покажет ромы КАРТИНКАМИ картриджей/обложек, у каждого рома есть 📷 (готовая картинка) и ✂ (вырезать картридж из картинки тем же вырезателем, что тайлы в редакторе карт — клик по вырезанному тайлу ставит его обложкой).
               </p>
@@ -1305,6 +1360,8 @@ export default function TaskEditor() {
           onSave={(url) => { void applyRomCover(romCropJob.rom, url); setRomCropJob(null); }}
         />
       )}
+      {/* v0.112: панель «💰 Донаты» — та же, что у хоста в партии: батник + пул галочками + шпаргалка по ЭТОЙ карте */}
+      {bogOpen && <BogachPanel editorMap={map} onClose={() => setBogOpen(false)} />}
       </div>
     </div>
   );
