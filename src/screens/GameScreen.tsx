@@ -3643,6 +3643,21 @@ export default function GameScreen() {
                     <p className="text-[12px] text-dim mt-2">{cause}</p>
                   </>
                 );
+              })() : isBogach && !winner ? (() => {
+                /* v0.118 СПРИНТЕР: задания кончились — честная НИЧЬЯ (не «ПОБЕДА»);
+                   движок пишет s.winner = null в bogachFallback, когда непройденных
+                   вариантов не осталось ни у одной ячейки, а живых больше одного */
+                const liv = s.players.filter((p) => p.alive);
+                return (
+                  <>
+                    <div className="font-pixel text-sm mt-3 title-glow text-paper">НИЧЬЯ</div>
+                    <div className="font-display uppercase text-2xl text-paper mt-2">ВСЕ ЗАДАНИЯ ПРОЙДЕНЫ</div>
+                    <p className="text-[12px] text-dim mt-2">
+                      Задания на карте кончились (на ячейке может быть до трёх), а сильнейшего выявить не удалось — слава делится поровну.
+                      {liv.length > 0 && ` Финальный капитал: ${liv.map((p) => `${p.name} — ${coinsStr(p.coinsLeft ?? 0)}`).join(' · ')}`}
+                    </p>
+                  </>
+                );
               })() : isMapless ? (
                 <>
                   <div className={`font-pixel text-sm mt-3 title-glow ${winner ? 'text-teal' : 'text-coral'}`}>
@@ -4481,7 +4496,7 @@ export default function GameScreen() {
             <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.82)] p-3">
               <div className="pixel-panel pixel-corners p-4 w-full max-w-[560px] max-h-[92vh] overflow-y-auto">
                 <div className="font-display uppercase text-lg text-gold mb-1">🎲 Выберите задание ячейки №{myPickIdx + 1}</div>
-                <p className="text-[10px] text-dim leading-snug mb-3">Вы опередили всех — выбирайте игру для ВСЕЙ компании: она запустится у всех игроков ОДНОВРЕМЕННО. Выбор никому не транслируется, поэтому берите игру, в которой вы сильнее всех: кто первый её пройдёт — заберёт награду, а остальные просто остановятся (на ничейной ячейке никто не платит). Побеждённая ячейка ломается до конца катки.</p>
+                <p className="text-[10px] text-dim leading-snug mb-3">Вы опередили всех — выбирайте игру для ВСЕЙ компании: она запустится у всех игроков ОДНОВРЕМЕННО. Выбор никому не транслируется, поэтому берите игру, в которой вы сильнее всех: кто первый её пройдёт — заберёт награду, а остальные остановятся и заплатят как за поражение — столько же, сколько победитель получает за задание. Побеждённая ячейка ломается; когда ВСЕ ячейки карты побеждены, а игроков ещё несколько — они чинятся и становятся ничьими: задания выбираются из ещё не пройденных. Кончатся все задания — ничья.</p>
                 <div className="space-y-2">
                   {myPickList.map((tk, vi) => {
                     const rDef = st.roms.find((r) => r.id === tk.romId);
