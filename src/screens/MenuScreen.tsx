@@ -4,8 +4,6 @@ import type { Screen } from '../store';
 import { Ic } from '../ui';
 import { sfx } from '../sound';
 import { VERSION } from '../version';
-import { reopenSnapshot } from './Lobby';
-import type { SessionSnapshot } from '../types';
 
 const MENU: { key: string; label: string; screen: Screen; desc: string; color: string; icon: (s?: number) => React.ReactNode }[] = [
   // v0.86: пункт переименован в «ПОМОЩЬ - ОБУЧЕНИЕ». v0.80: он же — ПЕРВАЯ строка меню (раньше четвёртая): новые игроки
@@ -21,40 +19,11 @@ const MENU: { key: string; label: string; screen: Screen; desc: string; color: s
 ];
 
 export default function MenuScreen() {
-  const { setScreen, toast } = useApp();
+  const { setScreen } = useApp();
   const [sel, setSel] = useState(0);
-  /* v0.115: «ВЕРНУТЬСЯ В ПАРТИЮ» — если этот браузер был хостом незаконченной партии
-     (автосейв/сохранение с фазой playing/rollOff и хостом с таким же именем), меню
-     показывает карточку мгновенного возврата: один клик — и партия продолжается с места
-     вылета (вылет хоста, перезагрузка страницы, закрытый браузер). Гости возвращаются
-     по коду комнаты из «Подключения» и получают своих игроков по имени. */
-  const [backSnap, setBackSnap] = useState<SessionSnapshot | null>(null);
-  const [backBusy, setBackBusy] = useState(false);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        const { idbAll } = await import('../db');
-        const all = (await idbAll<SessionSnapshot>('sessions')).map((e) => e.value);
-        const name = useApp.getState().options.name.trim().toUpperCase();
-        if (!name) return;
-        const mine = all
-          .filter((s) => s.state && (s.state.phase === 'playing' || s.state.phase === 'rollOff') && Array.isArray(s.state.players) && s.state.players.length > 0)
-          .filter((s) => ((s.state.players.find((p) => p.isHost) ?? s.state.players[0])?.name ?? '').trim().toUpperCase() === name)
-          .sort((a, b) => b.createdAt - a.createdAt);
-        setBackSnap(mine[0] ?? null);
-      } catch { /* нет сохранений — карточки не будет */ }
-    })();
-  }, []);
-
-  const returnToParty = (s: SessionSnapshot) => {
-    if (backBusy) return;
-    setBackBusy(true);
-    void (async () => {
-      const ok = await reopenSnapshot(s, true);
-      if (!ok) { setBackBusy(false); toast('Не удалось восстановить партию — нет карты', 'err'); }
-    })();
-  };
+  /* v0.116: карточку «⟳ Вернуться в партию» СГЛАВНОГО ЭКРАНА УБРАЛИ (заказчик) —
+     она переехала в «Загрузить игру», где и место: там же список сейвов,
+     там же глазик кода. Код скрыт — карточка код не показывает. */
 
   /* v0.81: сетка меню с «широкими» строками: «Обучение» — первой и «Опции» — последней
      НА ВСЮ ШИРИНУ (как кнопка «Опции» просил заказчик) — между ними пары по две колонки,
@@ -108,24 +77,6 @@ export default function MenuScreen() {
             платформа для создания челленджей
           </p>
         </div>
-
-        {/* v0.115: карточка возврата хоста в незаконченную партию — над меню */}
-        {backSnap && (
-          <button
-            onClick={() => { sfx.coin(); returnToParty(backSnap); }}
-            className="mt-4 w-full text-left flex items-center gap-4 px-5 py-3 border-2 border-teal bg-teal/10 hover:bg-teal/20 transition-all cursor-pointer"
-          >
-            <span className="shrink-0 text-teal">{Ic.play(24)}</span>
-            <span className="flex-1 min-w-0">
-              <span className="block font-display uppercase tracking-wide text-[15px] text-teal">
-                ⟳ Вернуться в партию — код {backSnap.code}
-              </span>
-              <span className="block text-[10.5px] text-dim mt-0.5">
-                «{backSnap.mapName}» · сохранено {new Date(backSnap.createdAt).toLocaleString('ru-RU')} — партия продолжится с того же места, игроки вернутся по коду
-              </span>
-            </span>
-          </button>
-        )}
 
         {/* меню — сетка 2 колонки; «Опции» последним пунктом на всю ширину */}
         <div className="mt-5 sm:mt-7 flex-1 min-h-0 overflow-y-auto">

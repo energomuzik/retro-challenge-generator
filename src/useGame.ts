@@ -256,8 +256,15 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
         }
         break;
       }
-      /* хост прислал сохранённый ростер — гость видит, кем может заявиться */
+      /* хост прислал сохранённый ростер — гость видит, кем может заявиться.
+         v0.116 КРИТИЧЕСКИЙ ФИКС: хосту СВОЁ же сообщение применять ЗАПРЕЩЕНО —
+         хаб и PeerJS доставляют хосту его собственные сообщения (self-delivery,
+         «хост — авторитет»), и без этой проверки ростер-заглушка {state:{players}}
+         (без captured/qDone/journeyPos/лога!) ЗАМЕНЯЛА настоящий снапшот сейва
+         прямо перед нажатием «Восстановить партию»: партия собиралась, но ячейки
+         становились нейтральными, история стиралась, фишки теряли места. */
       case 'resumeInfo': {
+        if (room.isHost || m.from === room.selfId) break;
         const info = m.p as { players: GameSession['players']; mapName: string; hostSavedId?: string; taken?: string[] };
         cur.setResumeSnap({
           id: 'remote', name: 'Партия', mapName: info.mapName, code: room.code,

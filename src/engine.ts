@@ -437,7 +437,13 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const head = [`♻️ Партия восстановлена из сохранения (игроков: ${base.players.length})`];
     const waiting = base.players.filter((p) => keptIds.has(p.id)).map((p) => p.name);
     if (waiting.length) head.push(`⏳ Ждут возврата: ${waiting.join(', ')} — подключайтесь по коду комнаты`);
+    /* v0.116: шапка восстановления — и в короткий log, и в ПОЛНУЮ историю (с временем) */
+    const nowMs = Date.now();
     base.log = [...head, ...(Array.isArray(base.log) ? base.log : [])].slice(0, 50);
+    base.logFull = [
+      ...head.map((t) => ({ text: t, ts: nowMs })),
+      ...(Array.isArray(base.logFull) ? base.logFull : []),
+    ].slice(0, 600);
     return base;
   }
 
@@ -454,6 +460,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
   if (!s.rollOffValues) s.rollOffValues = {};
   if (s.rollOffWinner === undefined) s.rollOffWinner = null;
   if (!Array.isArray(s.log)) s.log = [];
+  /* v0.116: полная история (окно «Вся история») — у партий старых версий её нет */
+  if (!Array.isArray(s.logFull)) s.logFull = [];
   if (!Array.isArray(s.trades)) s.trades = [];
   if (s.skillDone !== undefined && !Array.isArray(s.skillDone)) s.skillDone = [];
   if (s.journeyPos === undefined) s.journeyPos = {};
@@ -497,7 +505,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     s.rubg.stopCd = s.rubg.stopCd ?? {};
   }
   for (const pl of s.players) normPlayer(pl);
-  const log: Log = (t) => { s.log = [t, ...s.log].slice(0, 50); };
+  /* v0.116: пишем и короткий лог (50 строк, без времени — как раньше), и ПОЛНУЮ
+     историю (до 600 событий С временем) — из неё работает окно истории с поиском */
+  const log: Log = (t) => {
+    s.log = [t, ...s.log].slice(0, 50);
+    s.logFull = [{ text: t, ts: Date.now() }, ...(s.logFull ?? [])].slice(0, 600);
+  };
   /* ЗРИТЕЛИ (SKILL CHALLENGE): подключены и смотрят, но не играют — ходов
      им не достаётся, выбывание по ресурсам их не касается, победитель — не они */
   const alive = () => s.players.filter((p) => p.alive && !p.spect);
@@ -1989,6 +2002,15 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
            (хост может скрыть код — чужие без него не войдут), а роль узнаётся по имени игрока
            этой партии — незнакомец с кодом всё равно не получит чужую фишку. */
         if (s.phase === 'playing' || s.phase === 'rollOff') {
+          /* v0.116: вернулся ИМЕННО ЭТОТ ЖЕ игрок (id страницы совпал — вкладка
+             не перезагружалась, просто вышла в меню и переподключилась по коду):
+             раньше такой возврат отвергался («стучится посреди партии»), потому что
+             поиск по имени требует ДРУГОЙ id (p.id !== a.id). Игрок уже в партии —
+             просто подтверждаем его место, ничего не перемапливая. */
+          if (s.players.some((p) => p.id === a.id)) {
+            log(`🔄 ${a.name.toUpperCase()} снова в комнате партии`);
+            break;
+          }
           const nm = String(a.name ?? '').trim().toUpperCase();
           const back = nm ? s.players.find((p) => p.name.trim().toUpperCase() === nm && p.id !== a.id) : undefined;
           if (back) {

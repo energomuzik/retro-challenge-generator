@@ -216,6 +216,7 @@ export default function GameScreen() {
   const [tick, setTick] = useState(0); // тик таймера: перерисовка + двигает nearNpc (патрули)
   const [tplOpen, setTplOpen] = useState(false);
   const [bogOpen, setBogOpen] = useState(false); // v0.109 БОГАЧ: панель донатов
+  const [histOpen, setHistOpen] = useState(false); // v0.116: окно ПОЛНОЙ истории партии (поиск + время)
 
   const viewRef = useRef({ x: 0, y: 0, zoom: 1 });
   const dispRef = useRef<Record<string, { x: number; y: number }>>({});
@@ -3131,13 +3132,28 @@ export default function GameScreen() {
           </div>
         )}
 
-        {/* лог */}
-        <div className="absolute left-3 bottom-3 w-[290px] max-w-[45vw] space-y-1 pointer-events-none">
-          {s.log.slice(0, 6).map((l, i) => (
-            <div key={`${l}-${i}`} className={`text-[10.5px] leading-tight px-2.5 py-1.5 bg-[rgba(7,9,18,0.8)] border-l-[3px] ${i === 0 ? 'border-gold text-paper slide-up' : 'border-edge text-dim'}`}>
-              {l}
-            </div>
-          ))}
+        {/* лог. v0.116: в углу появилась МИНИ-КНОПКА «вся история» — открывает окно
+            с прокруткой ВСЕЙ истории колёсиком, поиском по буквам/именам игроков и
+            временем каждого события. Сам лог в углу НЕ изменён (без времени, как был). */}
+        <div className="absolute left-3 bottom-3 w-[290px] max-w-[45vw] pointer-events-none">
+          <div className="flex justify-end mb-1">
+            <button
+              onClick={() => { setHistOpen(true); sfx.click(); }}
+              title="Вся история партии — скролл, поиск и время событий"
+              aria-label="Вся история партии"
+              className="pointer-events-auto hud-chip pixel-corners px-2 py-1 flex items-center gap-1.5 text-dim hover:text-gold transition-colors cursor-pointer"
+            >
+              {Ic.clock(11)}
+              <span className="font-pixel text-[7px]">ИСТОРИЯ</span>
+            </button>
+          </div>
+          <div className="space-y-1">
+            {s.log.slice(0, 6).map((l, i) => (
+              <div key={`${l}-${i}`} className={`text-[10.5px] leading-tight px-2.5 py-1.5 bg-[rgba(7,9,18,0.8)] border-l-[3px] ${i === 0 ? 'border-gold text-paper slide-up' : 'border-edge text-dim'}`}>
+                {l}
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* трансляция соперника (миниатюра, видна и поверх инвентаря/торгов).
@@ -4947,6 +4963,8 @@ export default function GameScreen() {
       {tplOpen && <TemplateModal cellIdx={active?.pos ?? 0} onClose={() => setTplOpen(false)} />}
       {/* v0.109 БОГАЧ: панель донатов (статус слушателя, минималка, пул, ручная форма, шпаргалка) */}
       {bogOpen && <BogachPanel onClose={() => setBogOpen(false)} />}
+      {/* v0.116: окно ПОЛНОЙ истории партии — скролл колёсиком, поиск, время событий */}
+      {histOpen && <HistoryModal onClose={() => setHistOpen(false)} />}
 
       {/* ---------- v0.56: КАТ-СЦЕНА — кино-полосы (v0.60 — без плашки;
            v0.61 — у «Растворяющихся» тоже РЕЗКИЙ край: сплошной чёрный без градиента;
@@ -5216,6 +5234,62 @@ const cardBadge = (c: CardDef): string => {
   }
   return c.kind === 'trap' ? '☠ ЛОВУШКА' : '🌟 БОНУС';
 };
+
+/* ---------- v0.116: ОКНО ПОЛНОЙ ИСТОРИИ ПАРТИИ ----------
+   Мини-кнопка в углу лога открывает это окно: ВСЯ история (до 600 событий),
+   прокрутка колёсиком, ПОИСК по буквам/именам игроков и ВРЕМЯ каждого события.
+   Обычный лог в углу — как был: без времени, последние 6 строк. */
+function HistoryModal({ onClose }: { onClose: () => void }) {
+  const s = useApp((st) => st.session);
+  const [q, setQ] = useState('');
+  const total = s?.logFull?.length ?? 0;
+  const entries = useMemo(() => {
+    /* старые партии без logFull — строим из короткого лога (время неизвестно) */
+    const full = s?.logFull?.length ? s.logFull : (s?.log ?? []).map((text) => ({ text, ts: 0 }));
+    const query = q.trim().toUpperCase();
+    /* поиск — обычное вхождение подстроки: ловит и буквы, и имена игроков
+       (имена всегда есть в тексте событий) */
+    return query ? full.filter((e) => e.text.toUpperCase().includes(query)) : full;
+  }, [s?.logFull, s?.log, q]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const fmtTs = (ts: number) => (ts ? new Date(ts).toLocaleTimeString('ru-RU') : '—:—');
+  return (
+    <Modal title={`История партии — ${entries.length} из ${Math.max(total, entries.length)}`} icon={Ic.clock(18)} onClose={onClose} w="max-w-3xl">
+      <div className="flex items-center gap-2 mb-3">
+        <input
+          autoFocus
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Поиск: буквы или имя игрока…"
+          className="flex-1 bg-[rgba(7,9,18,0.8)] border-2 border-edge focus:border-gold outline-none px-3 py-2 text-[12px] text-paper placeholder:text-faint"
+        />
+        {q && (
+          <GhostBtn small onClick={() => setQ('')}>{Ic.cross(11)} Сброс</GhostBtn>
+        )}
+      </div>
+      <div className="border-2 border-edge bg-[rgba(4,6,14,0.6)] max-h-[58vh] overflow-y-auto divide-y divide-[rgba(60,70,110,0.35)]">
+        {entries.map((e, i) => (
+          <div key={`${e.ts}-${i}`} className="flex items-start gap-2.5 px-3 py-1.5 hover:bg-[rgba(20,26,54,0.5)]">
+            <span className="font-pixel text-[8px] text-sky shrink-0 pt-0.5 w-[62px] text-right tabular-nums">{fmtTs(e.ts)}</span>
+            <span className="text-[11.5px] leading-snug text-dim min-w-0 break-words">{e.text}</span>
+          </div>
+        ))}
+        {entries.length === 0 && (
+          <div className="px-3 py-6 text-center text-dim text-[12px]">
+            {q ? `Ничего не найдено по «${q}»` : 'История пока пуста'}
+          </div>
+        )}
+      </div>
+      <p className="tick-label text-faint mt-2">
+        Новые события сверху. Время — момент события на компьютере хоста. Свежие партии помнят до 600 последних событий.
+      </p>
+    </Modal>
+  );
+}
 
 function InventoryModal({ onClose }: { onClose: () => void }) {
   const st = useApp();

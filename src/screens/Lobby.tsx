@@ -594,14 +594,39 @@ export async function reopenSnapshot(s: SessionSnapshot, instant: boolean): Prom
 export function LoadScreen() {
   const { maps, setScreen, toast, refresh } = useApp();
   const [snaps, setSnaps] = useState<SessionSnapshot[]>([]);
+  /* v0.116: карточка «⟳ Вернуться в партию» переехала сюда из ГЛАВНОГО ЭКРАНА
+     (заказчик: с меню — убрать, в «Загрузить игру» — добавить). Тот же механизм
+     v0.115: незаконченная партия этого браузера (хост с таким же именем, фаза
+     playing/rollOff) — ОДИН клик, и партия продолжается с места вылета.
+     v0.116: код на карточке и в строках сейвов НЕ ВИДЕН, если он скрыт глазиком. */
+  const [backSnap, setBackSnap] = useState<SessionSnapshot | null>(null);
+  const [backBusy, setBackBusy] = useState(false);
+  const hideCode = useApp((st) => st.options.hideRoomCode);
 
   useEffect(() => {
     void (async () => {
-      const { idbAll } = await import('../db');
-      const all = await idbAll<SessionSnapshot>('sessions');
-      setSnaps(all.map((e) => e.value).sort((a, b) => b.createdAt - a.createdAt));
+      try {
+        const { idbAll } = await import('../db');
+        const all = (await idbAll<SessionSnapshot>('sessions')).map((e) => e.value);
+        setSnaps(all.sort((a, b) => b.createdAt - a.createdAt));
+        const name = useApp.getState().options.name.trim().toUpperCase();
+        if (!name) return;
+        const mine = all
+          .filter((s) => s.state && (s.state.phase === 'playing' || s.state.phase === 'rollOff') && Array.isArray(s.state.players) && s.state.players.length > 0)
+          .filter((s) => ((s.state.players.find((p) => p.isHost) ?? s.state.players[0])?.name ?? '').trim().toUpperCase() === name);
+        setBackSnap(mine[0] ?? null);
+      } catch { /* нет сохранений — карточки не будет */ }
     })();
   }, []);
+
+  const returnToParty = (s: SessionSnapshot) => {
+    if (backBusy) return;
+    setBackBusy(true);
+    void (async () => {
+      const ok = await reopenSnapshot(s, true);
+      if (!ok) { setBackBusy(false); toast('Не удалось восстановить партию — нет карты', 'err'); }
+    })();
+  };
 
   const resume = (s: SessionSnapshot) => {
     void reopenSnapshot(s, false);
@@ -669,6 +694,24 @@ export function LoadScreen() {
           Автосейвы (5 слотов, перезаписываются каждый ход) и ручные сохранения. «Собрать команду» откроет комнату:
           передайте код игрокам, каждый нажмёт «Это я» напротив своей роли, и хост восстановит партию с того же места.
         </p>
+        {/* v0.116: карточка мгновенного возврата хоста — ПЕРЕЕХАЛА С ГЛАВНОГО ЭКРАНА.
+            Один клик — и незаконченная партия продолжается с места вылета. */}
+        {backSnap && (
+          <button
+            onClick={() => { sfx.coin(); returnToParty(backSnap); }}
+            className="mb-4 w-full text-left flex items-center gap-4 px-5 py-3 border-2 border-teal bg-teal/10 hover:bg-teal/20 transition-all cursor-pointer"
+          >
+            <span className="shrink-0 text-teal">{Ic.play(24)}</span>
+            <span className="flex-1 min-w-0">
+              <span className="block font-display uppercase tracking-wide text-[15px] text-teal">
+                ⟳ Вернуться в партию — код {hideCode ? '••••' : backSnap.code}
+              </span>
+              <span className="block text-[10.5px] text-dim mt-0.5">
+                «{backSnap.mapName}» · сохранено {new Date(backSnap.createdAt).toLocaleString('ru-RU')} — партия продолжится с того же места, игроки вернутся по коду
+              </span>
+            </span>
+          </button>
+        )}
         <div className="space-y-3">
           {snaps.map((s) => (
             <div key={s.id} className="pixel-panel pixel-corners p-4 flex items-center gap-4 flex-wrap">
@@ -676,7 +719,7 @@ export function LoadScreen() {
               <div className="flex-1 min-w-[180px]">
                 <div className="font-display uppercase text-paper">{s.name}</div>
                 <div className="tick-label text-faint mt-1">
-                  Карта «{s.mapName}» · комната {s.code} · {new Date(s.createdAt).toLocaleString('ru-RU')}
+                  Карта «{s.mapName}» · комната {hideCode ? '••••' : s.code} · {new Date(s.createdAt).toLocaleString('ru-RU')}
                 </div>
                 <div className="tick-label mt-1 text-dim">
                   Игроки: {s.state.players.map((p) => p.name).join(', ')} · фаза: {s.state.phase === 'playing' ? 'идёт игра' : s.state.phase === 'over' ? 'завершена' : s.state.phase}
@@ -1132,7 +1175,7 @@ export function LobbyScreen() {
               <span className="tick-label text-faint ml-auto">сохранено {new Date(resumeSnap.createdAt).toLocaleString('ru-RU')}</span>
             </div>
             <p className="text-[12px] text-dim mb-3">
-              Каждый подключившийся игрок нажмите «Это я» напротив своей сохранённой роли. Непризванные роли будут удалены из партии.
+              Каждый подключившийся игрок нажмите «Это я» напротив своей сохранённой роли. Непризванные роли останутся в партии и будут ждать возврата игроков.
             </p>
             <div className="space-y-2">
               {resumeSnap.state.players.map((sp) => {
