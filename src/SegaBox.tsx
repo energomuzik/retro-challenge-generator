@@ -166,12 +166,18 @@ export default function SegaBox({
   const ntscMode = useApp((st) => st.options.ntscMode ?? 0);
   const ntscModeRef = useRef(ntscMode);
   ntscModeRef.current = ntscMode;
+  /* v0.121: счётчик FPS на экране эмулятора — включается в Опциях («Экран и фильтры»);
+     начальное состояние зашивается в HTML при сборке iframe, живая смена —
+     postMessage show-fps (без перезапуска ядра) */
+  const showFps = useApp((st) => st.options.showFps ?? false);
+  const showFpsRef = useRef(showFps);
+  showFpsRef.current = showFps;
 
   const html = useMemo(() => {
     const opts = useApp.getState().options;
     const volume = Math.max(0, Math.min(1, opts.emuVolume ?? 1));
     const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-    return buildHtml(resolvedCore, padFamily, volume, CORE_BASES, bootStateRef.current, nonce, remapJsonRef.current, chaosJsonRef.current, ntscModeRef.current);
+    return buildHtml(resolvedCore, padFamily, volume, CORE_BASES, bootStateRef.current, nonce, remapJsonRef.current, chaosJsonRef.current, ntscModeRef.current, showFpsRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedCore, padFamily, romData, bootTick]);
 
@@ -188,6 +194,13 @@ export default function SegaBox({
     try { frameRef.current?.contentWindow?.postMessage({ type: 'set-crt', m: ntscMode }, '*'); } catch { /* noop */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ntscMode, status]);
+
+  // v0.121: живое включение/выключение счётчика FPS (без перезапуска ядра);
+  // при пересборке iframe начальное состояние уже зашито в HTML (showFpsRef)
+  useEffect(() => {
+    if (status !== 'ready') return;
+    try { frameRef.current?.contentWindow?.postMessage({ type: 'show-fps', on: showFps }, '*'); } catch { /* noop */ }
+  }, [showFps, status, bootTick]);
 
   // Живая громкость — без перезапуска ядра (встроенная панель со звуком спрятана).
   // Шлём при старте и при каждом изменении опций; работает и для NES, и для SEGA.
@@ -425,7 +438,7 @@ export default function SegaBox({
   );
 }
 
-function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: string[], bootStateB64: string | null, nonce: string, remapJson: string, chaosJson: string, ntscMode: number): string {
+function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: string[], bootStateB64: string | null, nonce: string, remapJson: string, chaosJson: string, ntscMode: number, showFps: boolean): string {
   // Внутренний документ: чистое окно без тулбара, общается с хостом через postMessage.
   // Ром приходит сообщением 'boot' как ArrayBuffer; blob-URL создаётся ВНУТРИ iframe —
   // с именем и расширением файла (иначе ядро стартует «пустым» и показывает меню RetroArch).
@@ -443,6 +456,10 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     // Сам кадр дополнительно размывается filter'ом на canvas (см. applyCrt ниже) —
     // так фильтр РЕАЛЬНО действует на картинку, включая полный экран эмулятора.
     '.crti-soft{position:fixed;inset:0;pointer-events:none;z-index:2147483000;background:radial-gradient(ellipse 130% 100% at 50% 45%, rgba(0,0,0,0) 58%, rgba(0,0,0,0.30) 100%), linear-gradient(rgba(255,196,130,0.045), rgba(255,196,130,0.045));}',
+    // v0.121: счётчик FPS — зелёная цифра в правом верхнем углу; сквозной клик
+    // (pointer-events:none), поверх всех слоёв картинки (z-index выше crti-soft),
+    // виден только владельцу окна — в трансляцию не уходит (та снимает лишь canvas игры)
+    '#fpsbox{display:none;position:fixed;top:6px;right:8px;z-index:2147483600;pointer-events:none;background:rgba(0,0,0,0.55);color:#8dff9e;font:bold 11px monospace;padding:2px 7px;border-radius:4px;line-height:1.3;text-shadow:0 1px 2px #000;}',
     '#err{display:none;position:absolute;inset:0;color:#ff5d73;font-family:monospace;font-size:12px;padding:16px;background:#05070f;white-space:pre-wrap;z-index:50}',
     '</style></head><body><div id="game"></div><div id="err"></div><script>',
     `/* boot ${nonce} */`,
@@ -1004,12 +1021,31 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     '  ntscStartStop(CRT===3);',
     '}',
     'applyCrt();',
+    // v0.121: счётчик FPS — считает кадры, которые браузер реально отрисовывает в окне
+    // эмулятора (requestAnimationFrame), обновляет цифру дважды в секунду; включение
+    // стартом из опций и на лету сообщением show-fps. Пауза ядра не влияет: RAF — это
+    // отрисовка окна, а не такт игры
+    'var FPSM={on:false,raf:0,el:null,n:0,t0:0};',
+    'function fpsTick(ts){',
+    '  FPSM.n++;',
+    '  if(ts-FPSM.t0>=500){var v=Math.round(FPSM.n*1000/(ts-FPSM.t0));FPSM.n=0;FPSM.t0=ts;if(FPSM.el)FPSM.el.textContent=v+" FPS";}',
+    '  FPSM.raf=requestAnimationFrame(fpsTick);',
+    '}',
+    'function fpsShow(on){',
+    '  FPSM.on=!!on;',
+    '  if(!FPSM.el){FPSM.el=document.createElement("div");FPSM.el.id="fpsbox";FPSM.el.textContent="… FPS";document.body.appendChild(FPSM.el);}',
+    '  FPSM.el.style.display=FPSM.on?"block":"none";',
+    '  if(FPSM.raf){cancelAnimationFrame(FPSM.raf);FPSM.raf=0;}',
+    '  if(FPSM.on){FPSM.n=0;FPSM.t0=performance.now();FPSM.raf=requestAnimationFrame(fpsTick);}',
+    '}',
+    `fpsShow(${showFps ? 1 : 0});`,
 
     'window.addEventListener("message",function(e){',
     '  var d=e.data||{};',
     '  if(d.type==="set-remap-spec"){remapSpec=d.spec||[];remapTries=0;remapPump();return;}',
     '  if(d.type==="set-chaos"){CHAOS.list=Array.isArray(d.list)?d.list:[];applyChaos();return;}',
     '  if(d.type==="set-crt"){CRT=d.m|0;applyCrt();return;}',
+    '  if(d.type==="show-fps"){fpsShow(!!d.on);return;}',
     '  if(d.type==="set-volume"){setVolNow(Number(d.v)||0);return;}',
     '  if(d.type==="boot"&&!booted){',
     '    booted=true;',
