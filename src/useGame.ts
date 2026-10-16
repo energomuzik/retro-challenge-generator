@@ -244,21 +244,33 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
       case 'claim': {
         const c = m.p as { curId: string; savedId: string };
         cur.setResumeClaim(c.curId, c.savedId);
+        /* v0.115: ретрансляция ростера с УЖЕ ЗАНЯТЫМИ ролями — следующий подключившийся
+           гость автоматически займёт свободную роль, а не ту же самую, что и первый */
+        if (room.isHost) {
+          const rs = useApp.getState().resumeSnap;
+          if (rs) {
+            const hostSavedId = rs.state.players.find((p) => p.isHost)?.id;
+            const taken = Object.values(useApp.getState().resumeClaims).filter(Boolean);
+            room.send('resumeInfo', { players: rs.state.players, mapName: rs.mapName, hostSavedId, taken });
+          }
+        }
         break;
       }
       /* хост прислал сохранённый ростер — гость видит, кем может заявиться */
       case 'resumeInfo': {
-        const info = m.p as { players: GameSession['players']; mapName: string; hostSavedId?: string };
+        const info = m.p as { players: GameSession['players']; mapName: string; hostSavedId?: string; taken?: string[] };
         cur.setResumeSnap({
           id: 'remote', name: 'Партия', mapName: info.mapName, code: room.code,
           state: { players: info.players } as GameSession, createdAt: Date.now(),
         });
-        /* авто-призыв: подключающийся игрок занимает первую роль, которая не
-           принадлежит сохранённому хосту. Покрывает типичный случай 2 игроков —
-           вручную «Это я» нажимать не нужно. ВАЖНО: сообщаем об этом хосту через
-           claim, иначе он не узнает о заявке и отбросит роль при восстановлении. */
-        if (info.hostSavedId) {
-          const guestRole = info.players.find((p) => p.id !== info.hostSavedId);
+        /* авто-призыв: подключающийся игрок занимает первую СВОБОДНУЮ роль (не хоста и
+           не занятую другими — v0.115). Покрывает типичный случай 2 игроков — вручную
+           «Это я» нажимать не нужно. ВАЖНО: сообщаем об этом хосту через claim, иначе
+           он не узнает о заявке и отбросит роль при восстановлении. Своя заявка уже
+           есть — не переназначаем (иначе гонка ретрансляций перебрасывала бы роли). */
+        if (info.hostSavedId && !cur.resumeClaims[cur.selfId]) {
+          const taken = info.taken ?? [];
+          const guestRole = info.players.find((p) => p.id !== info.hostSavedId && !taken.includes(p.id));
           if (guestRole) {
             cur.setResumeClaim(cur.selfId, guestRole.id);
             room.send('claim', { curId: cur.selfId, savedId: guestRole.id });
@@ -316,7 +328,8 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
             const rs = useApp.getState().resumeSnap;
             if (rs) {
               const hostSavedId = rs.state.players.find((p) => p.isHost)?.id;
-              room.send('resumeInfo', { players: rs.state.players, mapName: rs.mapName, hostSavedId });
+              const taken = Object.values(useApp.getState().resumeClaims).filter(Boolean);
+              room.send('resumeInfo', { players: rs.state.players, mapName: rs.mapName, hostSavedId, taken });
             }
             // v0.100: новичку — все собранные иконки (включая свою, хостовую)
             const hh = useApp.getState();

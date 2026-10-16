@@ -536,6 +536,59 @@ export const rememberLastRoom = (code: string) => {
   try { localStorage.setItem('retropolia-lastroom', JSON.stringify(code)); } catch { /* noop */ }
 };
 
+/* v0.115: ОТКРЫТЬ КОМНАТУ ВОССТАНОВЛЕНИЯ из снапшота — общий механизм для
+   «Собрать команду» (instant=false: сбор команды в лобби, роли по заявкам) и кнопки
+   «⟳ Вернуться в партию» у хоста на меню (instant=true: партия продолжается сразу,
+   гости возвращаются по КОМНЕ комнате и получают своих игроков по имени).
+   Карта берётся ИЗ СЕЙВА (донат-замены ячеек внутри), для старых сейвов — библиотека. */
+export async function reopenSnapshot(s: SessionSnapshot, instant: boolean): Promise<boolean> {
+  const st = useApp.getState();
+  let map: GameMap | null = null;
+  if (s.map && Array.isArray(s.map.cells) && s.map.cells.length) {
+    map = await refreshMapLibs(s.map);
+  } else {
+    const ms = useApp.getState().maps;
+    const selMap = ms.find((m) => m.id === s.state.mapId) ?? ms.find((m) => m.name === s.mapName);
+    if (!selMap) {
+      st.toast('В сейве нет карты (старое сохранение) и в библиотеке её нет — импортируй файл игры кнопкой «Загрузить игру» и попробуй снова', 'err');
+      return false;
+    }
+    map = (await freshMapWithTokens(selMap.id)) ?? selMap; // карта + свежие снимки фишек
+  }
+  /* v0.115: код комнаты СОХРАНЁННОЙ партии используется повторно — вернувшиеся игроки
+     заходят по своему старому коду (он уже подставлен у них в «Подключении») */
+  const code = s.code || genRoomCode();
+  const session = newSession(code, map.id, st.selfId, st.options.name);
+  /* ВАЖНО: openRoom внутри вызывает leaveRoom(), который очищает resumeSnap и
+     resumeClaims. Поэтому устанавливаем их ПОСЛЕ открытия комнаты, иначе снапшот
+     сотрётся и партия запустится заново. */
+  openRoom(code, true, { session, map });
+  rememberLastRoom(code);
+  const st2 = useApp.getState();
+  const savedHost = s.state.players.find((p) => p.isHost) ?? s.state.players[0];
+  if (instant) {
+    /* мгновенное восстановление: хост сразу при своей сохранённой роли, партия
+       продолжается; гости возвращаются по коду (hello узнаёт по имени) */
+    st2.setResumeSnap(s);
+    if (savedHost) st2.setResumeClaim(st2.selfId, savedHost.id);
+    const claims: Record<string, string> = savedHost ? { [st2.selfId]: savedHost.id } : {};
+    dispatch({ t: 'resume', snap: { state: s.state, mapName: s.mapName }, claims });
+    useApp.getState().setResumeSnap(null);
+    useApp.setState({ resumeClaims: {} });
+    useApp.getState().setScreen('game');
+    sfx.start();
+    st2.toast(`Партия восстановлена — код комнаты ${code}: игроки возвращаются через «Подключение»`, 'ok');
+  } else {
+    st2.setResumeSnap(s);
+    /* автоматически призываем хоста к его сохранённой роли, чтобы кнопка
+       «Восстановить партию» была активна сразу и партия не запустилась заново */
+    if (savedHost) st2.setResumeClaim(st2.selfId, savedHost.id);
+    sfx.start();
+    st2.toast(st2.options.hideRoomCode ? 'Комната открыта, код скрыт — передайте его команде, затем восстановите партию' : `Комната ${code} открыта — передайте код команде, затем восстановите партию`, 'ok');
+  }
+  return true;
+}
+
 /* ---------- загруженные партии ---------- */
 
 export function LoadScreen() {
@@ -551,41 +604,7 @@ export function LoadScreen() {
   }, []);
 
   const resume = (s: SessionSnapshot) => {
-    const st = useApp.getState();
-    /* Сначала собираем команду: открываем новую комнату-лобби, игроки подключаются
-       по коду и заявляют, кем они играли. Только потом хост восстанавливает партию. */
-    const savedHost = s.state.players.find((p) => p.isHost) ?? s.state.players[0];
-    void (async () => {
-      /* v0.114: КАРТА ЕДЕТ ИЗ СЕЙВА — библиотека больше не нужна, а донат-замены
-         ячеек (они живут только в sessionMap) восстанавливаются. Сейвы старых
-         версий (без карты в сейве) — прежний поиск по библиотеке: по id, затем по имени. */
-      let map: GameMap | null = null;
-      if (s.map && Array.isArray(s.map.cells) && s.map.cells.length) {
-        map = await refreshMapLibs(s.map);
-      } else {
-        const ms = useApp.getState().maps;
-        const selMap = ms.find((m) => m.id === s.state.mapId) ?? ms.find((m) => m.name === s.mapName);
-        if (!selMap) {
-          toast('В сейве нет карты (старое сохранение) и в библиотеке её нет — импортируй файл игры кнопкой «Загрузить игру» и попробуй снова', 'err');
-          return;
-        }
-        map = (await freshMapWithTokens(selMap.id)) ?? selMap; // карта + свежие снимки фишек
-      }
-      const code = genRoomCode();
-      const session = newSession(code, map.id, st.selfId, st.options.name);
-      /* ВАЖНО: openRoom внутри вызывает leaveRoom(), который очищает resumeSnap и
-         resumeClaims. Поэтому устанавливаем их ПОСЛЕ открытия комнаты, иначе снапшот
-         сотрётся и партия запустится заново. */
-      openRoom(code, true, { session, map });
-      rememberLastRoom(code);
-      const st2 = useApp.getState();
-      st2.setResumeSnap(s);
-      /* автоматически призываем хоста к его сохранённой роли, чтобы кнопка
-         «Восстановить партию» была активна сразу и партия не запустилась заново */
-      if (savedHost) st2.setResumeClaim(st2.selfId, savedHost.id);
-      sfx.start();
-      toast(st2.options.hideRoomCode ? 'Комната открыта, код скрыт — передайте его команде, затем восстановите партию' : `Комната ${code} открыта — передайте код команде, затем восстановите партию`, 'ok');
-    })();
+    void reopenSnapshot(s, false);
   };
 
   const del = async (id: string) => {

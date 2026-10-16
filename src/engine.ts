@@ -329,39 +329,51 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     base.code = s0.code;
     if (s0.mapId && base.mapId && base.mapId !== s0.mapId) return s0; // другая карта — не восстанавливаем
     const claims = a.claims ?? {};
+    /* v0.115: первая заявка на роль выигрывает (две вкладки не успели синхронизироваться
+       и нажали «Это я» на одну роль — вторая вкладка получит другую роль автоназначением) */
     const claimedBy = new Map<string, string>(); // savedId -> currentId
-    for (const [curId, savedId] of Object.entries(claims)) claimedBy.set(savedId, curId);
+    for (const [curId, savedId] of Object.entries(claims)) {
+      if (!claimedBy.has(savedId) && ![...claimedBy.values()].includes(curId)) claimedBy.set(savedId, curId);
+    }
     /* Автоназначение: подключённым игрокам без заявки (сообщение потерялось или
        не успело) раздаём оставшиеся роли по порядку. Без этого восстановление
        могло оставить «лишних» игроков вне партии. */
-    const claimedCurIds = new Set(Object.keys(claims));
+    const claimedCurIds = new Set(claimedBy.values());
     const freeLobby = s0.players.filter((p) => !claimedCurIds.has(p.id));
     const freeSaved = base.players.filter((p) => !claimedBy.has(p.id));
     freeLobby.forEach((lp, i) => {
       const sp = freeSaved[i];
       if (sp) claimedBy.set(sp.id, lp.id);
     });
+    /* v0.115 ГЛАВНЫЙ ФИКС ВОЗВРАТА ХОСТА: НЕпризванные сохранённые игроки больше НЕ
+       выбывают из партии — они ОСТАЮТСЯ и ЖДУТ возврата. Раньше хост, восстановивший
+       партию один (гости ещё не переподключились), выбрасывал всех остальных ВМЕСТЕ СО
+       ВСЕЙ ИСТОРИЕЙ: хозяева ячеек удалялись из captured — ячейки становились
+       «нейтральными», qDone/journeyPos гостей стирались, а гости после переподключения
+       становились НОВЫМИ игроками с дефолтным состоянием. Теперь ждущий игрок хранит
+       свой сохранённый id; когда он переподключится по коду комнаты (hello узнаёт по
+       ИМЕНИ), remapPlayerRefs вернёт ему его же игрока со всей историей. */
+    const keptIds = new Set(base.players.filter((p) => !claimedBy.has(p.id)).map((p) => p.id));
     const hostCurId = s0.players.find((p) => p.isHost)?.id;
     base.players = base.players
-      .filter((p) => claimedBy.has(p.id))
       .map((p) => {
-        const curId = claimedBy.get(p.id)!;
+        const curId = claimedBy.get(p.id);
+        if (!curId) return p; // ждёт возврата — под сохранённым id
         const lobbyP = s0.players.find((x) => x.id === curId);
         return { ...p, id: curId, isHost: curId === hostCurId, name: lobbyP?.name ?? p.name, tokenImg: lobbyP?.tokenImg ?? p.tokenImg, ready: true };
       });
-    if (base.players.length === 0) return s0;
+    if (base.players.length === 0 || !base.players.some((p) => p.isHost)) return s0;
     /* v0.114 ГЛАВНЫЙ ФИКС ВОССТАНОВЛЕНИЯ: игрокам присваиваются НОВЫЕ id (после перезапуска
        страницы selfId всегда новый), а ВСЕ поля состояния, привязанные к id, оставались
        со СОХРАНЁННЫМИ id — из-за этого терялось ВСЁ, кроме ресурсов (те лежат внутри самих
        игроков): хозяева ячейки становились «нейтральными» (captured хранит id хозяина),
        история/прогресс (qDone), позиции фишек (journeyPos), ключи/флаги/квесты/торги не
        находили своих игроков. Перемапливаем savedId → новый id во ВСЕХ структурах; записи
-       НЕпризванных (выбывших) игроков удаляются. Тот же механизм возвращает игрока при
-       переподключении по имени (case 'hello' ниже). */
-    remapPlayerRefs(base, (id) => claimedBy.get(id) ?? null);
+       ждущих возврата остаются под сохранёнными id и перемаплятся при их hello. */
+    remapPlayerRefs(base, (id) => claimedBy.get(id) ?? (keptIds.has(id) ? id : null));
     const savedTurnId = a.snap.state.players[a.snap.state.turn % a.snap.state.players.length]?.id;
     const targetCurId = savedTurnId ? claimedBy.get(savedTurnId) : undefined;
-    const ti = targetCurId ? base.players.findIndex((p) => p.id === targetCurId) : 0;
+    const ti = base.players.findIndex((p) => p.id === (targetCurId ?? savedTurnId));
     base.turn = ti < 0 ? 0 : ti;
     base.moving = null; base.challenge = null; base.pendingCard = null; base.quiz = null;
     base.notice = null; base.dice = null; base.sealedDice = null; base.awaitPost = false;
@@ -422,7 +434,10 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     base.wallsRemoved = Array.isArray(base.wallsRemoved) ? base.wallsRemoved : [];
     base.ending = base.ending ?? null;
     for (const pl of base.players) normPlayer(pl);
-    base.log = [`♻️ Партия восстановлена из сохранения (игроков: ${base.players.length})`, ...(Array.isArray(base.log) ? base.log : [])].slice(0, 50);
+    const head = [`♻️ Партия восстановлена из сохранения (игроков: ${base.players.length})`];
+    const waiting = base.players.filter((p) => keptIds.has(p.id)).map((p) => p.name);
+    if (waiting.length) head.push(`⏳ Ждут возврата: ${waiting.join(', ')} — подключайтесь по коду комнаты`);
+    base.log = [...head, ...(Array.isArray(base.log) ? base.log : [])].slice(0, 50);
     return base;
   }
 
