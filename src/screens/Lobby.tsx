@@ -468,6 +468,9 @@ export function JoinScreen() {
      единственный «пропуск»: кто его не знает, тот не войдёт. */
   const lastRoom = (() => { try { return String(JSON.parse(localStorage.getItem('retropolia-lastroom') ?? '""') || ''); } catch { return ''; } })();
   const [code, setCode] = useState(lastRoom);
+  /* v0.117: ГЛАЗИК у поля кода — как в лобби/игре: точки вместо символов, выбор
+     запоминается (общая опция hideRoomCode). Для стримов: зрители не видят код. */
+  const hideCode = options.hideRoomCode;
 
   const join = () => {
     const c = code.trim().toUpperCase();
@@ -478,7 +481,7 @@ export function JoinScreen() {
     room.send('action', { t: 'hello', id: st.selfId, name: options.name });
     room.send('action', { t: 'picon', id: st.selfId, icon: options.pIcon }); // v0.100: мини-иконка — вне состояния партии
     sfx.coin();
-    toast(`Стучимся в комнату ${c}…`, 'info');
+    toast(`Стучимся в комнату ${hideCode ? '••••' : c}…`, 'info');
   };
 
   return (
@@ -493,19 +496,31 @@ export function JoinScreen() {
         <Panel title="Код комнаты" icon={Ic.users(16)} accent="var(--color-sky)" className="pop-in">
           <div className="p-5 space-y-4">
             <Field label="Код у создателя партии">
-              <input
-                autoFocus
-                className="field-in w-full px-4 py-3 font-pixel text-xl tracking-[0.35em] text-center uppercase"
-                maxLength={4}
-                placeholder="XXXX"
-                value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
-                onKeyDown={(e) => { if (e.key === 'Enter') join(); }}
-              />
+              {/* v0.117: глазик — скрытый код вводится как пароль (точки), выбор запоминается */}
+              <div className="relative">
+                <input
+                  autoFocus
+                  type={hideCode ? 'password' : 'text'}
+                  className="field-in w-full px-4 py-3 pr-12 font-pixel text-xl tracking-[0.35em] text-center uppercase"
+                  maxLength={4}
+                  placeholder="XXXX"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.toUpperCase())}
+                  onKeyDown={(e) => { if (e.key === 'Enter') join(); }}
+                />
+                <button
+                  onClick={() => { setOptions({ hideRoomCode: !hideCode }); sfx.hover(); }}
+                  title={hideCode ? 'Показать код' : 'Скрыть код (выбор запомнится)'}
+                  aria-label={hideCode ? 'Показать код' : 'Скрыть код'}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-faint hover:text-gold cursor-pointer transition-colors"
+                >
+                  {hideCode ? Ic.eye(16) : Ic.eyeOff(16)}
+                </button>
+              </div>
             </Field>
             {lastRoom && (
               <p className="text-[11px] text-teal leading-snug">
-                ↩ Код последней твоей комнаты ({lastRoom}) уже подставлен — если партия ещё открыта,
+                ↩ Код последней твоей комнаты ({hideCode ? '••••' : lastRoom}) уже подставлен — если партия ещё открыта,
                 нажимай «Войти»: вернёшься к своему игроку (фишка, ресурсы и история при тебе).
               </p>
             )}

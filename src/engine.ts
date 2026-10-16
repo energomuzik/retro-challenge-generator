@@ -424,6 +424,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     base.qPicks = base.qPicks ?? {};
     base.qImmunes = base.qImmunes ?? {};
     base.qEntries = base.qEntries ?? {};
+    base.qStops = base.qStops ?? {}; // v0.117: поражения в гонке (уведомления остановленным)
     if (base.rubg !== undefined) {
       base.rubg.jobs = base.rubg.jobs ?? {};
       base.rubg.looted = base.rubg.looted ?? [];
@@ -890,12 +891,15 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       s.qChosen = s.qChosen ?? {};
       s.qChosen[i] = pick; // задание выбрано АВТОМАТИЧЕСКИ — окно выбора не открывается
       revived++;
-      log(`♻ Ячейка №${i + 1} ожила — автоматически запущено НЕИСПОЛЬЗОВАННОЕ задание (гонка продолжается!)`);
+      /* v0.117: БЕЗ мгновенного запуска гонки! Раньше здесь был bogachMassStart — на карте
+         с ОДНОЙ ячейкой заданий он срабатывал на КАЖДОЙ победе (все ячейки сразу разбиты):
+         остановленные победой игроки через 0 мс получали НОВОЕ задание — окно не гасло,
+         эмулятор продолжал старую игру, никакого поражения не было. Теперь ячейка просто
+         оживает с готовым вариантом: кто ПЕРВЫЙ вбежит — тот и начнёт гонку для всей компании
+         (вход при установленном qChosen → bogachMassStart). */
+      log(`♻ Ячейка №${i + 1} ожила — вернулось НЕИСПОЛЬЗОВАННОЕ задание: кто первый вбежит — начнёт новую гонку для всей компании`);
     }
-    if (revived > 0) {
-      for (const i of taskCells) if (!s.broken?.[i]) bogachMassStart(i); // ожившие ячейки — в гонку
-      return;
-    }
+    if (revived > 0) return;
     /* заданий не осталось вовсе — победитель: самый богатый из живых */
     const best = al.reduce((b, p) => ((p.coinsLeft ?? 0) > (b.coinsLeft ?? 0) ? p : b), al[0]);
     s.phase = 'over';
@@ -2459,7 +2463,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
               s.qChosen[i] = 0; // вариант один — выбор не нужен
               bogachMassStart(i); // v0.105: гонка стартует у ВСЕЙ компании одновременно
             } else {
-              bogachStartJob(p, i); // гонка уже идёт — вошедший присоединяется лично
+              /* v0.117: гонка уже идёт (или ячейка ожила из запасного варианта с готовым
+                 заданием) — вошедший запускает её ДЛЯ ВСЕЙ КОМПАНИИ (кто без задания,
+                 тот в гонке; кто играет — продолжает). По правилам Спринтера задание
+                 ячейки всегда общее: вбежал — и все играют. */
+              bogachMassStart(i);
             }
           } else if (c.type === 'bonus' || c.type === 'trap') {
             const deck = c.type === 'bonus' ? map.bonusCards : map.trapCards;
@@ -2838,21 +2846,28 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
             if (bdef && dms) pushFx({ kind: 'bossDef', player: p.id, cellIdx: a.cellIdx, bossId: b.id, ms: dms, after: 'none' });
             if (bdef) log(`👹 Босс «${bdef.name}» ПОБЕЖДЕН игроком ${p.name}!`);
           }
-          /* игры ВСЕХ остальных на этой ячейке ОБРЫВАЮТСЯ. v0.107: на ЧЬЁЙ-ТО ячейке
-             (хозяин был ДО победы) остановленные ПЛАТЯТ хозяину (80%, 20% испаряется);
-             на НИЧЕЙНОЙ — НЕ ПЛАТЯТ: победитель забирает ровно свою награду */
+          /* игры ВСЕХ остальных на этой ячейке ОБРЫВАЮТСЯ. v0.117: это ЯВНОЕ ПОРАЖЕНИЕ —
+             каждый остановленный получает запись qStops (клиент покажет громкое уведомление
+             «ПОРАЖЕНИЕ — победил ИМЯ» со звуком провала — раньше остановка была немой).
+             v0.107: на ЧЬЁЙ-ТО ячейке (хозяин был ДО победы) остановленные ПЛАТЯТ хозяину
+             (80%, 20% испаряется); на НИЧЕЙНОЙ — НЕ ПЛАТЯТ: победитель забирает ровно свою награду */
           let stopped = 0;
+          s.qStops = s.qStops ?? {};
           for (const [pid, j] of Object.entries(s.qJobs ?? {})) {
             if (j.cellIdx !== a.cellIdx || pid === p.id) continue;
             const loser = s.players.find((q) => q.id === pid);
             if (!loser || !loser.alive || loser.spect) continue;
             delete s.qJobs![pid];
             if (s.qSpent) delete s.qSpent[pid];
+            let paid = 0;
             if (prevOwner && prevOwner !== pid) {
+              paid = winC;
               bogachPayTo(loser, winC, a.cellIdx, `задание остановлено — победил ${p.name} (ячейка ${s.players.find((q) => q.id === prevOwner)?.name ?? '?'})`);
             } else {
-              log(`⏹ ${loser.name}: игра остановлена — ячейка ничья, плата не берётся`);
+              log(`💀 ${loser.name} — ПОРАЖЕНИЕ в гонке: победил ${p.name} (ячейка ничья — плата не берётся)`);
             }
+            /* v0.117: запись о поражении — клиент остановленного игрока покажет уведомление */
+            s.qStops[pid] = { by: p.id, cellIdx: a.cellIdx, ts: Date.now(), coins: paid };
             stopped++;
           }
           if (stopped) log(`⏹ Гонка за награду закончилась — остановлено: ${stopped}`);

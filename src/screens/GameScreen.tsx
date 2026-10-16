@@ -483,16 +483,18 @@ export default function GameScreen() {
     })();
     return () => { on = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myQJob?.cellIdx, romReadyTick]);
+  }, [myQJob?.cellIdx, myQJob?.startedAt, romReadyTick]); // v0.117: + startedAt — новое задание на ТОЙ ЖЕ ячейке (ячейка ожила из запасного варианта) перезагружает ром/сейв, а не показывает старую игру
 
-  /* ---------- QUEST: «СТАРТ ИГРЫ» — эмулятор на паузе до нажатия; локальные паузы ---------- */
+  /* ---------- QUEST: «СТАРТ ИГРЫ» — эмулятор на паузе до нажатия; локальные паузы ----------
+     v0.117: сброс и по startedAt — новое задание на ТОЙ ЖЕ ячейке снова требует «Старт игры»
+     (раньше арм оставался от прошлой гонки — эмулятор играл сам, без кнопки). */
   const [qArmed, setQArmed] = useState(false);
-  useEffect(() => { setQArmed(false); }, [myQJob?.cellIdx]);
+  useEffect(() => { setQArmed(false); }, [myQJob?.cellIdx, myQJob?.startedAt]);
   const [qPaused, setQPaused] = useState(false);
-  useEffect(() => { setQPaused(false); }, [myQJob?.cellIdx, qArmed]);
+  useEffect(() => { setQPaused(false); }, [myQJob?.cellIdx, myQJob?.startedAt, qArmed]);
   /* v0.101: «УЙТИ» теперь засчитывает ПОРАЖЕНИЕ (движок) — двухшаговое подтверждение от случайного клика */
   const [qLeaveArm, setQLeaveArm] = useState(false);
-  useEffect(() => { setQLeaveArm(false); }, [myQJob?.cellIdx, qArmed]);
+  useEffect(() => { setQLeaveArm(false); }, [myQJob?.cellIdx, myQJob?.startedAt, qArmed]);
 
   /* ---------- RUBG: «СТАРТ ИГРЫ» в личном задании — эмулятор на паузе до нажатия,
      чтобы игрок мог подготовиться (прочитать задание, настроить управление).
@@ -564,6 +566,24 @@ export default function GameScreen() {
     return () => clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCode?.a, activeCode?.t, activeCode?.op, activeCode?.v, activeFail?.a, activeFail?.t, activeFail?.op, activeFail?.v, ch?.cellIdx, ch?.status, ch?.started, ch?.paused, ch?.reloadId, myQJob?.cellIdx, myQJob?.startedAt, qArmed, qPaused, myJob?.cellIdx, myJob?.startedAt, rubgJobArmed, rubgPaused, me]);
+
+  /* ---------- v0.117 СПРИНТЕР: ПОРАЖЕНИЕ В ГОНКЕ — чужая победа остановила МОЮ игру ----------
+     Движок пишет qStops[мне] при остановке задания победителем (окно закрывается
+     само — состояние без моего qJobs). Здесь — громкое уведомление со звуком провала:
+     раньше остановка была немой, игрок не понимал, что его признали проигравшим.
+     Свежесть — 15 с: старые записи (сейв/переподключение) не всплывают тостом. */
+  const lastStopTsRef = useRef(0);
+  const myStop = s?.qStops?.[me];
+  useEffect(() => {
+    if (!myStop) return;
+    if (myStop.ts <= lastStopTsRef.current) return;
+    lastStopTsRef.current = myStop.ts;
+    if (Date.now() - myStop.ts > 15000) return; // старая запись (после загрузки сейва) — молчим
+    const by = s?.players.find((p) => p.id === myStop.by)?.name ?? 'Соперник';
+    sfx.fail();
+    useApp.getState().toast(`💀 ПОРАЖЕНИЕ: ${by} победил в гонке — игра остановлена${myStop.coins > 0 ? ` (−${myStop.coins} бронзы)` : ''}`, 'err');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myStop?.ts, me]);
 
   /* ---------- ЗВУК ВЫСТРЕЛОВ: новый выстрел в rubg.shots — все клиенты играют звук
      (у пистолета/ПП/снайперки разные звуки). Повторы отсекаются по id выстрела ---------- */
