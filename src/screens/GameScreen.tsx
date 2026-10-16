@@ -3152,21 +3152,11 @@ export default function GameScreen() {
           </div>
         )}
 
-        {/* лог. v0.116: в углу появилась МИНИ-КНОПКА «вся история» — открывает окно
-            с прокруткой ВСЕЙ истории колёсиком, поиском по буквам/именам игроков и
-            временем каждого события. Сам лог в углу НЕ изменён (без времени, как был). */}
+        {/* лог. v0.116: МИНИ-КНОПКА «вся история» открывает окно с прокруткой ВСЕЙ истории
+            колёсиком, поиском по буквам/именам игроков и временем каждого события.
+            v0.119: кнопка ПЕРЕЕХАЛА В САМЫЙ НИЗ углового лога и стилизована под сообщение
+            истории — фиксированная строка «ПРОСМОТРЕТЬ ВСЮ ИСТОРИЮ» под новостями лога. */}
         <div className="absolute left-3 bottom-3 w-[290px] max-w-[45vw] pointer-events-none">
-          <div className="flex justify-end mb-1">
-            <button
-              onClick={() => { setHistOpen(true); sfx.click(); }}
-              title="Вся история партии — скролл, поиск и время событий"
-              aria-label="Вся история партии"
-              className="pointer-events-auto hud-chip pixel-corners px-2 py-1 flex items-center gap-1.5 text-dim hover:text-gold transition-colors cursor-pointer"
-            >
-              {Ic.clock(11)}
-              <span className="font-pixel text-[7px]">ИСТОРИЯ</span>
-            </button>
-          </div>
           <div className="space-y-1">
             {s.log.slice(0, 6).map((l, i) => (
               <div key={`${l}-${i}`} className={`text-[10.5px] leading-tight px-2.5 py-1.5 bg-[rgba(7,9,18,0.8)] border-l-[3px] ${i === 0 ? 'border-gold text-paper slide-up' : 'border-edge text-dim'}`}>
@@ -3174,6 +3164,15 @@ export default function GameScreen() {
               </div>
             ))}
           </div>
+          <button
+            onClick={() => { setHistOpen(true); sfx.click(); }}
+            title="Вся история партии — скролл, поиск и время событий"
+            aria-label="Просмотреть всю историю"
+            className="pointer-events-auto mt-1 w-full text-left flex items-center gap-2 text-[10.5px] leading-tight px-2.5 py-1.5 bg-[rgba(7,9,18,0.8)] border-l-[3px] border-edge text-dim hover:text-gold hover:border-gold transition-colors cursor-pointer"
+          >
+            {Ic.clock(11)}
+            <span className="font-pixel text-[7px] tracking-wide">ПРОСМОТРЕТЬ ВСЮ ИСТОРИЮ</span>
+          </button>
         </div>
 
         {/* трансляция соперника (миниатюра, видна и поверх инвентаря/торгов).
