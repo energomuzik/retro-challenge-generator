@@ -932,6 +932,7 @@ export default function EmulatorLauncher() {
         <CodeSearchModal
           getApi={() => ejsApiRef.current}
           romName={rom?.name ?? 'ROM'}
+          plat={rom?.ext === 'nes' ? 'NES' : rom ? 'SEGA' : undefined} /* v0.122: платформа для базы кодов */
           onClose={() => setCsOpen(false)}
         />
       )}

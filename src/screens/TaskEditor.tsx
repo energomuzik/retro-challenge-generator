@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store';
-import { Coin, Field, GhostBtn, Ic, Panel, PxBtn, Stepper, Toggle } from '../ui';
+import { Coin, Field, GhostBtn, Ic, Modal, Panel, PxBtn, Stepper, Toggle } from '../ui';
 import { cellAtPoint, drawBoard, fitView } from '../render';
 import { idbGet, idbPut, uid } from '../db';
 import { cartridgeArt, cardArt, fileToDataUrl } from '../assets';
 import type { CardDef, CardEffect, CellType, ChaosKind, CodeOp, CodeType, EffectType, GameMap, MemCond, RomDef, SaveKind, TaskDef } from '../types';
 import { CHAOS_LIST, chaosLabel, mkChaosCard, JOY_LIST, SAVE_KIND_CLS, SAVE_KIND_LABEL, SAVE_KIND_SHORT, saveKindOf, taskPlatOfExt, DONATE_DICE_ONLY } from '../types';
-import { hasDice, loadPool, savePool, subscribeBogach, sideBtnsOn, type BogachPool } from '../bogach'; // v0.109: кубиковые пакости только в Ретрополии; v0.112: пул донатов в редакторе; v0.114: мини-кнопки 💰 скрываются
+import { hasDice, loadPool, savePool, subscribeBogach, sideBtnsOn, loadCodes, saveCodes, type BogachCode, type BogachPool } from '../bogach'; // v0.109: кубиковые пакости только в Ретрополии; v0.112: пул донатов в редакторе; v0.114: мини-кнопки 💰 скрываются; v0.122: база кодов
 import { BogachPanel } from './BogachPanel'; // v0.112: панель «💰 Донаты» — та же, что у хоста в партии
 import { CODE_TYPE_LABEL, OP_LABEL, formatCond, hex8, memCondText, parseCond, parseHex } from '../memcode';
 import { renumberByPath, fixLinksAfterDelete } from '../render';
@@ -306,6 +306,11 @@ export default function TaskEditor() {
   const [bogOpen, setBogOpen] = useState(false);
   const [pool, setPool] = useState<BogachPool>(() => loadPool());
   useEffect(() => subscribeBogach(() => setPool(loadPool())), []);
+  /* v0.122: ОКНО БАЗЫ КОДОВ — коды условий CodeSearch с порядковыми номерами.
+     Номер в списке = КОД_ПОБЕДЫ/КОД_ПОРАЖЕНИЯ в донате («донат режим ЯЧЕЙКА РОМ
+     СЕЙВ ПАКОСТЬ КОД_ПОБЕДЫ КОД_ПОРАЖЕНИЯ»). Окно: поиск по словам, правка
+     названия/подписи, копирование и вставка прямо в поля «Зачёт/Поражение по коду». */
+  const [codesOpen, setCodesOpen] = useState(false);
   /* v0.114: МИНИ-КНОПКИ 💰 в списках слева — ПО УМОЛЧАНИЮ СКРЫТЫ (обычному создателю карт
      они не нужны и путают). Пул набирается из кнопки «💰 Донаты» в тулбаре — там дерево
      выбора. Включаются галочкой в панели донатов — и кнопки появляются здесь. */
@@ -717,9 +722,10 @@ export default function TaskEditor() {
         {/* левая панель ромов — только когда редактируется ячейка-задание */}
         {cell?.type === 'task' && (
           <div className="w-full lg:w-[264px] shrink-0 border-t-[3px] lg:border-t-0 lg:border-r-[3px] border-edge bg-[rgba(11,14,28,0.85)] overflow-y-auto p-3 max-h-[38vh] lg:max-h-none">
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-2 gap-1">
               <div className="tick-label">📼 Ромы · {roms.length}</div>
-              <span className="tick-label text-faint">клик — выбрать</span>
+              {/* v0.122: база кодов условий — номера для донатов «… ПАКОСТЬ КОД_ПОБЕДЫ КОД_ПОРАЖЕНИЯ» */}
+              <CodesBtn onClick={() => setCodesOpen(true)} />
             </div>
             {romFolders.map((f) => {
               const inF = romsIn(f);
@@ -1375,6 +1381,20 @@ export default function TaskEditor() {
       )}
       {/* v0.112: панель «💰 Донаты» — та же, что у хоста в партии: батник + пул галочками + шпаргалка по ЭТОЙ карте */}
       {bogOpen && <BogachPanel editorMap={map} onClose={() => setBogOpen(false)} />}
+      {/* v0.122: окно базы кодов — список с номерами (КОД_ПОБЕДЫ/КОД_ПОРАЖЕНИЯ доната), поиск, правка названий */}
+      {codesOpen && (
+        <CodesBaseModal
+          onClose={() => setCodesOpen(false)}
+          onPick={(codeStr, which) => {
+            const c = parseCond(codeStr);
+            if (!c) { toast('Не разобрать код из базы — пересобери его через CodeSearch', 'err'); return; }
+            if (which === 'win') { setFCond(c); setCodeIn(codeStr); setCodeErr(''); }
+            else { setFCondFail(c); setCodeFailIn(codeStr); setCodeFailErr(''); }
+            sfx.hover();
+            toast(which === 'win' ? 'Код вставлен в «Зачёт по коду» — не забудь сохранить задание' : 'Код вставлен в «Поражение по коду» — не забудь сохранить задание', 'ok');
+          }}
+        />
+      )}
       </div>
     </div>
   );
@@ -1394,4 +1414,145 @@ function useBlobImageUrl(id: string): string | null {
     return () => { on = false; };
   }, [id]);
   return u;
+}
+
+/* ================= v0.122: БАЗА КОДОВ УСЛОВИЙ (окно «Коды») =================
+   Код условия (RPC1:…) копируется в CodeSearch — и сразу попадает в базу с
+   порядковым номером. Здесь список: поиск по словам, правка названия игры и
+   подписи «за что отвечает», копирование, вставка прямо в «Зачёт/Поражение
+   по коду». Номер строки = КОД_ПОБЕДЫ/КОД_ПОРАЖЕНИЯ в донате зрителя:
+   «донат режим ЯЧЕЙКА РОМ СЕЙВ ПАКОСТЬ КОД_ПОБЕДЫ КОД_ПОРАЖЕНИЯ». */
+function CodesBtn({ onClick }: { onClick: () => void }) {
+  const n = loadCodes().length;
+  return (
+    <button
+      onClick={() => { sfx.click(); onClick(); }}
+      title="База кодов условий (CodeSearch): порядковые номера для донатов «… ПАКОСТЬ КОД_ПОБЕДЫ КОД_ПОРАЖЕНИЯ» — поиск по словам, правка названий"
+      className="tick-label text-gold hover:text-paper transition-colors cursor-pointer whitespace-nowrap shrink-0"
+    >
+      📋 Коды{n > 0 ? ` · ${n}` : ''}
+    </button>
+  );
+}
+
+function CodesBaseModal({ onClose, onPick }: {
+  onClose: () => void;
+  onPick?: (code: string, which: 'win' | 'fail') => void; // вставить код в поле задания
+}) {
+  const toast = useApp((s) => s.toast);
+  const [list, setList] = useState<BogachCode[]>(() => loadCodes());
+  const [q, setQ] = useState('');
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editGame, setEditGame] = useState('');
+  const [editNote, setEditNote] = useState('');
+  const [delArm, setDelArm] = useState<string | null>(null); // удаление в два клика
+
+  const commit = (next: BogachCode[]) => { setList(next); saveCodes(next); };
+
+  const filtered = useMemo(() => {
+    const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!tokens.length) return list;
+    return list.filter((x, i) => {
+      const hay = `${i + 1} ${x.game} ${x.plat} ${x.note} ${x.code}`.toLowerCase();
+      return tokens.every((tk) => hay.includes(tk));
+    });
+  }, [list, q]);
+
+  const copyCode = async (code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      toast('Код условия скопирован — вставьте в «Зачёт по коду» или «Поражение по коду»', 'ok');
+      sfx.click();
+    } catch {
+      toast('Браузер не дал скопировать сам — выделите код и скопируйте вручную', 'err');
+    }
+  };
+
+  return (
+    <Modal title="База кодов условий — номера для донатов" icon="📋" w="max-w-3xl" onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-[11px] text-dim leading-tight">
+          Код попадает сюда автоматически при копировании в CodeSearch («Скопировать код условия»).
+          <b className="text-paper"> Номер строки</b> — то самое число, которое донатер пишет в донате после пакости:
+          «донат режим <span className="font-mono text-gold">ЯЧЕЙКА РОМ СЕЙВ ПАКОСТЬ КОД_ПОБЕДЫ КОД_ПОРАЖЕНИЯ</span>».
+          Задание ячейки получит эти условия победы/поражения — эмулятор зачтёт сам.
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            className="field-in flex-1 px-2 py-1.5 text-[11px]"
+            placeholder="Поиск по словам: игра, платформа, подпись, номер, сам код…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <span className="tick-label text-faint whitespace-nowrap">{filtered.length} из {list.length}</span>
+        </div>
+        {list.length === 0 && (
+          <p className="text-[11px] text-faint border-2 border-edge px-2 py-3 leading-tight">
+            База пуста. Запустите ром в «Запуске эмулятора», откройте CodeSearch, соберите условие
+            и нажмите «Скопировать код условия» — код сам появится здесь с номером, платформой и названием игры.
+          </p>
+        )}
+        <div className="space-y-1.5">
+          {filtered.map((x) => {
+            const num = list.indexOf(x) + 1;
+            const editing = editId === x.id;
+            return (
+              <div key={x.id} className="border-2 border-edge bg-panel px-2 py-1.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-pixel text-gold text-[13px] shrink-0 w-9 text-right" title="Порядковый номер кода">№{num}</span>
+                  <span className="text-[11px] text-paper font-display uppercase truncate max-w-[45%]" title={x.game}>{x.game || 'Без названия'}</span>
+                  <span className="tick-label text-faint shrink-0">{x.plat}</span>
+                  {x.note && <span className="text-[10.5px] text-dim truncate flex-1 min-w-[80px]" title={x.note}>{x.note}</span>}
+                  <div className="ml-auto flex items-center gap-1 shrink-0">
+                    {onPick && (
+                      <>
+                        <GhostBtn small onClick={() => onPick(x.code, 'win')} title="Вставить этот код в поле «Зачёт по коду» текущего задания">→ зачёт</GhostBtn>
+                        <GhostBtn small onClick={() => onPick(x.code, 'fail')} title="Вставить этот код в поле «Поражение по коду» текущего задания">→ поражение</GhostBtn>
+                      </>
+                    )}
+                    <GhostBtn small onClick={() => void copyCode(x.code)} title="Скопировать код условия">⧉</GhostBtn>
+                    <GhostBtn small onClick={() => { if (editing) { setEditId(null); } else { setEditId(x.id); setEditGame(x.game); setEditNote(x.note); } sfx.click(); }} title="Править название и подпись">{editing ? '✕' : '✎'}</GhostBtn>
+                    <GhostBtn
+                      small
+                      onClick={() => {
+                        if (delArm !== x.id) { setDelArm(x.id); sfx.click(); return; }
+                        commit(list.filter((y) => y.id !== x.id));
+                        setDelArm(null);
+                        sfx.fail();
+                        toast('Код удалён из базы — номера кодов ниже сдвинулись на единицу, шпаргалку стоит перегенерировать', 'err');
+                      }}
+                      title={delArm === x.id ? 'Ещё раз — удалить код из базы' : 'Убрать код из базы (два клика)'}
+                    >
+                      {delArm === x.id ? <span className="text-coral">точно?</span> : '🗑'}
+                    </GhostBtn>
+                  </div>
+                </div>
+                <div className="text-[10.5px] text-teal font-mono break-all mt-1">{x.code}</div>
+                {editing && (
+                  <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+                    <input className="field-in flex-1 min-w-[140px] px-2 py-1 text-[11px]" value={editGame} placeholder="Название игры" onChange={(e) => setEditGame(e.target.value)} />
+                    <input className="field-in flex-1 min-w-[140px] px-2 py-1 text-[11px]" value={editNote} placeholder="За что отвечает: «купить карту»…" onChange={(e) => setEditNote(e.target.value)} />
+                    <GhostBtn
+                      small
+                      onClick={() => { commit(list.map((y) => (y.id === x.id ? { ...y, game: editGame.trim() || 'Без названия', note: editNote.trim() } : y))); setEditId(null); sfx.coin(); }}
+                      title="Сохранить название и подпись"
+                    >
+                      ✔
+                    </GhostBtn>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {list.length > 0 && (
+          <p className="text-[10px] text-faint leading-tight">
+            Номер кода = его позиция в списке. Удалите код — номера ниже сдвинутся, и уже опубликованная
+            шпаргалка «покажет» не те коды: как и с пулом донатов, после публикации шпаргалки порядок не меняют.
+            Названия и подписи правятся свободно — в шпаргалку едет актуальный текст.
+          </p>
+        )}
+      </div>
+    </Modal>
+  );
 }

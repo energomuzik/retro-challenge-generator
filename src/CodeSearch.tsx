@@ -4,6 +4,7 @@ import { GhostBtn, Ic, PxBtn } from './ui';
 import { sfx } from './sound';
 import type { SegaApi } from './SegaBox';
 import type { CodeOp, CodeType } from './types';
+import { addCode } from './bogach'; // v0.122: скопированный код сразу уезжает в базу кодов
 import {
   CODE_TYPE_LABEL, OP_LABEL, SCAN_CAP, formatCond, hex8, parseCond, parseHex, readAt, runScan, typeSize, writeAt,
   byteDecodes, digitCandidates,
@@ -54,9 +55,10 @@ const parseVals = (s: string): number[] => {
   return out;
 };
 
-export default function CodeSearchModal({ getApi, romName, onClose }: {
+export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
   getApi: () => SegaApi | null;
   romName: string;
+  plat?: string; // v0.122: платформа для базы кодов (NES/SEGA) — подпись у номера
   onClose: () => void;
 }) {
   const toast = useApp((s) => s.toast);
@@ -348,7 +350,15 @@ export default function CodeSearchModal({ getApi, romName, onClose }: {
     if (!condValid) return;
     try {
       await navigator.clipboard.writeText(condCode);
-      toast('Код условия скопирован — вставьте его в «Зачёт по коду» или «Поражение по коду» в редакторе заданий', 'ok');
+      /* v0.122: код сразу уезжает в БАЗУ КОДОВ (номер, платформа, игра) — по номеру
+         донатер укажет его в донате «… ПАКОСТЬ КОД_ПОБЕДЫ КОД_ПОРАЖЕНИЯ». Дубликат
+         не создаётся — вернётся номер уже лежащего кода. Название/подпись правятся
+         в окне «Коды» редактора заданий. */
+      const { num, fresh } = addCode(condCode, plat ?? '?', romName || 'Без названия');
+      toast(fresh
+        ? `Код условия скопирован — и добавлен в базу кодов под №${num} (название/подпись правятся в окне «Коды» редактора заданий)`
+        : `Код условия скопирован — он уже лежит в базе кодов под №${num}`,
+        'ok');
     } catch {
       toast('Браузер не дал скопировать сам — выделите код ниже и скопируйте вручную', 'err');
     }

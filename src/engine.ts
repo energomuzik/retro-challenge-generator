@@ -1653,6 +1653,32 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     checkElim();
   };
 
+  /* v0.122: СТАРТ КВИЗА на ячейке — общий для Ретрополии (посадка), Джорни и
+     Спринтера (вход в ячейку при ходьбе). Вопрос видят ВСЕ: гонка — отвечает
+     кто быстрее, «кот в мешке» — спросивший выбирает, кому передать. Пока квиз
+     идёт, движение заморожено (guard s.quiz в journeyMove). Возвращает null,
+     если квиз СТАРТОВАЛ, иначе причину передышки. */
+  const tryStartQuizAt = (p: PlayerState, idx: number): 'noquiz' | 'usedup' | 'busy' | null => {
+    if (s.quiz || s.challenge || s.pendingCard) return 'busy';
+    const all = map.quizzes ?? [];
+    if (all.length === 0) return 'noquiz';
+    // вопросы, уже прозвучавшие в этой партии, не повторяются
+    const pool = all.filter((qz) => !(s.usedQuizzes ?? []).includes(qz.id));
+    if (pool.length === 0) return 'usedup';
+    const q = pool[Math.floor(Math.random() * pool.length)];
+    s.usedQuizzes = [...(s.usedQuizzes ?? []), q.id];
+    if (q.type === 'mystery') {
+      // «кот в мешке»: игрок сам выбирает, кому передать вопрос
+      s.quiz = { quizId: q.id, askerId: p.id, targetId: '', startedAt: 0, resolved: false };
+      log(`🎁 ${p.name} на ячейке-квизе ${posName(idx)} («кот в мешке») — выбирает, кому передать вопрос`);
+    } else {
+      // гонка: вопрос видят все, отвечает кто быстрее
+      s.quiz = { quizId: q.id, askerId: p.id, targetId: p.id, startedAt: Date.now(), resolved: false };
+      log(`🎲 КВИЗ (ячейка ${posName(idx)})! Вопрос видят все — кто первым ответит, тот и забирает`);
+    }
+    return null;
+  };
+
   const resolveLanding = () => {
     const p = current();
     const cell = map.cells[p.pos];
@@ -1721,31 +1747,18 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       return;
     }
     if (cell.type === 'quiz') {
-      const all = map.quizzes ?? [];
-      if (all.length === 0) {
+      const why = tryStartQuizAt(p, p.pos);
+      if (why === 'noquiz') {
         log(`Ячейка ${posName(p.pos)} — квиз, но на карте нет вопросов. Передышка`);
         s.notice = { text: `На карте нет вопросов для квиза — передышка. Создайте квизы в редакторе.`, ts: Date.now() };
         endTurnNow();
         return;
       }
-      // вопросы, уже прозвучавшие в этой партии, не повторяются
-      const pool = all.filter((qz) => !(s.usedQuizzes ?? []).includes(qz.id));
-      if (pool.length === 0) {
+      if (why === 'usedup') {
         log(`Все квизы карты уже прозвучали — передышка`);
         s.notice = { text: `Все квизы этой карты уже прозвучали — передышка.`, ts: Date.now() };
         endTurnNow();
         return;
-      }
-      const q = pool[Math.floor(Math.random() * pool.length)];
-      s.usedQuizzes = [...(s.usedQuizzes ?? []), q.id];
-      if (q.type === 'mystery') {
-        // «кот в мешке»: игрок сам выбирает, кому передать вопрос
-        s.quiz = { quizId: q.id, askerId: p.id, targetId: '', startedAt: 0, resolved: false };
-        log(`🎁 ${p.name} встал на «кота в мешке» (ячейка ${posName(p.pos)}) — выбирает, кому передать вопрос`);
-      } else {
-        // гонка: вопрос видят все, отвечает кто быстрее
-        s.quiz = { quizId: q.id, askerId: p.id, targetId: p.id, startedAt: Date.now(), resolved: false };
-        log(`🎲 КВИЗ (ячейка ${posName(p.pos)})! Вопрос видят все — кто первым ответит, тот и забирает`);
       }
       return;
     }
@@ -2487,9 +2500,34 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
             s.qCards = s.qCards ?? {};
             s.qCards[p.id] = card;
             log(`${c.type === 'bonus' ? '🌟 БОНУС' : '☠ ЛОВУШКА'} для ${p.name}: «${card.name}»`);
+          } else if (c.type === 'quiz') {
+            /* v0.122: ЯЧЕЙКА-КВИЗ В СПРИНТЕРЕ — вбежал, вопрос ВСЕЙ компании (гонка или
+               «кот в мешке»). Пока квиз идёт, движение заморожено (guard s.quiz в начале
+               journeyMove). Квиз не стартует, пока играется задание (busy) — ячейка
+               сработает при следующем входе. Монеты за квиз — настройка карты. */
+            tryStartQuizAt(p, i);
           }
         }
         break;
+      }
+      /* v0.122: ЯЧЕЙКИ-КВИЗЫ В ДЖОРНИ (и соло-Джорни; в Квесте/RUBG их нет и в редакторе
+         не сохранить): вход в квизовую ячейку — вопрос ВСЕЙ компании, как в Ретрополии.
+         Отдельный проход ПЕРЕД ячейками заданий — у заданий своя проверка пересечения. */
+      if (!s.quiz && !s.challenge && !s.pendingCard && !s.awaitPost) {
+        for (let i = 0; i < map.cells.length; i++) {
+          const c = map.cells[i];
+          if (c.type !== 'quiz' || s.broken?.[i]) continue;
+          const r = cellRectOf(map, i);
+          if (!r) continue;
+          const inNew = x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+          if (!inNew) continue;
+          const inOld = (!!prev && prev.x >= r.x && prev.x < r.x + r.w && prev.y >= r.y && prev.y < r.y + r.h) && !brokenRevived.includes(i);
+          if (inOld) continue; // уже стоял в ней — вход был раньше
+          p.pos = i;
+          revealCell(s, p.id, i);
+          tryStartQuizAt(p, i);
+          break;
+        }
       }
       if (!s.challenge) {
         for (let i = 0; i < map.cells.length; i++) {
@@ -4161,7 +4199,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       s.quiz = null;
       const p = current();
       p.extraTurn = false;
-      log(`${p.name} передаёт ход после квиза`);
+      if (!isJourneyLike(map.mode)) log(`${p.name} передаёт ход после квиза`); // v0.122: в походных режимах ходов нет
       endTurnNow();
       break;
     }

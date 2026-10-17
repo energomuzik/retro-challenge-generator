@@ -27,6 +27,8 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
   const [fRom, setFRom] = useState('');
   const [fSave, setFSave] = useState('');
   const [fChaos, setFChaos] = useState('0');
+  const [fWinCode, setFWinCode] = useState(''); // v0.122: № кода победы из базы (пусто = не трогать условия)
+  const [fLoseCode, setFLoseCode] = useState(''); // v0.122: № кода поражения из базы
   const [formErr, setFormErr] = useState('');
   const [shp, setShp] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -67,10 +69,21 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
 
   const applyManual = async () => {
     setFormErr('');
-    const res = await applyDonat({ manual: true, cell: Number(fCell), rom: Number(fRom), save: Number(fSave) || 0, chaos: Number(fChaos) });
+    /* v0.122: коды — ПАРОЙ: оба заполнены → задание по кодам; оба пусты → стандарт;
+     только один — отклонение ещё на форме */
+    if (!!fWinCode !== !!fLoseCode) {
+      setFormErr('коды победы и поражения ставятся ПАРОЙ — заполни оба номера или оба оставь пустыми');
+      sfx.fail();
+      return;
+    }
+    const res = await applyDonat({
+      manual: true,
+      cell: Number(fCell), rom: Number(fRom), save: Number(fSave) || 0, chaos: Number(fChaos),
+      ...(fWinCode && fLoseCode ? { win: Number(fWinCode), lose: Number(fLoseCode) } : {}),
+    });
     if (res.ok) {
       sfx.coin();
-      setFCell(''); setFSave(''); setFChaos('0');
+      setFCell(''); setFSave(''); setFChaos('0'); setFWinCode(''); setFLoseCode('');
     } else {
       sfx.fail();
       setFormErr(res.reason);
@@ -378,6 +391,12 @@ export function BogachPanel({ onClose, editorMap }: { onClose: () => void; edito
               <select className="field-in px-2 py-2 text-sm" value={fChaos} onChange={(e) => setFChaos(e.target.value)}>
                 {DONATE_CHAOS.map((c) => <option key={c.num} value={String(c.num)}>{c.num} — {c.name}</option>)}
               </select>
+            </div>
+            {/* v0.122: задание ПО КОДАМ — номера из базы кодов (окно «Коды» редактора заданий);
+                 заполнять оба или оба оставить пустыми */}
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              <input className="field-in px-2 py-2 text-sm" placeholder="Код победы № (пусто = нет)" inputMode="numeric" value={fWinCode} onChange={(e) => setFWinCode(e.target.value.replace(/\D/g, ''))} />
+              <input className="field-in px-2 py-2 text-sm" placeholder="Код поражения № (пусто = нет)" inputMode="numeric" value={fLoseCode} onChange={(e) => setFLoseCode(e.target.value.replace(/\D/g, ''))} />
             </div>
             <div className="mt-2">
               <PxBtn small color="magma" onClick={() => void applyManual()}>Применить</PxBtn>
