@@ -218,6 +218,7 @@ const CELL_TYPES: { key: CellType; label: string; cls: string }[] = [
   { key: 'quiz', label: 'Квиз', cls: 'border-sky text-sky bg-sky/10' },
 ];
 const LOOT_CELL_TYPE: { key: CellType; label: string; cls: string } = { key: 'loot', label: 'Ящ.', cls: 'border-[#ff8b3f] text-[#ff8b3f] bg-[#ff8b3f]/10' }; // ЯЩИК с лутом — только в режиме RUBG
+const FURNACE_CELL_TYPE: { key: CellType; label: string; cls: string } = { key: 'furnace', label: 'Печь', cls: 'border-[#ff6b35] text-[#ff6b35] bg-[#ff6b35]/10' }; // v0.123 ПЕЧЬ ФРЕНДИ — только в режиме FRENDY, ровно одна
 
 /* ---------- v0.73: ПОЛНОЭКРАННАЯ КАРТА ПЛИТОК ----------
    Вся схема плиток разворачивается на весь экран — видно и удобно располагать весь мир:
@@ -3330,6 +3331,26 @@ export default function MapEditor() {
       toast('Ячейки-ящики работают только в режиме RUBG — измените тип ячеек или включите режим RUBG', 'err');
       return;
     }
+    /* v0.123 FRENDY: ровно ОДНА печь + минимум 10 ячеек с заданием (Френди оттаскивает пойманных к случайной);
+       в ДРУГИХ режимах печь запрещена (как ящики в не-RUBG) */
+    if ((map.mode ?? 'classic') === 'frendy') {
+      const fCnt = map.cells.filter((c) => c.type === 'furnace').length;
+      if (fCnt !== 1) {
+        sfx.fail();
+        toast(`FRENDY: нужна ровно ОДНА ПЕЧЬ Френди — сейчас на карте ${fCnt}. ${fCnt ? 'Уберите лишние печи' : 'Поставьте печь: кликните по ячейке и смените её тип на «Печь»'} — к ней игроки носят микросхемы и жгут по E`, 'err');
+        return;
+      }
+      const taskCnt = map.cells.filter((c) => c.type === 'task').length;
+      if (taskCnt < 10) {
+        sfx.fail();
+        toast(`FRENDY: нужно минимум 10 ЯЧЕЕК С ЗАДАНИЕМ — сейчас ${taskCnt}. Френди оттаскивает пойманных игроков к СЛУЧАЙНОЙ ячейке задания и запускает его лично — без 10 ячеек режим не работает. Добавьте ячейки «Зад.» с заданиями`, 'err');
+        return;
+      }
+    } else if (map.cells.some((c) => c.type === 'furnace')) {
+      sfx.fail();
+      toast('Печь Френди работает только в режиме FRENDY — уберите её или измените режим карты (кнопки вверху)', 'err');
+      return;
+    }
     /* v0.122: КВИЗЫ РАЗРЕШЕНЫ в Спринтере и Джорни — вход на квизовую ячейку запускает
        вопрос ВСЕЙ компании (engine: tryStartQuizAt). Запрет остаётся только в QUEST/QUEST
        SOLO: там задания на доверии, личные, и викторина в общем окне не вписывается. */
@@ -3503,7 +3524,7 @@ export default function MapEditor() {
             {(() => {
               const id = baseModeOf(map.mode ?? 'classic');
               const solo = isSoloMode(map.mode ?? 'classic');
-              const soloLocked = id === 'skill' || id === 'rubg' || id === 'bogach';
+              const soloLocked = id === 'skill' || id === 'rubg' || id === 'bogach' || id === 'frendy'; // v0.123: FRENDY — соло-вариант не нужен (играется хоть одним)
               const sv = soloVariantOf(id);
               return (
                 <button
@@ -3515,7 +3536,9 @@ export default function MapEditor() {
                       ? 'В RUBG галочка SOLO недоступна'
                       : id === 'bogach'
                         ? 'В СПРИНТЕРЕ соло нет — гонка на опережение, минимум два игрока'
-                        : 'SOLO: играет только хост, остальные — зрители трансляции. В RETROPOLIA/JOURNEY меняется условие победы: пройти ВСЕ задания карты'}
+                        : id === 'frendy'
+                          ? 'FRENDY: галочка SOLO не нужна — играй хоть один, хоть с компанией (все сражаются сами)'
+                          : 'SOLO: играет только хост, остальные — зрители трансляции. В RETROPOLIA/JOURNEY меняется условие победы: пройти ВСЕ задания карты'}
                   className={`px-2.5 py-1 border-2 font-display text-[9px] uppercase transition-colors whitespace-nowrap ${solo ? 'border-sky text-sky bg-sky/10 cursor-pointer' : soloLocked ? 'border-edge text-faint/50 cursor-not-allowed' : 'border-edge text-faint hover:text-sky cursor-pointer'}`}
                 >{solo ? '☑ ' : '☐ '}SOLO</button>
               );
@@ -4924,8 +4947,8 @@ export default function MapEditor() {
 
                   <div>
                     <div className="tick-label mb-1.5">Тип</div>
-                    <div className="grid grid-cols-7 gap-1">
-                      {[...CELL_TYPES, ...((map.mode ?? 'classic') === 'rubg' ? [LOOT_CELL_TYPE] : [])].map((t) => (
+                    <div className="grid grid-cols-8 gap-1">
+                      {[...CELL_TYPES, ...((map.mode ?? 'classic') === 'rubg' ? [LOOT_CELL_TYPE] : (map.mode ?? 'classic') === 'frendy' ? [FURNACE_CELL_TYPE] : [])].map((t) => (
                         <button
                           key={t.key}
                           onClick={() => { updCell(selCell, { type: t.key }); renumber(); dirtyRef.current = true; }}
@@ -4943,6 +4966,9 @@ export default function MapEditor() {
                     )}
                     {selCellDef.type === 'loot' && (
                       <p className="text-[10px] text-[#ff8b3f] mt-1 leading-tight">ЯЩИК с лутом (только RUBG): одноразовый, проходом НЕ вскрывается — подойди и взломай ОТМЫЧКОЙ (мини-игра «замок»). «Открыть СИЛОЙ» (25%) доступно только когда отмычка сломалась; провал заклинивает ящик навсегда. Внутри: фляжка/аптечка/ящик (лечение), пистолет/ПП/снайперка (атаки), отмычка, карта воровства (3 исп.) или стелса.</p>
+                    )}
+                    {selCellDef.type === 'furnace' && (
+                      <p className="text-[10px] text-[#ff6b35] mt-1 leading-tight">ПЕЧЬ ФРЕНДИ (только FRENDY, ровно ОДНА на карте): игрок приносит МИКРОСХЕМУ из кости Френди, подходит и жмёт E — «Сжечь микросхему». Сожгли ВСЕ — победа партии. Ставьте печь в заметном месте — к ней будут бегать с микросхемами, пока Френди охотится.</p>
                     )}
                     <button
                       onClick={() => {

@@ -374,6 +374,7 @@ export interface TokenDraw {
   override?: AnimClip;  // разовый клип fx (победа/поражение) — играется ОДИН раз вместо обычного
   overrideStart?: number; // старт клипа override в мс rAF-часов (performance.now)
   carried?: number;     // v0.65: фишку ПОЙМАЛ босс и несёт (фаза 0..1) — барахтается (крен) + красная вспышка в момент поимки
+  ghost?: boolean;      // v0.123 FRENDY: погибший игрок — дефолтная фишка-наблюдатель (свою картинку не показываем)
 }
 
 export interface BoardDrawOpts {
@@ -430,6 +431,9 @@ export interface BoardDrawOpts {
   /* v0.56: маршруты КАТ-СЦЕН (только редактор): пунктир + точки-кружки с номерами,
      зона-триггер — пунктирный прямоугольник с плашкой «ТРИГГЕР»; active — выделенная */
   cutViz?: { pts: { x: number; y: number }[]; zone: { x: number; y: number; w: number; h: number } | null; color: string; active: boolean }[];
+  /* v0.123 FRENDY: предметы НА ПОЛЕ (микросхемы/выброшенное) и супер-босс Френди (позиция сглажена клиентом) */
+  frendyChips?: { x: number; y: number; kind?: string }[] | null;
+  frendyBoss?: { x: number; y: number; fx?: string | null; fxTs?: number; targetId?: string | null } | null;
 }
 
 function px(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, pattern: string[], color: string) {
@@ -447,6 +451,221 @@ const PAD = ['.111.', '11111', '11111', '.111.'];
 const QUIZ = ['.111.', '1..11', '..11.', '..1..', '.....', '..1..'];
 const REST = ['11111', '...1.', '..1..', '.1...', '11111']; // буква Z — «передышка»
 const BOX = ['11111', '1...1', '11111', '.1.1.', '11111']; // лутбокс RUBG
+const FURN = ['11111', '12231', '12321', '11111', '.333.']; // иконка ПЕЧИ ФРЕНДИ (кирпич + огонь) — малые ячейки
+
+/* v0.123 FRENDY: ПЕЧЬ — кирпичная печь с ЖИВЫМ огнём (большая ячейка). Центр (cx,cy), s — половина ширины. */
+const drawFurnace = (ctx: CanvasRenderingContext2D, cx: number, cy: number, s: number, time: number) => {
+  ctx.save();
+  ctx.translate(cx, cy);
+  const w = s * 2, h = s * 1.9;
+  const y0 = -h * 0.34;
+  ctx.fillStyle = 'rgba(0,0,0,0.30)';
+  ctx.fillRect(-w / 2 + 2, y0 + h - 1, w - 4, 4);
+  /* кирпичный корпус */
+  const g = ctx.createLinearGradient(0, y0, 0, y0 + h);
+  g.addColorStop(0, '#6e3226');
+  g.addColorStop(0.5, '#8a4030');
+  g.addColorStop(1, '#57251c');
+  ctx.fillStyle = g;
+  ctx.fillRect(-w / 2, y0, w, h);
+  /* кирпичная кладка */
+  ctx.strokeStyle = 'rgba(28,10,8,0.5)';
+  ctx.lineWidth = 1;
+  for (let r = 1; r < 4; r++) { const yy = y0 + (h / 4) * r; ctx.beginPath(); ctx.moveTo(-w / 2 + 1, yy); ctx.lineTo(w / 2 - 1, yy); ctx.stroke(); }
+  for (let r = 0; r < 4; r++) {
+    const yy = y0 + (h / 4) * r;
+    const off = r % 2 ? 0 : w / 4;
+    for (let c = 0; c < 2; c++) { const xx = -w / 2 + off + (w / 2) * c + w / 4; if (xx > -w / 2 + 2 && xx < w / 2 - 2) { ctx.beginPath(); ctx.moveTo(xx, yy + 1); ctx.lineTo(xx, yy + h / 4 - 1); ctx.stroke(); } }
+  }
+  /* труба */
+  ctx.fillStyle = '#4d2018';
+  ctx.fillRect(-w * 0.12, y0 - h * 0.22, w * 0.24, h * 0.24);
+  /* арка топки */
+  const aw = w * 0.52, ah = h * 0.42;
+  const ax0 = -aw / 2, ay0 = y0 + h - ah - h * 0.08;
+  ctx.fillStyle = '#1a0b08';
+  ctx.beginPath();
+  ctx.moveTo(ax0, ay0 + ah);
+  ctx.lineTo(ax0, ay0 + aw / 2);
+  ctx.quadraticCurveTo(0, ay0 - aw * 0.14, ax0 + aw, ay0 + aw / 2);
+  ctx.lineTo(ax0 + aw, ay0 + ah);
+  ctx.closePath();
+  ctx.fill();
+  /* живой огонь (мерцает) */
+  const fl = 0.75 + 0.25 * Math.sin(time / 130) + 0.08 * Math.sin(time / 47);
+  const fg = ctx.createLinearGradient(0, ay0 + ah, 0, ay0 + ah - ah * 0.9 * fl);
+  fg.addColorStop(0, '#ffdf6b');
+  fg.addColorStop(0.45, '#ff8b3f');
+  fg.addColorStop(1, 'rgba(255,80,30,0)');
+  ctx.fillStyle = fg;
+  ctx.beginPath();
+  const fb = ay0 + ah - 2;
+  ctx.moveTo(ax0 + aw * 0.12, fb);
+  ctx.quadraticCurveTo(ax0 + aw * 0.3, fb - ah * 0.55 * fl, ax0 + aw * 0.5, fb - ah * 0.95 * fl);
+  ctx.quadraticCurveTo(ax0 + aw * 0.72, fb - ah * 0.5 * fl, ax0 + aw * 0.88, fb);
+  ctx.closePath();
+  ctx.fill();
+  /* зарево */
+  ctx.globalAlpha = 0.16 + 0.07 * Math.sin(time / 210);
+  const rg = ctx.createRadialGradient(0, fb - ah * 0.3, 2, 0, fb - ah * 0.3, s * 1.5);
+  rg.addColorStop(0, '#ff9a4d');
+  rg.addColorStop(1, 'rgba(255,120,40,0)');
+  ctx.fillStyle = rg;
+  ctx.fillRect(-s * 1.6, -s * 1.6, s * 3.2, s * 3.2);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+};
+
+/* v0.123 FRENDY: МИКРОСХЕМА на поле — зелёная плата с ножками и мигающим светодиодом.
+   Чужой предмет (kind) — рисуем эмодзи вещи. */
+const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, time: number, kind?: string) => {
+  ctx.save();
+  ctx.translate(cx, cy);
+  if (kind) {
+    /* выброшенная вещь — эмодзи на плашке */
+    ctx.fillStyle = 'rgba(7,9,18,0.75)';
+    ctx.beginPath();
+    ctx.arc(0, 0, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,207,63,0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.font = '14px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(kind === 'medkit' ? '🧰' : kind === 'coffee' ? '☕' : '📦', 0, 1);
+    ctx.restore();
+    return;
+  }
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath();
+  ctx.ellipse(0, 9, 10, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  /* ножки */
+  ctx.fillStyle = '#c9a13c';
+  for (let i = -2; i <= 2; i++) { ctx.fillRect(i * 5 - 1, 4, 2, 6); ctx.fillRect(i * 5 - 1, -10, 2, 6); }
+  /* плата */
+  ctx.fillStyle = '#1f7a3d';
+  ctx.fillRect(-9, -8, 18, 16);
+  ctx.fillStyle = 'rgba(255,255,255,0.14)';
+  ctx.fillRect(-9, -8, 18, 3);
+  /* дорожки */
+  ctx.strokeStyle = 'rgba(200,255,210,0.5)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(-7, 5); ctx.lineTo(-2, 5); ctx.lineTo(-2, 1); ctx.lineTo(3, 1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(7, -5); ctx.lineTo(2, -5); ctx.stroke();
+  /* чип-кристалл */
+  ctx.fillStyle = '#12335a';
+  ctx.fillRect(-4, -4, 8, 7);
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.fillRect(-4, -4, 8, 2);
+  /* мигающий светодиод */
+  const led = 0.5 + 0.5 * Math.sin(time / 260);
+  ctx.fillStyle = `rgba(255,70,60,${0.35 + 0.65 * led})`;
+  ctx.beginPath();
+  ctx.arc(6, 4, 2 + led, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+};
+
+/* v0.123 FRENDY: СУПЕР-БОСС — рисованная заглушка до фирменной анимации автора:
+   шляпа-федора, светящиеся глаза, свитер в полоску, рука с когтями.
+   fx: 'attack' — красные росчерки лапы; 'catch' — фиолетовое кольцо захвата. */
+const drawFrendyBoss = (ctx: CanvasRenderingContext2D, cx: number, cy: number, time: number, fx?: string | null, fxTs?: number) => {
+  ctx.save();
+  ctx.translate(cx, cy);
+  const bob = Math.sin(time / 160) * 2; // дыхание
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.beginPath();
+  ctx.ellipse(0, 22, 17, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.translate(0, -14 + bob);
+  /* свитер в полоску (тело) */
+  for (let i = 0; i < 5; i++) {
+    ctx.fillStyle = i % 2 ? '#3a1220' : '#5c1f2e';
+    ctx.fillRect(-13, -2 + i * 7, 26, 7);
+  }
+  /* голова — мертвенно-бледная */
+  ctx.fillStyle = '#b7b6a1';
+  ctx.beginPath();
+  ctx.arc(0, -12, 11, 0, Math.PI * 2);
+  ctx.fill();
+  /* шрамы */
+  ctx.strokeStyle = 'rgba(90,30,30,0.8)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(-6, -18); ctx.lineTo(-3, -10); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-2, -19); ctx.lineTo(1, -11); ctx.stroke();
+  /* ГЛАЗА — красное свечение */
+  const gl = 0.6 + 0.4 * Math.sin(time / 200);
+  ctx.save();
+  ctx.shadowColor = '#ff2e2e';
+  ctx.shadowBlur = 8 * gl;
+  ctx.fillStyle = `rgba(255,40,40,${0.75 + 0.25 * gl})`;
+  ctx.fillRect(-6, -15, 4, 3);
+  ctx.fillRect(2, -15, 4, 3);
+  ctx.restore();
+  /* зубчатая ухмылка */
+  ctx.fillStyle = '#1a0b08';
+  ctx.fillRect(-5, -8, 10, 3);
+  ctx.fillStyle = '#e9ecff';
+  for (let i = 0; i < 4; i++) ctx.fillRect(-5 + i * 2.6, -8, 1.6, 3);
+  /* ФЕДОРА */
+  ctx.fillStyle = '#2b1c10';
+  ctx.beginPath();
+  ctx.ellipse(0, -21, 16, 4.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#3a2818';
+  ctx.fillRect(-9, -30, 18, 9);
+  ctx.fillStyle = '#1c1208';
+  ctx.fillRect(-9, -24, 18, 2.5);
+  /* РУКА С КОГТЯМИ (справа, покачивается) */
+  const clawA = Math.sin(time / 130) * 0.25 - 0.15;
+  ctx.save();
+  ctx.translate(14, 4);
+  ctx.rotate(clawA);
+  ctx.fillStyle = '#5c1f2e';
+  ctx.fillRect(-3, -3, 7, 12);
+  ctx.strokeStyle = '#cfd6e6';
+  ctx.lineWidth = 1.6;
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath();
+    ctx.moveTo(1 + i * 1.6, 9);
+    ctx.lineTo(3 + i * 2.2, 17 + Math.sin(time / 90 + i) * 1.2);
+    ctx.stroke();
+  }
+  ctx.restore();
+  /* разовые анимации-заглушки */
+  if (fx && fxTs) {
+    const k = Math.max(0, Math.min(1, (time - fxTs) / 600)); // 0..1 за 0.6 с
+    if (fx === 'attack' && k < 1) {
+      ctx.save();
+      ctx.globalAlpha = 1 - k;
+      ctx.strokeStyle = '#ff4646';
+      ctx.lineWidth = 3;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(10 + i * 7, 0, 14 + i * 3, -0.9 + k * 0.8, 0.5 + k * 0.8);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (fx === 'catch' && k < 1) {
+      ctx.save();
+      ctx.globalAlpha = 1 - k;
+      ctx.strokeStyle = '#c07aff';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(0, 0, 10 + k * 30, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = '#ff5d73';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 6 + k * 20, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+};
 
 /* v0.55 ЦЕЛЫЙ ЯЩИК RUBG — ПЕРЕНАРИСОВАН (п.8): раньше был простой пиксельный силуэт
    с «перекрестием» (5×5 спрайт BOX) — сломанные ящики выглядели красивее целого.
@@ -983,8 +1202,8 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
           ctx.fillText('!', W / 2 - 9, -H / 2 + (cell.color ? 30 : 16));
         }
       } else {
-        const icon = cell.type === 'bonus' ? STAR : cell.type === 'trap' ? SKULL : cell.type === 'rest' ? REST : cell.type === 'loot' ? BOX : QUIZ;
-        const iconColor = cell.type === 'bonus' ? '#2ee6a8' : cell.type === 'trap' ? '#ff5d73' : cell.type === 'rest' ? '#7c86b8' : cell.type === 'loot' ? '#ff8b3f' : '#5aa9ff';
+        const icon = cell.type === 'bonus' ? STAR : cell.type === 'trap' ? SKULL : cell.type === 'rest' ? REST : cell.type === 'loot' ? BOX : cell.type === 'furnace' ? FURN : QUIZ;
+        const iconColor = cell.type === 'bonus' ? '#2ee6a8' : cell.type === 'trap' ? '#ff5d73' : cell.type === 'rest' ? '#7c86b8' : cell.type === 'loot' ? '#ff8b3f' : cell.type === 'furnace' ? '#ff6b35' : '#5aa9ff';
         const cimg = !isHush && cell.imageId ? getImage(cell.imageId) : null;
         if (cimg) {
           // картинка на бонусе/ловушке/квизе — как на заданиях; иконка типа в углу, чтобы ячейка читалась
@@ -1007,13 +1226,16 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
         } else if (cell.type === 'loot') {
           /* v0.55: ЦЕЛЫЙ ЯЩИК — красивый деревянный (вместо пиксельного силуэта с перекрестием) */
           drawCrate(ctx, 0, H * 0.06, Math.min(W, H) * 0.26);
+        } else if (cell.type === 'furnace') {
+          /* v0.123 ПЕЧЬ ФРЕНДИ — кирпичная печь с живым огнём */
+          drawFurnace(ctx, 0, H * 0.06, Math.min(W, H) * 0.3, o.time);
         } else {
           px(ctx, -icon[0].length * 3, -H / 2 + (cell.color ? 24 : 12), 6, icon, iconColor);
         }
         ctx.fillStyle = '#e9ecff';
         ctx.font = '8px "Press Start 2P", monospace';
         ctx.textAlign = 'center';
-        const name = isHush && cell.label ? '???' : (cell.label || (cell.type === 'bonus' ? 'БОНУС' : cell.type === 'trap' ? 'ЛОВУШКА' : cell.type === 'rest' ? 'ОТДЫХ' : cell.type === 'loot' ? 'ЯЩИК' : 'КВИЗ'));
+        const name = isHush && cell.label ? '???' : (cell.label || (cell.type === 'bonus' ? 'БОНУС' : cell.type === 'trap' ? 'ЛОВУШКА' : cell.type === 'rest' ? 'ОТДЫХ' : cell.type === 'loot' ? 'ЯЩИК' : cell.type === 'furnace' ? 'ПЕЧЬ ФРЕНДИ' : 'КВИЗ'));
         ctx.fillText(name.slice(0, Math.floor((W - 10) / 8)).toUpperCase(), 0, H / 2 - 8);
       }
       if (o.showNumbers && cell.n > 0 && !cell.nonumber) {
@@ -1048,8 +1270,8 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
           /* v0.55: ЦЕЛЫЙ ЯЩИК — малая ячейка тоже с нормальным ящиком */
           drawCrate(ctx, 0, 2, 9);
         } else {
-          const icon = cell.type === 'bonus' ? STAR : cell.type === 'trap' ? SKULL : cell.type === 'quiz' ? QUIZ : cell.type === 'rest' ? REST : PAD;
-          const iconColor = cell.type === 'task' ? '#ffcf3f' : cell.type === 'quiz' ? '#5aa9ff' : cell.type === 'rest' ? '#7c86b8' : edge;
+          const icon = cell.type === 'bonus' ? STAR : cell.type === 'trap' ? SKULL : cell.type === 'quiz' ? QUIZ : cell.type === 'rest' ? REST : cell.type === 'furnace' ? FURN : PAD;
+          const iconColor = cell.type === 'task' ? '#ffcf3f' : cell.type === 'quiz' ? '#5aa9ff' : cell.type === 'rest' ? '#7c86b8' : cell.type === 'furnace' ? '#ff6b35' : edge;
           px(ctx, -icon[0].length * 2, -14, 4, icon, iconColor);
         }
       }
@@ -1452,7 +1674,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       const dw = iw * k, dh = ih * k;
       ctx.drawImage(img, -dw / 2, -dh / 2 - sz * 0.12, dw, dh);
     };
-    const custom = t.img ? getImage(t.img) : null;
+    const custom = t.ghost ? null : (t.img ? getImage(t.img) : null); // v0.123: призрак FRENDY — всегда дефолтный робот
     // FX (победа/поражение): разовый клип вместо обычной анимации — от локального старта, замереть на последнем кадре.
     // ВАЖНО: клип рисуется ПЕРВЫМ, а обычная анимация ниже — ТОЛЬКО если клип не отрисовался
     // (раньше idle-кадр рисовался ПОВЕРХ клипа каждый кадр — анимация фишки была не видна).
@@ -1469,7 +1691,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     }
     // АНИМИРОВАННАЯ фишка: кадр клипа по направлению (нет — idle); не загрузился — статичное превью.
     // Пока играет разовый fx-клип (override) — обычную анимацию НЕ рисуем.
-    const clip = t.anim ? clipForToken(t.anim, t.dir) : null;
+    const clip = t.ghost ? null : (t.anim ? clipForToken(t.anim, t.dir) : null);
     if (!drawn && clip && clip.frames.length) {
       const fimg = getImage(clip.frames[clipFrameIdx(clip, o.time + (t.phase ?? 0) * 1000)]);
       if (fimg) {
@@ -1509,6 +1731,14 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       ctx.globalAlpha = t.alive ? 1 : 0.35;
     }
     ctx.restore();
+  }
+
+  /* v0.123 FRENDY: предметы НА ПОЛЕ (под фишками) и ФРЕНДИ (поверх всех — он поверх мира) */
+  if (o.frendyChips) {
+    for (const c of o.frendyChips) drawFrendyChip(ctx, c.x, c.y, o.time, c.kind);
+  }
+  if (o.frendyBoss) {
+    drawFrendyBoss(ctx, o.frendyBoss.x, o.frendyBoss.y, o.time, o.frendyBoss.fx, o.frendyBoss.fxTs);
   }
 
   /* РЕЖИМ КОМНАТ (АЙЗЕК): в игре видна ТОЛЬКО текущая плитка-комната — всё за её

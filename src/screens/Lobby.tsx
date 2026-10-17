@@ -183,6 +183,7 @@ export function CreateScreen() {
     quest: { label: 'QUEST', cls: 'border-teal/60 text-teal' },
     quest1p: { label: 'QUEST SOLO', cls: 'border-sky/60 text-sky' },
     bogach: { label: 'СПРИНТЕР', cls: 'border-gold/70 text-gold' },
+    frendy: { label: 'FRENDY', cls: 'border-[#ff6b35]/70 text-[#ff6b35]' }, // v0.123: хеллоуинский хоррор
   };
 
   const shown = ready
@@ -204,7 +205,7 @@ export function CreateScreen() {
     .sort((a, b) => {
       if (sortBy === 'name') return a.name.localeCompare(b.name, 'ru');
       if (sortBy === 'mode') {
-        const order: MapMode[] = ['classic', 'classic1p', 'skill', 'journey', 'journey1p', 'quest', 'quest1p', 'rubg'];
+        const order: MapMode[] = ['classic', 'classic1p', 'skill', 'journey', 'journey1p', 'quest', 'quest1p', 'rubg', 'frendy'];
         const d = order.indexOf(mapFacts(a).mode) - order.indexOf(mapFacts(b).mode);
         return d !== 0 ? d : a.name.localeCompare(b.name, 'ru');
       }
@@ -324,6 +325,7 @@ export function CreateScreen() {
               {chip(fMode === 'quest1p', 'Quest Solo', () => setFMode('quest1p'), 'sky')}
               {chip(fMode === 'classic1p', 'Retropolia Solo', () => setFMode('classic1p'), 'sky')}
               {chip(fMode === 'rubg', 'RUBG', () => setFMode('rubg'), 'magma')}
+              {chip(fMode === 'frendy', 'Frendy 🎃', () => setFMode('frendy'), 'magma')}
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="tick-label text-faint mr-1 shrink-0">Консоль:</span>
@@ -1349,10 +1351,10 @@ export function LobbyScreen() {
             </PxBtn>
           )}
           {isHost && !resumeSnap && (() => {
-            const soloGame = isSoloMode(sessionMap?.mode); // SKILL CHALLENGE и одиночный JOURNEY — можно стартовать одному
+            const soloGame = isSoloMode(sessionMap?.mode) || (sessionMap?.mode === 'frendy' && session.players.length < 2); // v0.123: FRENDY можно начать одному — против Френди
             const fewPlayers = session.players.length < 2 && !soloGame;
-            const notReady = soloGame ? false : session.players.some((p) => !p.ready);
-            const notLoaded = soloGame ? false : session.players.some((p) => !p.isHost && (sync[p.id] ?? 0) < 100);
+            const notReady = soloGame && session.players.length < 2 ? false : session.players.some((p) => !p.ready);
+            const notLoaded = soloGame && session.players.length < 2 ? false : session.players.some((p) => !p.isHost && (sync[p.id] ?? 0) < 100);
             const blocked = fewPlayers || notReady || notLoaded;
             return (
               <PxBtn

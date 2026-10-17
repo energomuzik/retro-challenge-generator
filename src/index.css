@@ -501,3 +501,22 @@ input[type="range"] { accent-color: var(--color-gold); }
   border: 2px solid #313c72;
   background: linear-gradient(160deg, #131a36 0%, #0d1124 100%);
 }
+
+/* ---------- v0.123 FRENDY: крик фразочки + вспышка удара/поимки ---------- */
+.frendy-shout {
+  animation: frendyShout 4.2s ease-out forwards;
+}
+@keyframes frendyShout {
+  0% { transform: scale(0.7); opacity: 0; }
+  8% { transform: scale(1.06); opacity: 1; }
+  14% { transform: scale(1); }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.frendy-flash {
+  animation: frendyFlash 0.85s ease-out forwards;
+}
+@keyframes frendyFlash {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}

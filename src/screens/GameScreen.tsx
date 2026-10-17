@@ -19,13 +19,18 @@ import {
 import { saveSessionSnapshot } from './Lobby';
 import QuizOverlay from './QuizOverlay';
 import { AnimPreview, EmuVolumeChip, Field, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin, CoinRow } from '../ui';
-import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isBossCatchMode, isSoloMode, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf } from '../types';
+import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isBossCatchMode, isSoloMode, isFrendyMode, FRENDY_PHRASES, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf } from '../types';
 import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem } from '../types';
 import Randomizer from './Randomizer';
 import TradeWindow from './TradeWindow';
 import { nodeShowsQuests, nodeShowsShop } from '../dialogHubs';
 import { idbGet } from '../db';
 import { sfx } from '../sound';
+
+/* v0.123 FRENDY: ОЗВУЧКА ФРАЗОЧЕК — mp3 из assets/frendy/*.mp3 (голос Дмитрий, заниженный питч).
+   Нет файла/не заигрался — фолбэк на системный синтез речи (ru-RU, низкий питч). */
+const FRENDY_VOICE_FILES = import.meta.glob('../assets/frendy/*.mp3', { eager: true, import: 'default', query: '?url' }) as Record<string, string>;
+const FRENDY_VOICE_URLS = Object.keys(FRENDY_VOICE_FILES).sort().map((k) => FRENDY_VOICE_FILES[k]);
 import { BogachPanel } from './BogachPanel'; // v0.109 БОГАЧ: панель донатов хоста
 import { hasDice } from '../bogach'; // v0.109: проверка пакостей/радостей «только для кубиков»
 import { DONATE_DICE_ONLY } from '../types';
@@ -292,7 +297,10 @@ export default function GameScreen() {
   const isQuestSolo = map?.mode === 'quest1p';
   /* v0.104 БОГАЧ: монетная битва — задания общие (qJobs), окна личного задания и выбор вариантов переиспользованы */
   const isBogach = isBogachMode(map?.mode);
-  const myQJob = (isQuest || isBogach) && s ? s.qJobs?.[me] : undefined;
+  /* ---------- v0.123 FRENDY: хеллоуинский хоррор (Freddy Krueger × Dendy) ---------- */
+  const isFrendy = isFrendyMode(map?.mode);
+  const frendy = s?.frendy;
+  const myQJob = (isQuest || isBogach || isFrendy) && s ? s.qJobs?.[me] : undefined;
   const myQTask = s && map && myQJob !== undefined ? cellTaskOf(s, map, myQJob.cellIdx) : null;
   const inStealth = !!mePlayer?.stealth;
   const coinsActive = map?.startCoins !== undefined; // монеты включены на карте
@@ -302,7 +310,7 @@ export default function GameScreen() {
      v0.55 QUEST — СМЕСЬ РЕСУРСОВ: показываем И ПОЛОСКУ HP, И МОНЕТЫ (задания бьют по HP,
      победы дают монеты, монеты нужны для торговли). */
   const questMixed = isQuest;
-  const hpRes = isRubg || map?.resMode === 'hp' || questMixed;
+  const hpRes = isRubg || map?.resMode === 'hp' || questMixed || isFrendy; // v0.123: во FRENDY тоже показываем полоску HP
   const coinsRes = !hpRes && coinsOnly;
   const skipCoinsNeed = Math.max(0, Math.floor(map?.skipCoins ?? SKIP_COINS_DEFAULT)); // цена пропуска в бронзе
   /* v0.104 БОГАЧ: ячейка, где Я выбираю задание (первый вошедший) + список её вариантов */
@@ -324,7 +332,7 @@ export default function GameScreen() {
   const controlsLocked = task?.chaos === 'invertPad';
   // «Штраф ×2»: цена пропуска удваивается (10 вместо 5)
   const skipNeed = SKIP_COST * (task?.chaos === 'skipX2' ? 2 : 1);
-  const invCount = (mePlayer?.inventory?.length ?? 0) + (isQuest ? (mePlayer?.items?.length ?? 0) : 0);
+  const invCount = (mePlayer?.inventory?.length ?? 0) + (isQuest || isFrendy ? (mePlayer?.items?.length ?? 0) : 0);
   const incomingTrades = (s?.trades ?? []).filter((o) => o.to === me && (o.status === 'pending' || o.status === 'countered'));
   const taskRom = task ? st.roms.find((r) => r.id === task.romId) : undefined;
   const isSega = !!taskRom && taskRom.ext !== 'nes';
@@ -681,6 +689,21 @@ export default function GameScreen() {
     }
     return best;
   }, [isQuest, isBogach, s, map, mePlayer, myJourneyPos?.x, myJourneyPos?.y, tick]);
+  /* v0.123 FRENDY: ПЕЧЬ в радиусе (E — окно «Сжечь микросхему») */
+  const nearFurnace = useMemo(() => {
+    if (!isFrendy || !s || s.phase !== 'playing' || !map || !mePlayer || !mePlayer.alive || mePlayer.spect) return null;
+    if (!myJourneyPos) return null;
+    for (let i = 0; i < map.cells.length; i++) {
+      if (map.cells[i].type !== 'furnace') continue;
+      const r = cellRectOf(map, i);
+      if (!r) continue;
+      const dx = Math.max(r.x - myJourneyPos.x, 0, myJourneyPos.x - (r.x + r.w));
+      const dy = Math.max(r.y - myJourneyPos.y, 0, myJourneyPos.y - (r.y + r.h));
+      if (Math.hypot(dx, dy) <= Math.max(140, Math.max(r.w, r.h) * 0.8 + 40)) return { idx: i };
+    }
+    return null;
+  }, [isFrendy, s, map, mePlayer, myJourneyPos?.x, myJourneyPos?.y]);
+  const [furnOpen, setFurnOpen] = useState(false);
   const [dlgNpcId, setDlgNpcId] = useState<string | null>(null);
   const [dlgNode, setDlgNode] = useState<string | null>(null);
   const [tradeNpcId, setTradeNpcId] = useState<string | null>(null); // v0.51: открыто окно торговли с NPC
@@ -835,6 +858,8 @@ export default function GameScreen() {
       if (e.key.toLowerCase() === 'e' || e.key.toLowerCase() === 'у') {
         const cur = nearNpc;
         if (cur && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); openDialog(cur.npc.id); } // v0.56: в кат-сцене разговоров нет
+        /* v0.123 FRENDY: E у ПЕЧИ — окно сжигания микросхемы */
+        else if (isFrendy && nearFurnace && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setFurnOpen(true); }
       }
       if (e.key === 'Escape' && dlgNpcId) closeDialog();
       /* v0.56: ESC пропускает кат-сцену (если автор разрешил пропуск);
@@ -857,7 +882,7 @@ export default function GameScreen() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [nearNpc, dlgNpcId]);
+  }, [nearNpc, dlgNpcId, isFrendy, nearFurnace]);
   /* v0.62: отпустили ESC (или окно потеряло фокус) — отсчёт сбрасывается,
      подсказка плавно гаснет; при размонтировании таймер подчищается */
   useEffect(() => {
@@ -1112,6 +1137,15 @@ export default function GameScreen() {
   }, []);
 
   /* v0.53: звуковой сигнал и короткая тряска при захвате (факт захвата — s.qCaptureAt) */
+  /* ---------- v0.123 FRENDY: refs/state хоррора ----------
+     frendyBossSmoothRef — сглаживание позиции Френди между тиками хоста (0.4 с);
+     frendyShout — большой крик фразочки (слышат ВСЕ независимо от расстояния);
+     frendyFlash — красная вспышка удара/поимки, если цель — я. */
+  const frendyBossSmoothRef = useRef<{ x: number; y: number } | null>(null);
+  const lastPhraseTsRef = useRef(0);
+  const lastBossFxTsRef = useRef(0);
+  const [frendyShout, setFrendyShout] = useState<{ text: string; ts: number } | null>(null);
+  const [frendyFlash, setFrendyFlash] = useState(0);
   const lastCaptureRef = useRef(0);
   const walkTileRef = useRef<string | null>(null); // v0.76: последняя плитка СВОЕЙ фишки — вспышка свободного перехода
   const myCaptureTs = bossCatch && s ? s.qCaptureAt?.[me] : undefined;
@@ -1424,7 +1458,7 @@ export default function GameScreen() {
           if (journeyMode) {
             const jp = sess.journeyPos?.[p.id];
             let jdir: TokenDir | undefined;
-            if (p.id === me && p.alive && !p.spect) {
+            if (p.id === me && (p.alive || isFrendy) && !p.spect) { // v0.123: во FRENDY погибший тоже ходит (фишка-наблюдатель)
               let self = journeySelf.current;
               if (!self) {
                 // при появлении считаем фишку УЖЕ СТОЯЩЕЙ во всех зонах порталов, содержащих точку старта,
@@ -1667,6 +1701,7 @@ export default function GameScreen() {
               size: tokSizeJ,
               override: fxAClip?.frames.length ? fxAClip : undefined,
               overrideStart: fxAClip?.frames.length ? fxASt : undefined,
+              ghost: isFrendy && !p.alive && !p.spect, // v0.123: погибший — дефолтная фишка-наблюдатель
             };
           }
 
@@ -1778,6 +1813,7 @@ export default function GameScreen() {
             size: tokSize,
             override: fxBClip?.frames.length ? fxBClip : undefined,
             overrideStart: fxBClip?.frames.length ? fxBSt : undefined,
+            ghost: isFrendy && !p.alive && !p.spect, // v0.123: погибший — дефолтная фишка-наблюдатель
           };
         });
 
@@ -2048,6 +2084,14 @@ export default function GameScreen() {
             npcDrawList.push({ npc: n, def: defN, done });
           }
         }
+        /* v0.123: сглаживание позиции Френди — тики хоста идут 0.4 с, клиент плавно доводит */
+        const fb0 = sess.frendy?.boss ?? null;
+        if (fb0) {
+          const sm = frendyBossSmoothRef.current ?? { x: fb0.x, y: fb0.y };
+          sm.x += (fb0.x - sm.x) * 0.22;
+          sm.y += (fb0.y - sm.y) * 0.22;
+          frendyBossSmoothRef.current = sm;
+        } else frendyBossSmoothRef.current = null;
         drawBoard(ctx, m, {
           view: v, width: w, height: h,
           tileById: tileMapRef.current,
@@ -2087,6 +2131,17 @@ export default function GameScreen() {
             ? Object.fromEntries((m.npcs ?? []).map((n) => [n.id, worldFreezeTs]))
             : undefined,
           npcPin,
+          /* v0.123 FRENDY: предметы на поле + Френди (fxTs переводим из часов Date.now хоста в rAF-часы клиента) */
+          frendyChips: sess.frendy?.chips ?? null,
+          frendyBoss: sess.frendy?.boss
+            ? {
+                x: frendyBossSmoothRef.current?.x ?? sess.frendy.boss.x,
+                y: frendyBossSmoothRef.current?.y ?? sess.frendy.boss.y,
+                fx: sess.frendy.boss.fx,
+                fxTs: sess.frendy.boss.fxTs ? t - (Date.now() - sess.frendy.boss.fxTs) : undefined,
+                targetId: sess.frendy.boss.targetId,
+              }
+            : null,
         });
 
         /* RUBG: оверлей поверх поля — безопасная зона, самолёт, маркеры игры, радиус атаки,
@@ -2165,6 +2220,58 @@ export default function GameScreen() {
     const t = setInterval(() => dispatch({ t: 'rubgTick', id: me }), 1000);
     return () => clearInterval(t);
   }, [isRubg, room?.isHost, me, s?.phase, s]);
+
+  /* ---------- v0.123 FRENDY: тик хоста (~0.4 с) — ИИ Френди (охота/удары/поимка) и подбор микросхем ---------- */
+  useEffect(() => {
+    if (!isFrendy || !room?.isHost || !s) return;
+    if (s.phase !== 'playing') return;
+    const t = setInterval(() => dispatch({ t: 'frendyTick', id: me }), 400);
+    return () => clearInterval(t);
+  }, [isFrendy, room?.isHost, me, s?.phase, s]);
+
+  /* ---------- v0.123 FRENDY: фразочка начала охоты — СЛЫШАТ ВСЕ (лог уже общий; тут крик + озвучка) ---------- */
+  const frendyPhrase = s?.frendy?.phrase;
+  useEffect(() => {
+    if (!frendyPhrase || frendyPhrase.ts === lastPhraseTsRef.current) return;
+    lastPhraseTsRef.current = frendyPhrase.ts;
+    const text = FRENDY_PHRASES[frendyPhrase.n % FRENDY_PHRASES.length] ?? '';
+    setFrendyShout({ text, ts: Date.now() });
+    sfx.frendySpawn();
+    const url = FRENDY_VOICE_URLS.length ? FRENDY_VOICE_URLS[frendyPhrase.n % FRENDY_VOICE_URLS.length] : null;
+    let noVoice = false;
+    try {
+      if (url) {
+        const a = new Audio(url);
+        a.volume = Math.max(0, Math.min(1, useApp.getState().options.volume));
+        a.playbackRate = 0.92; // чуть медленнее и ниже — жутче
+        void a.play().catch(() => { noVoice = true; });
+      } else noVoice = true;
+    } catch { noVoice = true; }
+    if (noVoice && 'speechSynthesis' in window) {
+      try {
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'ru-RU';
+        u.pitch = 0.55;
+        u.rate = 0.9;
+        u.volume = Math.max(0, Math.min(1, useApp.getState().options.volume));
+        window.speechSynthesis.speak(u);
+      } catch { /* нет голоса — фраза остаётся в крике и логе */ }
+    }
+    const t = window.setTimeout(() => setFrendyShout(null), 4200);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [frendyPhrase?.ts]);
+
+  /* ---------- v0.123 FRENDY: звуки атаки/поимки + красная вспышка, если цель — я ---------- */
+  const frendyBossFxTs = s?.frendy?.boss?.fxTs;
+  useEffect(() => {
+    const b = s?.frendy?.boss;
+    if (!b?.fxTs || b.fxTs === lastBossFxTsRef.current) return;
+    lastBossFxTsRef.current = b.fxTs;
+    if (b.fx === 'attack') { sfx.frendyHit(); if (b.targetId === me) setFrendyFlash(Date.now()); }
+    else if (b.fx === 'catch') { sfx.frendyCatch(); if (b.targetId === me) setFrendyFlash(Date.now()); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [frendyBossFxTs]);
 
   /* ---------- RUBG: локальный таймер мини-игры «карман» — время вышло → провал ---------- */
   useEffect(() => {
@@ -2897,6 +3004,14 @@ export default function GameScreen() {
           ))}
         </div>
         <div className="flex items-center gap-1.5 ml-auto">
+          {/* v0.123 FRENDY: счётчик микросхем, таймер кофе, предупреждение охоты */}
+          {isFrendy && frendy && (
+            <>
+              <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-[#ff8b3f]" title="Микросхемы Френди: сожжено/всего · ещё лежит на карте">🔩 {frendy.burned}/{frendy.total}{frendy.chips.length ? ` · на карте ${frendy.chips.length}` : ''}</span>
+              {(() => { const ms = (frendy.coffeeUntil[me] ?? 0) - Date.now(); return ms > 0 ? <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-teal" title="Кофе: иммунитет к ПОИМКЕ Френди (удары — нет)">☕ {Math.ceil(ms / 1000)}с</span> : null; })()}
+              {frendy.boss && frendy.boss.targetId === me && s?.phase === 'playing' && <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-coral blink-hard" title="Френди охотится на тебя — БЕГИ!">😈 ФРЕНДИ ЗА ТОБОЙ!</span>}
+            </>
+          )}
           {myTurn && streaming && <span className="font-pixel text-[7px] text-coral blink-hard">LIVE</span>}
           {/* v0.107: кнопка «🛡 Иммунитеты» убрана — иммунитеты переехали в «Инвентарь» */}
           <GhostBtn small onClick={() => { setInvOpen(true); sfx.click(); }}>
@@ -3127,7 +3242,7 @@ export default function GameScreen() {
         )}
         {mePlayer && !mePlayer.alive && s.phase === 'playing' && (
           <div className="absolute top-14 left-1/2 -translate-x-1/2 hud-chip pixel-corners px-4 py-1.5 border-coral">
-            <span className="font-display uppercase text-[11px] text-coral">Вы выбыли — режим наблюдения</span>
+            <span className="font-display uppercase text-[11px] text-coral">{isFrendy ? '💀 ВЫ ПОГИБЛИ — Френди забрал вас. Вы — фишка-наблюдатель: ходите и смотрите, но ничего не трогаете' : 'Вы выбыли — режим наблюдения'}</span>
           </div>
         )}
 
@@ -3576,6 +3691,39 @@ export default function GameScreen() {
           );
         })()}
 
+        {/* ---------- v0.123 FRENDY: крик фразочки (слышат ВСЕ) + вспышка удара/поимки ---------- */}
+        {frendyShout && (
+          <div key={frendyShout.ts} className="absolute inset-x-0 top-16 z-30 flex justify-center pointer-events-none px-3">
+            <div className="frendy-shout font-display uppercase text-base md:text-xl text-[#ff5d73] bg-[rgba(7,9,18,0.88)] border-2 border-[#ff5d73]/60 pixel-corners px-5 py-2.5 text-center max-w-[92vw]">
+              😈 «{frendyShout.text}»
+            </div>
+          </div>
+        )}
+        {frendyFlash > 0 && Date.now() - frendyFlash < 850 && (
+          <div key={frendyFlash} className="frendy-flash absolute inset-0 z-30 pointer-events-none" style={{ boxShadow: 'inset 0 0 140px 50px rgba(255,45,45,0.6)' }} />
+        )}
+        {/* ---------- v0.123 FRENDY: подсказка у печи + окно «Сжечь микросхему» ---------- */}
+        {isFrendy && nearFurnace && !furnOpen && s?.phase === 'playing' && mePlayer?.alive && !mePlayer.spect && (
+          <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#ff8b3f] bg-[rgba(7,9,18,0.9)] border-2 border-[#ff8b3f]/50">🔥 ПЕЧЬ ФРЕНДИ — нажми <b className="text-paper">E</b></span>
+          </div>
+        )}
+        {isFrendy && furnOpen && (
+          <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.8)] p-3">
+            <div className="pixel-panel pixel-corners p-5 w-full max-w-sm text-center space-y-3">
+              <div className="font-display uppercase text-lg text-[#ff8b3f]">🔥 Печь Френди</div>
+              {frendy && <div className="font-pixel text-[10px] text-dim">Сожжено {frendy.burned} из {frendy.total} — сожгите ВСЕ, чтобы победить</div>}
+              {mePlayer?.items?.some((x) => x.kind === 'frendyChip') ? (
+                <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { dispatch({ t: 'frendyBurn', id: me }); setFurnOpen(false); }}>
+                  🔩 СЖЕЧЬ МИКРОСХЕМУ
+                </PxBtn>
+              ) : (
+                <p className="text-[12px] text-dim">Нечего жечь — принесите МИКРОСХЕМУ Френди 🔩 (они разбросаны по карте и подбираются проходом; Френди может отобрать вашу при поимке).</p>
+              )}
+              <GhostBtn small className="w-full" onClick={() => setFurnOpen(false)}>{Ic.cross(12)} Закрыть</GhostBtn>
+            </div>
+          </div>
+        )}
         {/* ---------- победитель ---------- */}
         {s.phase === 'over' && (
           <div className="absolute inset-0 flex items-center justify-center bg-[rgba(4,6,14,0.78)] z-30 overflow-hidden">
@@ -3607,7 +3755,25 @@ export default function GameScreen() {
                       : `Ресурсы исчерпаны раньше, чем сыграны все ${s.mapless?.total ?? SKILL_TURNS} игр.`}
                   </p>
                 </>
-              ) : s.ending ? (() => {
+              ) : isFrendy ? (() => {
+                /* v0.123 FRENDY: свой финал — сожгли все микросхемы (победа) или все погибли */
+                const won = !!frendy?.won;
+                return (
+                  <>
+                    <div className={`font-pixel text-sm mt-3 title-glow ${won ? 'text-teal' : 'text-coral'}`}>
+                      {won ? 'ФРЕНДИ ПОВЕРЖЕН!' : 'КОШМАР ПОБЕДИЛ'}
+                    </div>
+                    <div className="font-display uppercase text-2xl text-paper mt-2" style={{ color: won && winner ? PLAYER_COLORS[winner.color] : undefined }}>
+                      {won ? (winner ? winner.name : 'ПОБЕДА') : 'ВСЕ ПОГИБЛИ…'}
+                    </div>
+                    <p className="text-[12px] text-dim mt-2">
+                      {won
+                        ? `Все ${frendy?.total ?? '?'} микросхем из кости Френди сожжены в печи — хеллоуин спасён!`
+                        : 'Френди утащил последнего игрока в свой кошмар. В следующий раз жгите микросхемы быстрее… и не забывайте про кофе ☕'}
+                    </p>
+                  </>
+                );
+              })() : s.ending ? (() => {
                 const e = (map.endings ?? []).find((x) => x.id === s.ending!.endingId);
                 const ep = s.players.find((x) => x.id === s.ending!.playerId);
                 return (
@@ -4333,7 +4499,7 @@ export default function GameScreen() {
       {/* ==================== QUEST / БОГАЧ: интерфейс режима ====================
           v0.104: в БОГАЧЕ окно задания общее — играют ВСЕ вошедшие на ячейку;
           вместо «Уйти = поражение» — «Пропустить» за монеты (иммунитет — бесплатно). */}
-      {(isQuest || isBogach) && s.phase === 'playing' && mePlayer && mePlayer.alive && !mePlayer.spect && (
+      {(isQuest || isBogach || isFrendy) && s.phase === 'playing' && mePlayer && mePlayer.alive && !mePlayer.spect && (
         <>
           {/* ЛИЧНОЕ ЗАДАНИЕ (на доверии, как в RUBG): вошёл в ячейку — играй ИНДИВИДУАНО.
               Других не останавливает, трансляции нет (в QUEST SOLO хост стримит зрителям). */}
@@ -5473,6 +5639,41 @@ function InventoryModal({ onClose }: { onClose: () => void }) {
                       onClick={() => dispatch({ t: 'rubgUseItem', id: me!, itemId: it.id })}
                     >Выпить</PxBtn>
                   )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ---------- v0.123 FRENDY: кошмарный рюкзак — чип только выбросить, аптечка лечит, кофе — иммунитет ---------- */}
+        {isFrendyMode(map?.mode) && rubgInv.length > 0 && (
+          <div className="border-2 border-[#ff6b35]/60 px-3 py-2.5 mb-4 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="tick-label text-[#ff6b35]">🎃 Кошмарный рюкзак · предметов {rubgInv.length}</span>
+              <span className="tick-label text-faint">аптечка лечит · кофе — 5 мин без поимки · чип — только в ПЕЧЬ</span>
+            </div>
+            {rubgInv.map((it: RubgItem) => {
+              const meta = RUBG_ITEMS[it.kind];
+              const chip = it.kind === 'frendyChip';
+              const heal = it.kind === 'medkit' || it.kind === 'flask' || it.kind === 'bigmed';
+              const coffee = it.kind === 'coffee';
+              const hpFull = (mePlayer?.hp ?? 100) >= 100;
+              return (
+                <div key={it.id} className="flex items-center gap-2 px-2 py-1.5 border-2 border-edge">
+                  <span>{meta.icon}</span>
+                  <span className="font-display text-[11px] text-paper min-w-0 truncate">{meta.name}{chip ? ' (из кости Френди)' : ''}</span>
+                  <span className="ml-auto tick-label text-faint shrink-0" title={chip ? 'Сжечь можно только в ПЕЧИ — подойди и нажми E' : coffee ? '5 минут иммунитета к ПОИМКЕ Френди (бить всё равно может)' : `Восстанавливает ${meta.hp}% HP`}>{chip ? 'сжечь в печи' : coffee ? 'иммунитет 5 мин' : `+${meta.hp}% HP`}</span>
+                  {(heal || coffee) && (
+                    <PxBtn
+                      small
+                      color={coffee ? 'gold' : 'teal'}
+                      disabled={heal && hpFull}
+                      className={heal && hpFull ? 'opacity-40' : ''}
+                      title={heal && hpFull ? 'Полоска HP полна' : undefined}
+                      onClick={() => dispatch({ t: 'frendyUse', id: me!, itemId: it.id })}
+                    >{coffee ? 'Выпить' : 'Лечить'}</PxBtn>
+                  )}
+                  <GhostBtn small onClick={() => dispatch({ t: 'frendyDrop', id: me!, itemId: it.id })}>Выбросить</GhostBtn>
                 </div>
               );
             })}
