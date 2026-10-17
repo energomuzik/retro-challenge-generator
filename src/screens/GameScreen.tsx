@@ -2244,18 +2244,21 @@ export default function GameScreen() {
     return () => clearInterval(t);
   }, [isRubg, room?.isHost, me, s?.phase, s]);
 
-  /* ---------- v0.123 FRENDY: тик хоста (~0.4 с) — ИИ Френди (охота/удары/поимка) и подбор микросхем ---------- */
+  /* ---------- v0.123 FRENDY: тик хоста (~0.4 с) — ИИ Френди (охота/удары/поимка) и подбор микросхем ----------
+     v0.125: во время интро-катсцены ИИ ЗАМОРОЖЕН (мир стоит, фраз охоты нет — раньше просыпался
+     на 25-й секунде и говорил поверх зависшей катсцены) */
   useEffect(() => {
-    if (!isFrendy || !room?.isHost || !s) return;
+    if (!isFrendy || !room?.isHost || !s || frendyIntro) return;
     if (s.phase !== 'playing') return;
     const t = setInterval(() => dispatch({ t: 'frendyTick', id: me }), 400);
     return () => clearInterval(t);
-  }, [isFrendy, room?.isHost, me, s?.phase, s]);
+  }, [isFrendy, room?.isHost, me, s?.phase, s, frendyIntro]);
 
-  /* ---------- v0.123 FRENDY: фразочка начала охоты — СЛЫШАТ ВСЕ (лог уже общий; тут крик + озвучка) ---------- */
+  /* ---------- v0.123 FRENDY: фразочка начала охоты — СЛЫШАТ ВСЕ (лог уже общий; тут крик + озвучка) ----------
+     v0.125: во время интро-катсцены молчим (ts не запоминаем — фраза прозвучит после катсцены) */
   const frendyPhrase = s?.frendy?.phrase;
   useEffect(() => {
-    if (!frendyPhrase || frendyPhrase.ts === lastPhraseTsRef.current) return;
+    if (!frendyPhrase || frendyPhrase.ts === lastPhraseTsRef.current || frendyIntro) return;
     lastPhraseTsRef.current = frendyPhrase.ts;
     const text = FRENDY_PHRASES[frendyPhrase.n % FRENDY_PHRASES.length] ?? '';
     setFrendyShout({ text, ts: Date.now() });
@@ -2295,7 +2298,7 @@ export default function GameScreen() {
     const t = window.setTimeout(() => setFrendyShout(null), 4200);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [frendyPhrase?.ts]);
+  }, [frendyPhrase?.ts, frendyIntro]);
 
   /* ---------- v0.124 FRENDY: ИНТРО-КАТСЦЕНА в начале раунда — когда у карты НЕТ своих кат-сцен «старт»:
      появление Френди + фраза («Добро пожаловать в мой мир…»), потом Френди исчезает — конец. Один раз на партию. */

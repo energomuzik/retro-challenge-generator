@@ -22,18 +22,19 @@ import { sfx } from '../sound';
 const vol = (): number => Math.max(0, Math.min(1, useApp.getState().options.volume ?? 0.8));
 const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
-function playUrl(url: string | null, rate = 0.95): HTMLAudioElement | null {
+function makeAudio(url: string | null, rate = 0.95): HTMLAudioElement | null {
   if (!url) return null;
   try {
     const a = new Audio(url);
     a.volume = vol();
     a.playbackRate = rate;
-    void a.play().catch(() => { /* автоплей может быть заблокирован до первого клика — молчим */ });
     return a;
   } catch { return null; }
 }
 
-/** Последовательное проигрывание озвучки; onDone — после последней или по капу (страховка). */
+/** Последовательное проигрывание озвучки; onDone — после последней или по капу (страховка).
+    v0.125: если автоплей заблокирован (play() отклонён) — НЕ ждём кап целиком, идём дальше
+    через 350 мс: катсцена обязана закончиться при любом раскладе (баг v124 — вечное интро). */
 function playSeq(urls: (string | null)[], onDone: () => void, capMs = 16000): () => void {
   let cancelled = false;
   let fired = false;
@@ -43,9 +44,16 @@ function playSeq(urls: (string | null)[], onDone: () => void, capMs = 16000): ()
   const playAt = (i: number) => {
     if (cancelled) return;
     if (i >= urls.length || !urls[i]) { fire(); return; }
-    audio = playUrl(urls[i]);
-    if (!audio) { playAt(i + 1); return; }
-    audio.onended = () => { if (!cancelled) playAt(i + 1); };
+    const a = makeAudio(urls[i]);
+    if (!a) { playAt(i + 1); return; }
+    audio = a;
+    let advanced = false;
+    const next = () => { if (!advanced && !cancelled) { advanced = true; playAt(i + 1); } };
+    a.onended = next;
+    try {
+      const p = a.play();
+      if (p && typeof p.catch === 'function') p.catch(() => { window.setTimeout(next, 350); });
+    } catch { window.setTimeout(next, 350); }
   };
   playAt(0);
   return () => { cancelled = true; clearTimeout(cap); try { audio?.pause(); } catch { /* noop */ } };
@@ -105,6 +113,17 @@ export function FrendyIntroCine({ onDone }: { onDone: () => void }) {
     return () => { clearTimeout(t0); stopRef.current?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  /* v0.125 ФИКС БАГА v124: после stage 2 (затемнение) сцена ОБЯЗАНА кончиться — раньше
+     onDone не вызывался вовсе, оверлей навсегда закрывал экран и кнопки не нажимались. */
+  const doneRef = useRef(false);
+  useEffect(() => {
+    if (stage < 2 || doneRef.current) return;
+    doneRef.current = true;
+    stopRef.current?.();
+    const t = window.setTimeout(onDone, 850); // 0.7s cine-fadeout + запас
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage]);
   return (
     <div className={`fixed inset-0 z-[80] flex items-center justify-center bg-black ${stage >= 2 ? 'cine-fadeout' : 'cine-fadein'}`}>
       <button onClick={() => { stopRef.current?.(); onDone(); }} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#5b2430] text-[#b98490] font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-[#ff5d73] cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить ✕</button>
