@@ -411,6 +411,10 @@ export interface BoardDrawOpts {
   /* v0.53: ХАБ-ПЛИТКА (номер с 1) — видна на карте мира ВСЕГДА, туман её не скрывает;
      на плане рисуется табличка «ХАБ». Ставится в редакторе карт (map.hubPlate). */
   hubPlate?: number | null;
+  /* v0.124: ТУМАН НЕОТКРЫТЫХ КАРТ-ПЛИТОК (плиточный режим + «скрывать не открытые» / FRENDY):
+     ID карт-плиток, которые на карте мира/заглядывании залиты темнотой — не видно ни локаций,
+     ни предметов (микросхем Френди). Плитка открывается, когда туда доходит любой игрок. */
+  hiddenTiles?: string[] | null;
   /* v0.55: снятые квестами стены — ДВЕРИ (стены с key) таких стен не рисуем */
   wallsRemoved?: string[];
   /* ---------- ПАТРУЛИРОВАНИЕ (v0.52.0) ----------
@@ -1799,6 +1803,25 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       ctx.textBaseline = 'middle';
       ctx.fillText(label, hx + 7, hy + 12);
       ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  /* v0.124: ТУМАН НЕОТКРЫТЫХ КАРТ-ПЛИТОК — тот же принцип, что и у комнат выше, но для
+   плиточного режима (карты-плитки). Ставится ПОСЛЕ фишек/предметов/Френди — накрывает их:
+   на неоткрытой плитке не видно ничего, включая разбросанные микросхемы. */
+  if (o.hiddenTiles && o.hiddenTiles.length > 0 && map.tileGrid) {
+    const tg = map.tileGrid;
+    const hideSet = new Set(o.hiddenTiles);
+    ctx.save();
+    for (const tile of tg.tiles) {
+      if (!hideSet.has(tile.id)) continue;
+      const tr = { x: tile.col * tg.w, y: tile.row * tg.h, w: tg.w, h: tg.h };
+      ctx.fillStyle = 'rgba(3,4,9,0.97)';
+      ctx.fillRect(tr.x - 1, tr.y - 1, tr.w + 2, tr.h + 2);
+      ctx.strokeStyle = 'rgba(255,107,53,0.22)'; // тусклая рамка «здесь есть карта-плитка»
+      ctx.lineWidth = 1.5 / Math.max(0.05, view.zoom);
+      ctx.strokeRect(tr.x, tr.y, tr.w, tr.h);
     }
     ctx.restore();
   }

@@ -28,9 +28,9 @@ import { idbGet } from '../db';
 import { sfx } from '../sound';
 
 /* v0.123 FRENDY: ОЗВУЧКА ФРАЗОЧЕК — mp3 из assets/frendy/*.mp3 (голос Дмитрий, заниженный питч).
-   Нет файла/не заигрался — фолбэк на системный синтез речи (ru-RU, низкий питч). */
-const FRENDY_VOICE_FILES = import.meta.glob('../assets/frendy/*.mp3', { eager: true, import: 'default', query: '?url' }) as Record<string, string>;
-const FRENDY_VOICE_URLS = Object.keys(FRENDY_VOICE_FILES).sort().map((k) => FRENDY_VOICE_FILES[k]);
+   v0.124: сопоставление файлов ЯВНОЕ (по имени) — модуль ../frendyVoice; нет файла — фолбэк на синтез речи. */
+import { frendyPhraseVoice, frendyLaughVoice } from '../frendyVoice';
+import { FrendyIntroCine, EndCredits } from './FrendyCine'; // v0.124: интро-катсцена + титры со стингером
 import { BogachPanel } from './BogachPanel'; // v0.109 БОГАЧ: панель донатов хоста
 import { hasDice } from '../bogach'; // v0.109: проверка пакостей/радостей «только для кубиков»
 import { DONATE_DICE_ONLY } from '../types';
@@ -149,6 +149,13 @@ export default function GameScreen() {
   const [visitedCnt, setVisitedCnt] = useState(0);
   const [roomNumUi, setRoomNumUi] = useState<number | null>(null);
   const [roomFlashTs, setRoomFlashTs] = useState(0);
+  /* ---------- v0.124 FRENDY: катсцены, титры и туман карт-плиток ---------- */
+  /* visitedTilesRef — открытые КАРТЫ-ПЛИТКИ (ид) для тумана «скрывать не открытые»
+     (плиточный режим + опция карты / FRENDY): пополняется по позициям фишек каждый кадр. */
+  const visitedTilesRef = useRef<Set<string>>(new Set());
+  const [frendyIntro, setFrendyIntro] = useState(false); // интро-катсцена в начале раунда
+  const [creditsOpen, setCreditsOpen] = useState(false); // титры/финальные катсцены
+  const introShownRef = useRef(''); // код партии, для которой интро уже показано
   const [isFs, setIsFs] = useState(false);
   const emuWrapRef = useRef<HTMLDivElement>(null);
   const prevPeekRef = useRef(false);
@@ -1458,7 +1465,7 @@ export default function GameScreen() {
           if (journeyMode) {
             const jp = sess.journeyPos?.[p.id];
             let jdir: TokenDir | undefined;
-            if (p.id === me && (p.alive || isFrendy) && !p.spect) { // v0.123: во FRENDY погибший тоже ходит (фишка-наблюдатель)
+            if (p.id === me && (p.alive || isFrendy) && !p.spect && !frendyIntro) { // v0.123: во FRENDY погибший тоже ходит (фишка-наблюдатель); v0.124: во время интро-катсцены мир стоит
               let self = journeySelf.current;
               if (!self) {
                 // при появлении считаем фишку УЖЕ СТОЯЩЕЙ во всех зонах порталов, содержащих точку старта,
@@ -1859,10 +1866,13 @@ export default function GameScreen() {
           const followId = journeyMode && journeyFree ? me : act?.id;
           const followP = followId ? dispRef.current[followId] : undefined;
           const baseZx = Math.min(2.1, Math.max(0.7, Math.min(w, h) / (CELL * 7.2)));
-          /* v0.99: приближение при движении — ТОЛЬКО по опции followZoom (по умолчанию ВЫКЛ:
+          /* v0.99: приближение при движении — по опции followZoom (по умолчанию ВЫКЛ:
              карта не «наезжает», камера просто едет за фишкой). ВКЛ — прежнее поведение:
-             во время движения зум ×1.5. Слежение (жёсткость догоняния ниже) не тронуто. */
-          const focus = options.followZoom && anyoneMoving ? 1.5 : 1.0;
+             во время движения зум ×1.5. Слежение (жёсткость догоняния ниже) не тронуто.
+             v0.124: ПЛИТОЧНЫЙ РЕЖИМ — приближение ВКЛЮЧАЕТСЯ ПРИНУДИТЕЛЬНО в ЛЮБОЙ игре
+             с картами-плитками, независимо от того, что выбрано в Опциях (см. историю партии). */
+          const tileForceZoom = !!m.tileGrid && m.tileGrid.tiles.length > 0;
+          const focus = (options.followZoom || tileForceZoom) && anyoneMoving ? 1.5 : 1.0;
           const zx = Math.min(2.6, baseZx * focus);
           const msz = mapSize(m);
           let gx = (followP?.x ?? msz.w / 2) + lookPanRef.current.x;
@@ -2092,6 +2102,18 @@ export default function GameScreen() {
           sm.y += (fb0.y - sm.y) * 0.22;
           frendyBossSmoothRef.current = sm;
         } else frendyBossSmoothRef.current = null;
+        /* v0.124: ТУМАН НЕОТКРЫТЫХ КАРТ-ПЛИТОК на карте мира (опция карты «скрывать не открытые»
+           или FRENDY — чтобы не разглядеть микросхемы заранее). Открытой считается плитка, куда
+           ДОШЁЛ хоть один игрок (по позициям фишек каждый кадр); однажды открытая — не гаснет. */
+        let hiddenTiles: string[] | null = null;
+        if (m.tileGrid && (m.hideUnopenedTiles || isFrendy) && (viewMode === 'world' || peekMap)) {
+          const tgF = m.tileGrid;
+          for (const tok of tokens) {
+            const tt = tileAt(tgF, tok.x, tok.y);
+            if (tt) visitedTilesRef.current.add(tt.id);
+          }
+          hiddenTiles = tgF.tiles.map((t2) => t2.id).filter((id) => !visitedTilesRef.current.has(id));
+        }
         drawBoard(ctx, m, {
           view: v, width: w, height: h,
           tileById: tileMapRef.current,
@@ -2117,6 +2139,7 @@ export default function GameScreen() {
             ? [...new Set([...visitedPlatesRef.current, ...(sess.openPlates ?? [])])]
             : null,
           hubPlate: roomsMap ? (m.hubPlate ?? null) : null,
+          hiddenTiles, // v0.124: туман неоткрытых карт-плиток (карта мира/заглядывание)
           /* v0.55: снятые квестами стены — двери (стены с key) с них не рисуются */
           wallsRemoved: sess.wallsRemoved,
           /* ПАТРУЛИРОВАНИЕ (v0.52): боссы и NPC с маршрутом рисуются в текущей точке —
@@ -2237,7 +2260,7 @@ export default function GameScreen() {
     const text = FRENDY_PHRASES[frendyPhrase.n % FRENDY_PHRASES.length] ?? '';
     setFrendyShout({ text, ts: Date.now() });
     sfx.frendySpawn();
-    const url = FRENDY_VOICE_URLS.length ? FRENDY_VOICE_URLS[frendyPhrase.n % FRENDY_VOICE_URLS.length] : null;
+    const url = frendyPhraseVoice(frendyPhrase.n); // v0.124: явное имя файла — frendy-N.mp3 (порядок = FRENDY_PHRASES)
     let noVoice = false;
     try {
       if (url) {
@@ -2245,6 +2268,18 @@ export default function GameScreen() {
         a.volume = Math.max(0, Math.min(1, useApp.getState().options.volume));
         a.playbackRate = 0.92; // чуть медленнее и ниже — жутче
         void a.play().catch(() => { noVoice = true; });
+        /* v0.124: после фразы — ЗЛОЙ СМЕХ (смех звучит вместе с фразами — фирменная манера Френди) */
+        a.onended = () => {
+          const lu = frendyLaughVoice(Math.floor(Math.random() * 2)); // laugh-0/1
+          if (lu) {
+            try {
+              const la = new Audio(lu);
+              la.volume = Math.max(0, Math.min(1, useApp.getState().options.volume));
+              la.playbackRate = 0.95;
+              void la.play().catch(() => { /* noop */ });
+            } catch { /* noop */ }
+          }
+        };
       } else noVoice = true;
     } catch { noVoice = true; }
     if (noVoice && 'speechSynthesis' in window) {
@@ -2261,6 +2296,30 @@ export default function GameScreen() {
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frendyPhrase?.ts]);
+
+  /* ---------- v0.124 FRENDY: ИНТРО-КАТСЦЕНА в начале раунда — когда у карты НЕТ своих кат-сцен «старт»:
+     появление Френди + фраза («Добро пожаловать в мой мир…»), потом Френди исчезает — конец. Один раз на партию. */
+  const started = s?.startedAt ?? 0;
+  useEffect(() => {
+    if (!isFrendy || !started || !map) return;
+    if (s?.phase !== 'playing') return;
+    const key = `${s?.code ?? ''}|${started}`;
+    if (introShownRef.current === key) return;
+    if ((map.cutscenes ?? []).some((c) => c.trigger === 'start' && (c.pts ?? []).length >= 1)) return; // у карты своё кино
+    introShownRef.current = key;
+    setFrendyIntro(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFrendy, started, s?.phase, s?.code, map]);
+
+  /* ---------- v0.124: ТИТРЫ в конце партии (ЛЮБОЙ режим) + во FRENDY перед ними — победная катсцена
+     (печь + кто положил последнюю микросхему + Френди сгорает). Показ: phase === 'over'.
+     Информация титров локальная — на сайт не уходит и после показа не нужна. */
+  const over = s?.phase === 'over';
+  useEffect(() => {
+    if (!over || !s || !map) return;
+    setCreditsOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [over]);
 
   /* ---------- v0.123 FRENDY: звуки атаки/поимки + красная вспышка, если цель — я ---------- */
   const frendyBossFxTs = s?.frendy?.boss?.fxTs;
@@ -3724,8 +3783,12 @@ export default function GameScreen() {
             </div>
           </div>
         )}
+        {/* ---------- v0.124 FRENDY: интро-катсцена в начале раунда (появление + фраза + исчезновение) ---------- */}
+        {frendyIntro && <FrendyIntroCine onDone={() => setFrendyIntro(false)} />}
+        {/* ---------- v0.124: титры (все режимы) + во FRENDY перед ними победная катсцена; в конце стингер Френди ---------- */}
+        {creditsOpen && s && map && <EndCredits map={map} sess={s} isFrendy={isFrendy} onClose={() => setCreditsOpen(false)} />}
         {/* ---------- победитель ---------- */}
-        {s.phase === 'over' && (
+        {s.phase === 'over' && !creditsOpen && ( // v0.124: пока идут титры/финальные катсцены — панель под ними скрыта
           <div className="absolute inset-0 flex items-center justify-center bg-[rgba(4,6,14,0.78)] z-30 overflow-hidden">
             {[...Array(36)].map((_, i) => (
               <span

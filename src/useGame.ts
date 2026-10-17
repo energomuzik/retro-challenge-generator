@@ -107,7 +107,9 @@ let lastAutosave = 0;
 let lastAutosaveTurn = -1;
 let autoSlotByCode: Record<string, number> = {};
 async function autosaveSession(next: GameSession) {
-  if (next.phase === 'lobby') return; // в лобби сохранять нечего
+  /* v0.124: партия ЗАВЕРШЕНА (победа/поражение) — автосейв НЕ пишем: на титрах
+     сохраняться нельзя, финальное состояние не должно затирать автослоты */
+  if (next.phase === 'lobby' || next.phase === 'over') return; // в лобби сохранять нечего
   const st = useApp.getState();
   if (!st.sessionMap) return;
   const now = Date.now();

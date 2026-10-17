@@ -532,6 +532,7 @@ export default function MapEditor() {
   const folderRef = useRef<HTMLInputElement>(null);
   const filesRef = useRef<HTMLInputElement>(null);
   const bgRef = useRef<HTMLInputElement>(null);
+  const credRef = useRef<HTMLInputElement>(null); // v0.124: выбор мелодии титров (вшивается в карту)
   const extRef = useRef<HTMLInputElement>(null);
   const ghostRef = useRef<HTMLImageElement | null>(null);
   const ghostAnimRef = useRef<HTMLImageElement | null>(null); // первый кадр выбранной для размещения анимации (натуральный размер)
@@ -1663,6 +1664,20 @@ export default function MapEditor() {
     const r = await importImage(f, 2000, true);
     if (!r) { toast('Это не картинка', 'err'); return; }
     applyBgUrl(r.url, 'загружен');
+  };
+
+  /* v0.124: МЕЛОДИЯ ТИТРОВ — музыкальный файл вшивается В КАРТУ (data-URL, как фон):
+   играет во время титров в конце партии (любой режим); на сервер не заливается. */
+  const setCreditsMusic = (files: FileList | null) => {
+    const f = files?.[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      updMap({ creditsMusic: String(rd.result || '') } as Partial<GameMap>);
+      sfx.coin();
+      toast('Мелодия титров вшита в карту — играет во время титров в конце партии (любой режим)', 'ok');
+    };
+    rd.readAsDataURL(f);
   };
 
   /* v0.99: выбор фона из УЖЕ ГОТОВЫХ тайлов карты (например, из спойлера «Апскейл» —
@@ -3274,6 +3289,24 @@ export default function MapEditor() {
       patch.zonePhases = undefined;
       patch.zoneSec = undefined;
     }
+    /* v0.124 FRENDY — АВТОМАТИЧЕСКИЕ НАСТРОЙКИ при выборе режима: плиточный режим +
+       «Невидимые соседи · свободный переход» + «скрывать не открытые плитки»
+       (иначе с карты мира можно заранее разглядеть, где лежат микросхемы Френди). */
+    if (id === 'frendy') {
+      const cur = mapRef.current;
+      if (!cur?.tileGrid) {
+        const szF = cur ? mapSize(cur) : { w: 20 * CELL, h: 15 * CELL };
+        patch.tileGrid = { w: szF.w, h: szF.h, tiles: [{ id: uid('mt'), col: 0, row: 0 }], play: 'free-hidden' };
+        extra += ' Включён ПЛИТОЧНЫЙ РЕЖИМ («Невидимые соседи · свободный переход») — всё поле стало картой №1.';
+      } else if (tilePlayOf(cur.tileGrid) !== 'free-hidden') {
+        patch.tileGrid = { ...cur.tileGrid, play: 'free-hidden' };
+        extra += ' Тип игры плиток: «Невидимые соседи · свободный переход».';
+      }
+      if (!cur?.hideUnopenedTiles) {
+        patch.hideUnopenedTiles = true;
+        extra += ' «Скрывать не открытые плитки» включена автоматически (иначе не спрятать микросхемы).';
+      }
+    }
     updMap(patch);
     sfx.coin();
     toast(`Режим ${MAP_MODES.find((x) => x.id === id)?.name ?? id}: пресет — ${pr.startMin} мин / ${pr.startTries} поп., ход фишек плавный.${extra}`, 'ok');
@@ -3334,6 +3367,19 @@ export default function MapEditor() {
     /* v0.123 FRENDY: ровно ОДНА печь + минимум 10 ячеек с заданием (Френди оттаскивает пойманных к случайной);
        в ДРУГИХ режимах печь запрещена (как ящики в не-RUBG) */
     if ((map.mode ?? 'classic') === 'frendy') {
+      /* v0.124: обязателен ПЛИТОЧНЫЙ РЕЖИМ (механика Джорни/Айзека — свобода охоты за микросхемами) */
+      if (!map.tileGrid) {
+        sfx.fail();
+        toast('FRENDY: обязателен ПЛИТОЧНЫЙ РЕЖИМ — нажмите кнопку режима FRENDY вверху ещё раз (плиточный режим включится автоматически) или включите его в спойлере «Карты-плитки»', 'err');
+        return;
+      }
+      /* v0.124: обязательна «скрывать не открытые плитки» — иначе карту мира видно целиком
+         и расположение микросхем Френди раскрывается заранее */
+      if (!map.hideUnopenedTiles) {
+        sfx.fail();
+        toast('FRENDY: включите «СКРЫВАТЬ НЕ ОТКРЫТЫЕ ПЛИТКИ» (спойлер «Карты-плитки») — иначе игроки заранее разглядят расположение всех микросхем на карте мира. Без этой опции карту сохранить нельзя', 'err');
+        return;
+      }
       const fCnt = map.cells.filter((c) => c.type === 'furnace').length;
       if (fCnt !== 1) {
         sfx.fail();
@@ -3663,6 +3709,19 @@ export default function MapEditor() {
                 )}
                 {/* v0.99: фон можно взять ИЗ ТАЙЛОВ карты — например, уже заапскейленную карту мира из спойлера «Апскейл» */}
                 <GhostBtn small className="w-full mt-1.5" onClick={() => { setBgPick(true); sfx.hover(); }} title="Выбрать картинку фона из тайлов этой карты — например, из спойлера «Апскейл» (заапскейленная карта мира)">🖼 Взять фон из тайлов карты</GhostBtn>
+                {/* v0.124: МЕЛОДИЯ ТИТРОВ — вшивается в карту, играет в конце партии */}
+                <div className="mt-3 pt-2 border-t-2 border-edge">
+                  <div className="tick-label mb-1.5">🎵 Мелодия титров</div>
+                  {map.creditsMusic ? (
+                    <div className="space-y-1">
+                      <audio controls src={map.creditsMusic} className="w-full h-8" />
+                      <GhostBtn small className="w-full" onClick={() => { updMap({ creditsMusic: undefined }); sfx.fail(); }}>Убрать мелодию титров</GhostBtn>
+                    </div>
+                  ) : (
+                    <GhostBtn small className="w-full" onClick={() => { credRef.current?.click(); }}>{Ic.plus(12)} Добавить мелодию в титры</GhostBtn>
+                  )}
+                  <p className="text-[9px] text-faint leading-tight mt-1">Музыка играет во время титров в конце партии (в любом режиме). Во FRENDY на стингере Френди она замирает и продолжает с того же места. Файл вшивается В КАРТУ — на сервер не заливается.</p>
+                </div>
               </div>
 
               {/* СЛОИ: фон — самый низ, тайловые слои (выбор + добавление), ячейки и стрелки — всегда самый верх */}
@@ -4273,7 +4332,11 @@ export default function MapEditor() {
                           </div>
                           {tileBgCount > 0 && <p className="text-[9px] text-teal mt-1 leading-tight"><span className="inline-block w-1.5 h-1.5 bg-teal align-middle mr-0.5" /> — у карты свой фон ({tileBgCount} шт., загрузка в панели «Фон» выше)</p>}
                         </div>
-                        <PxBtn color="teal" small className="w-full" onClick={addMapTile}>{Ic.plus(12)} Добавить карту-плитку</PxBtn>
+                        <div className="flex gap-1.5">
+                          <PxBtn color="teal" small className="flex-1" onClick={addMapTile}>{Ic.plus(12)} Добавить карту-плитку</PxBtn>
+                          {/* v0.124: дубль загрузки фона — рядом с добавлением плитки (раньше кнопка была только вверху левой колонки — далеко крутить роликом) */}
+                          <PxBtn color="gold" small className="flex-1" onClick={() => { setBgScope('plate'); setTimeout(() => bgRef.current?.click(), 0); }} title="Загрузить фон для КАРТЫ-ПЛИТКИ, на которую сейчас смотрит камера (дубль кнопки из панели «Фон» выше — чтобы не крутить роликом кверху)">{Ic.plus(12)} Добавить фон плитке</PxBtn>
+                        </div>
                         <p className="text-[10px] text-faint leading-tight">Новая плитка встаёт на свободный слот рядом с выбранной. Схему стройте КАК УГОДНО: «+ столбец / + ряд» добавляют пустые ряды и столбцы (хоть 6 вправо и 3 вниз), «−» убирает пустой край. Перетаскивание ПЛАВНОЕ: зажали ЛКМ — плитка приподнялась, за курсором едет призрак «КАРТА N → сюда», отпустили — плитка доезжает до слота (на свободный или обмен с другой — вместе с содержимым). «⛶ Весь экран» — вся схема на мониторе. Порталы связывают ЛЮБЫЕ плитки.</p>
                         {/* v0.76: ТИП ИГРЫ КАРТ-ПЛИТОК — видимость соседей × способ перехода (во время игры) */}
                         <div className="border-2 border-edge px-2 py-1.5 space-y-1">
@@ -4294,6 +4357,14 @@ export default function MapEditor() {
                           })}
                           <p className="text-[9px] text-faint leading-tight">Старые карты без выбора играются как «Невидимые соседи · порталы».</p>
                         </div>
+                        {/* v0.124: скрывать не открытые плитки на карте мира (FRENDY — обязательна) */}
+                        <label className={`flex items-start gap-2 border-2 px-2 py-1.5 cursor-pointer ${map.hideUnopenedTiles ? 'border-teal text-teal bg-teal/10' : 'border-edge text-faint hover:text-dim'}`}>
+                          <input type="checkbox" checked={!!map.hideUnopenedTiles} onChange={() => { updMap({ hideUnopenedTiles: !map.hideUnopenedTiles }); sfx.hover(); }} className="mt-0.5 accent-[#2ee6a8] cursor-pointer" />
+                          <span>
+                            <span className="font-display text-[9px] uppercase block">Скрывать не открытые плитки на карте мира</span>
+                            <span className="text-[9px] leading-tight block text-faint">«Карта мира» и заглядывание показывают только посещённые карты-плитки — остальное под туманом. Во FRENDY включается автоматически и обязательна: без неё видно, где лежат микросхемы.</span>
+                          </span>
+                        </label>
                         <PxBtn color="coral" small className="w-full" onClick={disableTileMode}>Выключить плиточный режим</PxBtn>
                       </>
                     )}
@@ -5620,6 +5691,7 @@ export default function MapEditor() {
       <input ref={folderRef} type="file" multiple accept="image/*" style={{ display: 'none' }} {...({ webkitdirectory: 'true', directory: 'true' } as Record<string, string>)} onChange={(e) => { void addTileFiles(e.target.files, 'folder'); e.currentTarget.value = ''; }} />
       <input ref={filesRef} type="file" multiple accept="image/*" style={{ display: 'none' }} onChange={(e) => { void addTileFiles(e.target.files, 'files'); e.currentTarget.value = ''; }} />
       <input ref={bgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { void setBg(e.target.files); e.currentTarget.value = ''; }} />
+      <input ref={credRef} type="file" accept="audio/*" style={{ display: 'none' }} onChange={(e) => { setCreditsMusic(e.target.files); e.currentTarget.value = ''; }} />
       <input ref={extRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { void openExtract(e.target.files?.[0]); e.currentTarget.value = ''; }} />
       <input ref={upFileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { void takeUpscaleFile(e.target.files?.[0]); e.currentTarget.value = ''; }} />
 

@@ -538,7 +538,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
        v0.104: СОЛО-режимы (classic1p/journey1p/quest1p) — тоже: «остался один»
        это НОРМА (игрок один!), мгновенного конца нет: победа — soloTasksWin
        (строка ниже по потоку), поражение — на нуле ресурсов (checkEnd). */
-    if (al.length === 0 || (al.length <= 1 && map.mode !== 'skill' && !isSoloMode(map.mode))) {
+    /* v0.124 ФИКС: во FRENDY партия НЕ заканчивается, когда остался ОДИН живой — конец
+       только когда погибли ВСЕ (al.length === 0, проверка ниже по потоку в checkElim)
+       или сожжены все микросхемы (frendyBurn). Раньше nextTurn «закрывал» партию после
+       первой же смерти с надписью «КОШМАР ПОБЕДИЛ», хотя на карте оставался игрок. */
+    if (al.length === 0 || (!isFrendyMode(map.mode) && al.length <= 1 && map.mode !== 'skill' && !isSoloMode(map.mode))) {
       s.phase = 'over';
       s.winner = al[0]?.id ?? null;
       if (s.winner) log(`🏆 ${al[0].name} — ПОБЕДИТЕЛЬ!`);
@@ -1572,6 +1576,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     else b.holdMs = Math.max(0, b.holdMs - 400);
     if (!immune && b.holdMs >= FRENDY_CATCH_HOLD) {
       b.fx = 'catch'; b.fxTs = now;
+      f.caught = f.caught ?? {}; // v0.124: счётчик поимок — попадёт в титры (сколько раз Френди кого ловил)
+      f.caught[tgt.id] = (f.caught[tgt.id] ?? 0) + 1;
       const inv = tgt.items ?? [];
       const ci = inv.findIndex((x) => x.kind === 'frendyChip');
       if (ci >= 0) {
@@ -2382,6 +2388,13 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           : isJourneyLike(map.mode)
                 ? `🧭 JOURNEY! У каждого: ${sm} мин и ${st} поп. Все фишки стартуют ОДНОВРЕМЕННО — кто первый пересечёт ячейку задания, тот и играет.`
                 : `Игра начинается! У каждого: ${sm} мин и ${st} поп. Бросок за первый ход…`);
+      /* v0.124: ПЛИТОЧНЫЙ РЕЖИМ — приближение камеры при движении ВКЛЮЧАЕТСЯ ПРИНУДИТЕЛЬНО
+         (в любой игре с плитками, независимо от Опций) — предупреждаем об этом в истории.
+         Во FRENDY дополнительно предупреждаем про туман неоткрытых плиток. */
+      if (map.tileGrid) {
+        log('📹 Плиточный режим: камера ПРИБЛИЖАЕТСЯ при движении фишки — во всех играх с плитками, независимо от Опций.');
+        if (map.hideUnopenedTiles) log('🌫 Не открытые плитки скрыты на карте мира: плитка открывается, когда туда доходит любой игрок.');
+      }
       break;
     }
     case 'roll': {
