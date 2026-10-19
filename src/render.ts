@@ -547,7 +547,7 @@ const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, t
     ctx.font = '14px serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(kind === 'medkit' ? '🧰' : kind === 'coffee' ? '☕' : '📦', 0, 1);
+    ctx.fillText(kind === 'medkit' ? '🧰' : kind === 'coffee' ? '☕' : kind === 'dendyCart' ? '📼' : '📦', 0, 1);
     ctx.restore();
     return;
   }

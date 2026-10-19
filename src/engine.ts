@@ -1,5 +1,5 @@
-import type { CardDef, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
-import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_TASK_GRACE_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
+import type { CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
+import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_TASK_GRACE_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
@@ -93,7 +93,7 @@ export type Action =
   | { t: 'cutsceneSeen'; id: string; key: string } // v0.56 КАТ-СЦЕНА показана (старт карты/пересечение зоны): хост помечает «виденное» (s.cutsceneDone) — за сессию не повторяется
   | { t: 'donatLog'; text: string } // v0.109 БОГАЧ: строка в общий лог о применённом донате (хост применяет задание карты сам и рассылает карту; действием — только лог, чтобы состояние уехало гостям)
   | { t: 'frendyTick'; id: string } // v0.123 FRENDY: тик хоста (~0.4 с) — ИИ Френди (пробуждение/охота/удары/поимка), подбор предметов с поля
-  | { t: 'frendyBurn'; id: string } // v0.123 FRENDY: сжечь микросхему в ПЕЧИ (E у печи; нужна микросхема в инвентаре и близость к печи)
+  | { t: 'frendyBurn'; id: string; what?: 'chip' | 'cart' } // v0.123 FRENDY: сжечь в ПЕЧИ (E у печи); v0.130: what 'cart' — картридж Dendy (разжечь сильный огонь), по умолчанию 'chip' — микросхему (только в сильном огне)
   | { t: 'frendyUse'; id: string; itemId: string } // v0.123 FRENDY: использовать предмет (аптечка — лечение, кофе — иммунитет к поимке 5 мин; микросхема — нельзя)
   | { t: 'frendyDrop'; id: string; itemId: string } // v0.123 FRENDY: выбросить предмет на землю (микросхема — тоже: другого применения в инвентаре нет)
 
@@ -1527,11 +1527,41 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const now = Date.now();
     const W = map.mw ?? map.cols * CELL_PX;
     const H = map.mh ?? map.rows * CELL_PX;
+    /* v0.130: СИЛЬНЫЙ ОГОНЬ ПОГАС — печь снова слабая (таймер СКРЫТ от игроков —
+       никаких цифр, только факт в логе один раз по истечении) */
+    if (f.strongUntil && now >= f.strongUntil) {
+      f.strongUntil = 0;
+      log('🧯 Сильный огонь в печи ПОГАС — микросхемы больше не горят. Разожгите печь заново: бросьте в неё КАРТРИДЖ Dendy 📼 (дают за победу над заданием ячейки)!');
+    }
     /* v0.127 ЩИТ ЗАДАНИЯ: тот, кто СЕЙЧАС проходит личное задание (или прошёл его
        только что — ещё FRENDY_TASK_GRACE_MS), Френди НЕ ТРОГАЕТ вовсе — не бьёт,
        не ловит, не выбирает целью. Раньше он продолжал бить и откидывать на другие
        ячейки прямо во время выполнения задания (жалоба заказчика). */
     const busy = (pid: string): boolean => !!s.qJobs?.[pid] || (f.taskSafeUntil?.[pid] ?? 0) > now;
+    /* v0.130: ячейки задания — живые и разбитые (разбитые победителями заданий не работают,
+       пока Френди не починит их картриджем; все разбиты — чинит бесплатно) */
+    const taskCells = map.cells.map((c, i) => ({ c, i })).filter(({ c, i }) => c.type === 'task' && !!cellTaskOf(s, map, i));
+    const liveCells = taskCells.filter(({ i }) => !s.broken?.[i]);
+    const brokenCells = taskCells.filter(({ i }) => !!s.broken?.[i]);
+    const allBroken = taskCells.length > 0 && liveCells.length === 0;
+    /* v0.130: общий шаг по полю (охота и поездка за ремонтом): BFS-обход стен (frendyStepToward) + скольжение */
+    const frendyWalk = (b: FrendyBossState, tx: number, ty: number, aggrN: number): void => {
+      const spd = clampMoveSpeed(map.moveSpeed ?? DEF_MOVE_SPEED) * CELL_PX * (FRENDY_SPEED_BASE + FRENDY_SPEED_RAGE * aggrN);
+      const step = spd * 0.4; // тик 400 мс
+      const wp = frendyStepToward(b, { x: tx, y: ty });
+      const dx = wp ? wp.x - b.x : tx - b.x;
+      const dy = wp ? wp.y - b.y : ty - b.y;
+      const dl = Math.hypot(dx, dy) || 1;
+      let nx = b.x + (dx / dl) * Math.min(step, dl + 4);
+      let ny = b.y + (dy / dl) * Math.min(step, dl + 4);
+      if (pointInWall(map, nx, ny)) {
+        if (!pointInWall(map, nx, b.y)) ny = b.y; // скольжение по осям
+        else if (!pointInWall(map, b.x, ny)) nx = b.x;
+        else { nx = b.x; ny = b.y; }
+      }
+      b.x = Math.max(8, Math.min(W - 8, Math.round(nx)));
+      b.y = Math.max(8, Math.min(H - 8, Math.round(ny)));
+    };
     /* — ПОДБОР предметов с поля: живой игрок прошёл по предмету — в инвентарь — */
     for (const p of s.players) {
       if (!p.alive || p.spect) continue;
@@ -1545,16 +1575,33 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         rubgGiveItem(p, kind);
         if (kind === 'frendyChip') {
           const left = f.chips.filter((x) => !x.kind || x.kind === 'frendyChip').length;
-          log(`🔩 ${p.name} нашёл МИКРОСХЕМУ Френди — несите к ПЕЧИ и жгите (E у печи)! На карте ещё: ${left}`);
+          log(`🔩 ${p.name} нашёл МИКРОСХЕМУ Френди — несите к ПЕЧИ! Сами они горят только в СИЛЬНОМ огне: сожгите в печи КАРТРИДЖ Dendy 📼 (дают за победу над заданием). На карте ещё: ${left}`);
         } else {
-          log(`${RUBG_ITEMS[kind].icon} ${p.name} подобрал «${RUBG_ITEMS[kind].name}»`);
+          log(`${RUBG_ITEMS[kind].icon} ${p.name} подобрал «${RUBG_ITEMS[kind].name}»${kind === 'dendyCart' ? ' — бросьте в ПЕЧЬ, чтобы разжечь сильный огонь' : ''}`);
         }
         break;
       }
     }
-    /* — ФРЕНДИ СПИТ: время просыпаться — появляется ПРЯМО НА случайном живом игроке — */
+    /* — ФРЕНДИ СПИТ: время просыпаться. v0.130: сначала РЕМОНТ — с картриджем в кармане
+       (или когда разбиты ВСЕ ячейки — бесплатный ремонт) он идёт чинить ячейку, и только
+       потом охотится; иначе партия рискует остаться без рабочих заданий. — */
     if (!f.boss) {
       if (now < f.nextSpawnAt) return;
+      if ((f.cart && brokenCells.length > 0) || allBroken) {
+        const pick = brokenCells[Math.floor(Math.random() * brokenCells.length)].i;
+        const r = cellRectOf(map, pick);
+        const n = Math.floor(Math.random() * FRENDY_PHRASES.length);
+        f.boss = {
+          x: r ? Math.round(r.x + r.w / 2) : Math.round(W / 2),
+          y: r ? Math.round(r.y + r.h / 2) : Math.round(H / 2),
+          targetId: null, sinceTs: now, lastHitAt: 0, holdMs: 0,
+          fx: 'spawn', fxTs: now, trip: 'repair', tripCell: pick,
+        };
+        f.phrase = { n, ts: now };
+        if (f.cart) log(`😈 ФРЕНДИ: «${FRENDY_PHRASES[n]}» — и достал КАРТРИДЖ DENDY 📼 (отобрал у ${f.cart.from}): идёт ЧИНИТЬ разбитую ячейку №${pick + 1}!`);
+        else log(`😈 ФРЕНДИ: «Все ячейки сломали? Починю одну БЕСПЛАТНО — какая же охота без плохих игр!» — чинит ячейку №${pick + 1}.`);
+        return;
+      }
       const cands = s.players.filter((p) => p.alive && !p.spect && !busy(p.id)); // v0.127: не просыпаться НА проходящем задание
       if (!cands.length) return;
       const tgt = cands[Math.floor(Math.random() * cands.length)];
@@ -1566,16 +1613,50 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       log(`😈 ФРЕНДИ: «${FRENDY_PHRASES[n]}» — охота началась: ${tgt.name}, БЕГИ!`);
       return;
     }
-    /* — ОХОТА — */
+    /* — ОХОТА (или ПОЕЗДКА ЗА РЕМОНТОМ) — */
     const b = f.boss;
-    /* v0.127: цель — только тот, кого можно трогать; если текущая цель взяла задание —
-       переключаемся на другого; если «свободных» нет вовсе — Френди растворяется и ждёт */
-    let tgt = s.players.find((p) => p.id === b.targetId && p.alive && !p.spect && !busy(p.id)) ?? null;
-    if (!tgt) tgt = s.players.find((p) => p.alive && !p.spect && !busy(p.id)) ?? null;
-    if (!tgt) {
-      log('😈 ФРЕНДИ рычит: у всех задания… он подождёт и вернётся.');
+    /* v0.130 ПОЕЗДКА ЗА РЕМОНТОМ: Френди несёт картридж (или идёт бесплатно) к разбитой
+       ячейке — НЕ охотится, никого не бьёт. Добрался — вставил картридж, ячейка ПОЧИНЕНА
+       (та же игра), Френди растворяется и скоро вернётся к охоте. */
+    if (b.trip === 'repair' && b.tripCell !== null && b.tripCell !== undefined) {
+      const r = cellRectOf(map, b.tripCell);
+      if (!r) { f.boss = null; f.nextSpawnAt = now + frendyRespawnMs(f); return; }
+      const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+      if (Math.hypot(cx - b.x, cy - b.y) > CELL_PX * 0.6) {
+        frendyWalk(b, cx, cy, frendyAggr(f));
+        return;
+      }
+      if (s.broken) delete s.broken[b.tripCell];
+      f.repaired = (f.repaired ?? 0) + 1;
+      const usedCart = !!f.cart;
+      f.cart = null;
+      f.fx = { kind: 'repair', ts: now }; // v0.130: звук «вставил картридж» — все клиенты
+      log(usedCart
+        ? `😈 ФРЕНДИ вставил КАРТРИДЖ DENDY 📼 в ячейку №${b.tripCell + 1} — она ПОЧИНЕНА, та же игра снова работает! (${f.repaired} починено)`
+        : `😈 ФРЕНДИ починил ячейку №${b.tripCell + 1} БЕСПЛАТНО — плохие игры вернулись в кошмар! (${f.repaired} починено)`);
       f.boss = null;
-      f.nextSpawnAt = now + frendyRespawnMs(f);
+      f.nextSpawnAt = now + Math.round(frendyRespawnMs(f) * 0.6);
+      return;
+    }
+    /* v0.127: цель — только тот, кого можно трогать; если текущая цель взяла задание —
+       переключаемся. v0.130: новая цель — БЛИЖАЙШАЯ (а не первая по списку) — хваткий;
+       v0.130: «у всех задания» — ждёт всего 4 с (кто-нибудь кончит) и возвращается,
+       лог не спамим */
+    let tgt = s.players.find((p) => p.id === b.targetId && p.alive && !p.spect && !busy(p.id)) ?? null;
+    if (!tgt) {
+      let bestD = Infinity;
+      for (const p of s.players) {
+        if (!p.alive || p.spect || busy(p.id)) continue;
+        const pp = s.journeyPos?.[p.id];
+        if (!pp) continue;
+        const d = Math.hypot(pp.x - b.x, pp.y - b.y);
+        if (d < bestD) { bestD = d; tgt = p; }
+      }
+    }
+    if (!tgt) {
+      if (!f.busyLogAt || now - f.busyLogAt > 25000) { f.busyLogAt = now; log('😈 ФРЕНДИ рычит: у всех задания… он подождёт и вернётся.'); }
+      f.boss = null;
+      f.nextSpawnAt = now + 4000;
       return;
     }
     if (tgt.id !== b.targetId) { b.targetId = tgt.id; b.holdMs = 0; b.sinceTs = now; }
@@ -1584,11 +1665,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const dist = Math.hypot(tp.x - b.x, tp.y - b.y);
     const aggr = frendyAggr(f);
     const immune = (f.coffeeUntil[tgt.id] ?? 0) > now;
-    /* ПОИМКА: продержал жертву в лапах — телепорт на задание + кража микросхемы */
+    /* ПОИМКА: продержал жертву в лапах — телепорт на задание + кража микросхемы/картриджа */
     if (!immune && !busy(tgt.id) && dist < FRENDY_CATCH_RANGE) b.holdMs += 400;
     else b.holdMs = Math.max(0, b.holdMs - 400);
     if (!immune && !busy(tgt.id) && b.holdMs >= FRENDY_CATCH_HOLD) {
       b.fx = 'catch'; b.fxTs = now;
+      f.fx = { kind: 'catch', who: tgt.id, ts: now }; // v0.130: fx на уровне состояния — босс ниже обнулится, а звук/вспышка поимки клиенты ДОЛЖНЫ увидеть
       f.caught = f.caught ?? {}; // v0.124: счётчик поимок — попадёт в титры (сколько раз Френди кого ловил)
       f.caught[tgt.id] = (f.caught[tgt.id] ?? 0) + 1;
       const inv = tgt.items ?? [];
@@ -1599,7 +1681,19 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         f.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round(spot?.x ?? Math.random() * W), y: Math.round(spot?.y ?? Math.random() * H) });
         log(`😈 ФРЕНДИ забрал у ${tgt.name} микросхему и перепрятал её в другом конце кошмара!`);
       }
-      const tasks = map.cells.map((c, i) => ({ c, i })).filter(({ c, i }) => c.type === 'task' && !!cellTaskOf(s, map, i));
+      /* v0.130: КАРТРИДЖ DENDY — вырвать у жертвы (карман один; занят — картридж остаётся у жертвы) */
+      let tookCart = false;
+      if (!f.cart) {
+        const ck = inv.findIndex((x) => x.kind === 'dendyCart');
+        if (ck >= 0) {
+          inv.splice(ck, 1);
+          f.cart = { from: tgt.name, ts: now };
+          tookCart = true;
+          log(`😈 ФРЕНДИ вырвал у ${tgt.name} КАРТРИДЖ DENDY 📼 — понесёт его ЧИНИТЬ разбитую ячейку (та же игра вернётся)!`);
+        }
+      }
+      /* v0.130: сажать жертву можно только в ЖИВУЮ ячейку (разбитые не работают) */
+      const tasks = map.cells.map((c, i) => ({ c, i })).filter(({ c, i }) => c.type === 'task' && !s.broken?.[i] && !!cellTaskOf(s, map, i));
       if (tasks.length) {
         const pick = tasks[Math.floor(Math.random() * tasks.length)].i;
         const r = cellRectOf(map, pick);
@@ -1608,14 +1702,37 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         s.qJobs = s.qJobs ?? {};
         s.qJobs[tgt.id] = { cellIdx: pick, startedAt: now };
         log(`😈 ФРЕНДИ ПОЙМАЛ ${tgt.name}! Оттащил к заданию №${pick + 1} — пройди его, чтобы продолжить охоту за микросхемами!`);
+        if (tookCart) f.nextSpawnAt = now + 4000; // v0.130: с картриджем в кармане не спит — скоро пойдёт чинить
       } else {
+        const brokenPool = taskCells.filter(({ i }) => !!s.broken?.[i]);
+        if (brokenPool.length) {
+          /* v0.130: живых ячеек нет — чинит одну ПРЯМО ПРИ ЖЕРТВЕ (картриджем, а если
+             карман пуст — бесплатно: разбиты все) и сажает играть в неё же */
+          const pick = brokenPool[Math.floor(Math.random() * brokenPool.length)].i;
+          if (s.broken) delete s.broken[pick];
+          f.repaired = (f.repaired ?? 0) + 1;
+          const usedCart = !!f.cart;
+          f.cart = null;
+          const r = cellRectOf(map, pick);
+          s.journeyPos = s.journeyPos ?? {};
+          if (r) s.journeyPos[tgt.id] = { x: Math.round(r.x + r.w / 2), y: Math.round(r.y + r.h / 2), ts: now, mv: false };
+          s.qJobs = s.qJobs ?? {};
+          s.qJobs[tgt.id] = { cellIdx: pick, startedAt: now };
+          f.fx = { kind: 'repair', ts: now }; // v0.130: мгновенный ремонт при жертве — звук всем
+          log(usedCart
+            ? `😈 ФРЕНДИ ПОЙМАЛ ${tgt.name}! Ячейка №${pick + 1} ПОЧИНЕНА его же КАРТРИДЖЕМ DENDY 📼 — играй в ту же игру!`
+            : `😈 ФРЕНДИ ПОЙМАЛ ${tgt.name}! Все ячейки были сломаны — починил №${pick + 1} БЕСПЛАТНО и посадил играть!`);
+          f.boss = null;
+          f.nextSpawnAt = now + Math.round(frendyRespawnMs(f) * 0.5);
+          return;
+        }
         const spot = frendyFreeSpot([]) ?? { x: W / 2, y: H / 2 };
         s.journeyPos = s.journeyPos ?? {};
         s.journeyPos[tgt.id] = { x: Math.round(spot.x), y: Math.round(spot.y), ts: now, mv: false };
         log(`😈 ФРЕНДИ ПОЙМАЛ ${tgt.name} и вышвырнул в другой конец кошмара!`);
       }
       f.boss = null;
-      f.nextSpawnAt = now + frendyRespawnMs(f);
+      if (!tookCart) f.nextSpawnAt = now + frendyRespawnMs(f);
       return;
     }
     /* УДАР лапой (по всем в радиусе — кофе от ударов не спасает); v0.127: проходящего задание не бьёт */
@@ -1627,24 +1744,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       log(`😈 ФРЕНДИ бьёт ${tgt.name} когтями: −${dmg}% HP — HP ${Math.round(tgt.hp)}%${immune ? ' (кофе не спасает от УДАРОВ!)' : ''}`);
       checkElim();
     }
-    /* ДВИЖЕНИЕ: BFS вокруг стен; скорость чуть выше игрока, растёт с агрессией */
-    const spd = clampMoveSpeed(map.moveSpeed ?? DEF_MOVE_SPEED) * CELL_PX * (FRENDY_SPEED_BASE + FRENDY_SPEED_RAGE * aggr);
-    const step = spd * 0.4; // тик 400 мс
-    if (dist > 1) {
-      const wp = frendyStepToward(b, tp);
-      const dx = wp ? wp.x - b.x : tp.x - b.x;
-      const dy = wp ? wp.y - b.y : tp.y - b.y;
-      const dl = Math.hypot(dx, dy) || 1;
-      let nx = b.x + (dx / dl) * Math.min(step, dl + 4);
-      let ny = b.y + (dy / dl) * Math.min(step, dl + 4);
-      if (pointInWall(map, nx, ny)) {
-        if (!pointInWall(map, nx, b.y)) ny = b.y; // скольжение по осям
-        else if (!pointInWall(map, b.x, ny)) nx = b.x;
-        else { nx = b.x; ny = b.y; }
-      }
-      b.x = Math.max(8, Math.min(W - 8, Math.round(nx)));
-      b.y = Math.max(8, Math.min(H - 8, Math.round(ny)));
-    }
+    /* ДВИЖЕНИЕ к цели (v0.130: скорость в frendyWalk) */
+    if (dist > 1) frendyWalk(b, tp.x, tp.y, aggr);
     /* ОХОТА ЗАТЯНУЛАСЬ — растворился и уйдёт переваривать (вернётся злее) */
     if (now - b.sinceTs > FRENDY_HUNT_MAX_MS && b.holdMs < FRENDY_CATCH_HOLD) {
       log('🌫 ФРЕНДИ растворился в темноте… но он вернётся.');
@@ -2397,7 +2498,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
             : soloMode && map.mode === 'journey1p'
               ? `🧭 JOURNEY SOLO! Играет только хост (${sm} мин / ${st} поп.) — остальные зрители. Победа: пройти ВСЕ задания карты (заданий: ${taskTotal}).`
               : map.mode === 'frendy'
-          ? `🎃 FRENDY! Микросхем из кости Френди на карте: ${s.frendy?.total ?? '?'} — ищите (подбираются проходом), несите к ПЕЧИ и жгите по E. Ресурс — полоска HP. Через ${Math.round(FRENDY_FIRST_WAKE_MS / 1000)} с проснётся ОН — появится прямо на ком-то из вас. Поймает — утащит на задание и заберёт микросхему. Кофе — 5 минут без поимки. Сожжёте ВСЕ — победа; погибнут все — кошмар победил!`
+          ? `🎃 FRENDY! Микросхем из кости Френди на карте: ${s.frendy?.total ?? '?'} — ищите (подбираются проходом) и несите к ПЕЧИ. НО: печь на СЛАБОМ огне — микросхемы в нём НЕ горят! ПОБЕЖДАЙТЕ задания ячеек: за победу дают КАРТРИДЖ DENDY 📼 (ячейка ломается) — бросьте картридж в печь, и 2 МИНУТЫ будет СИЛЬНЫЙ ОГОНЬ: жгите микросхемы! Ресурс — полоска HP. Через ${Math.round(FRENDY_FIRST_WAKE_MS / 1000)} с проснётся ОН — появится прямо на ком-то из вас. Поймает — утащит на задание, заберёт микросхему, а КАРТРИДЖ отберёт и починит им разбитую ячейку (все ячейки сломаны — починит бесплатно). Кофе — 5 минут без поимки. Сожжёте ВСЕ — победа; погибнут все — кошмар победил!`
           : isJourneyLike(map.mode)
                 ? `🧭 JOURNEY! У каждого: ${sm} мин и ${st} поп. Все фишки стартуют ОДНОВРЕМЕННО — кто первый пересечёт ячейку задания, тот и играет.`
                 : `Игра начинается! У каждого: ${sm} мин и ${st} поп. Бросок за первый ход…`);
@@ -2691,6 +2792,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
             p.pos = i;
             revealCell(s, p.id, i);
             if (c.type === 'task') {
+              if (s.broken?.[i]) continue; // v0.130: ячейка РАЗБИТА победителем — задания нет, пока Френди не починит
               if (s.qJobs?.[p.id]) continue; // уже играешь личное задание
               const tk = cellTaskOf(s, map, i);
               if (!tk) continue;
@@ -3131,14 +3233,27 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!p || !p.alive || p.spect) break;
       const f = s.frendy;
       const inv = p.items ?? [];
-      const ii = inv.findIndex((x) => x.kind === 'frendyChip');
-      if (ii < 0) { log(`🔥 ${p.name}: сжигать нечего — сначала найди микросхему Френди 🔩`); break; }
+      const nowB = Date.now();
       const fi = map.cells.findIndex((c) => c.type === 'furnace');
       const fr = fi >= 0 ? cellRectOf(map, fi) : null;
       const pp = playerPx(s, map, p.id);
       if (!fr || !pp) break;
       const dFurn = Math.hypot(pp.x - (fr.x + fr.w / 2), pp.y - (fr.y + fr.h / 2));
       if (dFurn > Math.max(140, Math.max(fr.w, fr.h) * 0.8 + 40)) { log(`🔥 ${p.name}: печь далеко — подойди и нажми E`); break; }
+      /* v0.130: КАРТРИДЖ DENDY в слабый огонь — разжечь печь: 2 минуты СИЛЬНОГО огня
+         (скрытый таймер), только в нём горят микросхемы Френди */
+      if (a.what === 'cart') {
+        const ci = inv.findIndex((x) => x.kind === 'dendyCart');
+        if (ci < 0) { log(`🔥 ${p.name}: нет картриджа Dendy 📼 — они дают за ПОБЕДУ над заданием ячейки`); break; }
+        inv.splice(ci, 1);
+        f.strongUntil = nowB + FRENDY_STRONG_MS;
+        log(`📼 ${p.name} бросает КАРТРИДЖ DENDY В ОГОНЬ! Печь гудит — СИЛЬНЫЙ ОГОНЬ! Скорее жгите МИКРОСХЕМЫ Френди 🔩, пока пламя огромное — потом печь снова станет слабой!`);
+        break;
+      }
+      const ii = inv.findIndex((x) => x.kind === 'frendyChip');
+      if (ii < 0) { log(`🔥 ${p.name}: сжигать нечего — сначала найди микросхему Френди 🔩`); break; }
+      /* v0.130: микросхемы горят ТОЛЬКО в сильном огне (слабый их не берёт) */
+      if (!((f.strongUntil ?? 0) > nowB)) { log(`🔥 Огонь СЛАБЫЙ — микросхема не загорается! Сначала бросьте в печь КАРТРИДЖ Dendy 📼 (дают за победу над заданием ячейки)`); break; }
       inv.splice(ii, 1);
       f.burned++;
       log(`🔥 ${p.name} СЖИГАЕТ микросхему Френди! (${f.burned}/${f.total})`);
@@ -3161,7 +3276,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const ii = inv.findIndex((x) => x.id === a.itemId);
       if (ii < 0) break;
       const kind = inv[ii].kind;
-      if (kind === 'frendyChip') break; // с микросхемой в инвентаре ничего нельзя — только выбросить или сжечь в печи
+      if (kind === 'frendyChip' || kind === 'dendyCart') break; // v0.130: микросхему и КАРТРИДЖ Dendy в руках не «использовать» — только в печь (или выбросить)
       if (kind === 'coffee') {
         inv.splice(ii, 1);
         s.frendy.coffeeUntil[p.id] = Date.now() + FRENDY_COFFEE_MS;
@@ -3223,6 +3338,17 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           const kind: RubgItemKind = Math.random() < 0.5 ? 'medkit' : 'coffee';
           rubgGiveItem(p, kind);
           log(`🏆 ${p.name} ПРОШЁЛ задание${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : ''}: награда ${RUBG_ITEMS[kind].icon} ${RUBG_ITEMS[kind].name}${kind === 'coffee' ? ' — иммунитет к ПОИМКЕ Френди на 5 минут (активируй в инвентаре!)' : ' — лечит +25% HP'}`);
+          /* v0.130: ПОБЕДА ЛОМАЕТ ЯЧЕЙКУ — победителю в инвентарь КАРТРИДЖ DENDY (как у
+             пиратского картриджа из базы ромов): сожги его в ПЕЧИ — 2 минуты сильного огня,
+             тогда горят микросхемы. Не сожжёшь — Френди при поимке отберёт и ПОЧИНИТ ячейку. */
+          if (!s.broken?.[a.cellIdx]) {
+            s.broken = s.broken ?? {};
+            s.broken[a.cellIdx] = { by: p.id, left: 0, at: Date.now(), perm: true };
+            rubgGiveItem(p, 'dendyCart');
+            log(`💥 Ячейка №${a.cellIdx + 1} ЛОПНУЛА — Френди потерял игру! В инвентаре КАРТРИДЖ DENDY 📼 — сожги его в ПЕЧИ, чтобы разжечь СИЛЬНЫЙ ОГОНЬ (жгите микросхемы!). Не сожжёшь — Френди отберёт картридж и починит ячейку.`);
+          } else {
+            log(`📦 Ячейка №${a.cellIdx + 1} уже была разбита — картридж Dendy достался её первому победителю`);
+          }
         } else {
           questDefeatApply(p, a.cellIdx, a.byCode);
         }
