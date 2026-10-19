@@ -3071,6 +3071,7 @@ export default function GameScreen() {
             <>
               <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-[#ff8b3f]" title="Микросхемы Френди: сожжено/всего · ещё лежит на карте">🔩 {frendy.burned}/{frendy.total}{frendy.chips.length ? ` · на карте ${frendy.chips.length}` : ''}</span>
               {(() => { const ms = (frendy.coffeeUntil[me] ?? 0) - Date.now(); return ms > 0 ? <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-teal" title="Кофе: иммунитет к ПОИМКЕ Френди (удары — нет)">☕ {Math.ceil(ms / 1000)}с</span> : null; })()}
+              {(() => { const ms = (frendy.taskSafeUntil?.[me] ?? 0) - Date.now(); return ms > 0 ? <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-gold" title="Щит задания: Френди НЕ ТРОГАЕТ — ни бить, ни ловить (даётся за личное задание)">🛡 {Math.ceil(ms / 1000)}с</span> : null; })()}
               {frendy.boss && frendy.boss.targetId === me && s?.phase === 'playing' && <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-coral blink-hard" title="Френди охотится на тебя — БЕГИ!">😈 ФРЕНДИ ЗА ТОБОЙ!</span>}
             </>
           )}

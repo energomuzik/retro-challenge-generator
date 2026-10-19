@@ -1,5 +1,5 @@
 import type { CardDef, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
-import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
+import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_TASK_GRACE_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
@@ -1527,6 +1527,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const now = Date.now();
     const W = map.mw ?? map.cols * CELL_PX;
     const H = map.mh ?? map.rows * CELL_PX;
+    /* v0.127 ЩИТ ЗАДАНИЯ: тот, кто СЕЙЧАС проходит личное задание (или прошёл его
+       только что — ещё FRENDY_TASK_GRACE_MS), Френди НЕ ТРОГАЕТ вовсе — не бьёт,
+       не ловит, не выбирает целью. Раньше он продолжал бить и откидывать на другие
+       ячейки прямо во время выполнения задания (жалоба заказчика). */
+    const busy = (pid: string): boolean => !!s.qJobs?.[pid] || (f.taskSafeUntil?.[pid] ?? 0) > now;
     /* — ПОДБОР предметов с поля: живой игрок прошёл по предмету — в инвентарь — */
     for (const p of s.players) {
       if (!p.alive || p.spect) continue;
@@ -1550,7 +1555,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     /* — ФРЕНДИ СПИТ: время просыпаться — появляется ПРЯМО НА случайном живом игроке — */
     if (!f.boss) {
       if (now < f.nextSpawnAt) return;
-      const cands = s.players.filter((p) => p.alive && !p.spect);
+      const cands = s.players.filter((p) => p.alive && !p.spect && !busy(p.id)); // v0.127: не просыпаться НА проходящем задание
       if (!cands.length) return;
       const tgt = cands[Math.floor(Math.random() * cands.length)];
       const pp = s.journeyPos?.[tgt.id];
@@ -1563,8 +1568,16 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     }
     /* — ОХОТА — */
     const b = f.boss;
-    const tgt = s.players.find((p) => p.id === b.targetId && p.alive && !p.spect) ?? s.players.find((p) => p.alive && !p.spect) ?? null;
-    if (!tgt) { f.boss = null; f.nextSpawnAt = now + frendyRespawnMs(f); return; }
+    /* v0.127: цель — только тот, кого можно трогать; если текущая цель взяла задание —
+       переключаемся на другого; если «свободных» нет вовсе — Френди растворяется и ждёт */
+    let tgt = s.players.find((p) => p.id === b.targetId && p.alive && !p.spect && !busy(p.id)) ?? null;
+    if (!tgt) tgt = s.players.find((p) => p.alive && !p.spect && !busy(p.id)) ?? null;
+    if (!tgt) {
+      log('😈 ФРЕНДИ рычит: у всех задания… он подождёт и вернётся.');
+      f.boss = null;
+      f.nextSpawnAt = now + frendyRespawnMs(f);
+      return;
+    }
     if (tgt.id !== b.targetId) { b.targetId = tgt.id; b.holdMs = 0; b.sinceTs = now; }
     const tp = s.journeyPos?.[tgt.id];
     if (!tp) return;
@@ -1572,9 +1585,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const aggr = frendyAggr(f);
     const immune = (f.coffeeUntil[tgt.id] ?? 0) > now;
     /* ПОИМКА: продержал жертву в лапах — телепорт на задание + кража микросхемы */
-    if (!immune && dist < FRENDY_CATCH_RANGE) b.holdMs += 400;
+    if (!immune && !busy(tgt.id) && dist < FRENDY_CATCH_RANGE) b.holdMs += 400;
     else b.holdMs = Math.max(0, b.holdMs - 400);
-    if (!immune && b.holdMs >= FRENDY_CATCH_HOLD) {
+    if (!immune && !busy(tgt.id) && b.holdMs >= FRENDY_CATCH_HOLD) {
       b.fx = 'catch'; b.fxTs = now;
       f.caught = f.caught ?? {}; // v0.124: счётчик поимок — попадёт в титры (сколько раз Френди кого ловил)
       f.caught[tgt.id] = (f.caught[tgt.id] ?? 0) + 1;
@@ -1605,8 +1618,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       f.nextSpawnAt = now + frendyRespawnMs(f);
       return;
     }
-    /* УДАР лапой (по всем в радиусе — кофе от ударов не спасает) */
-    if (dist < FRENDY_HIT_RANGE && now - b.lastHitAt >= FRENDY_HIT_CD) {
+    /* УДАР лапой (по всем в радиусе — кофе от ударов не спасает); v0.127: проходящего задание не бьёт */
+    if (!busy(tgt.id) && dist < FRENDY_HIT_RANGE && now - b.lastHitAt >= FRENDY_HIT_CD) {
       b.lastHitAt = now;
       b.fx = 'attack'; b.fxTs = now;
       const dmg = FRENDY_HIT_DMG + Math.round(FRENDY_HIT_DMG_RAGE * aggr);
@@ -3198,6 +3211,14 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       /* v0.123 FRENDY: личное задание (в т.ч. после ПОИМКИ Френди) — награда аптечка/кофе,
          поражение бьёт по полоске HP (questDefeatApply) */
       if (isFrendyMode(map.mode)) {
+        /* v0.127 ЩИТ ЗАДАНИЯ: после личного задания Френди НЕ ТРОГАЕТ ещё
+           FRENDY_TASK_GRACE_MS (и после победы, и после провала) — раньше он тут же
+           просыпался и снова бил/ловил только что отработавшего игрока */
+        if (s.frendy) {
+          s.frendy.taskSafeUntil = s.frendy.taskSafeUntil ?? {};
+          s.frendy.taskSafeUntil[p.id] = Date.now() + FRENDY_TASK_GRACE_MS;
+          log(`🛡 ${p.name}: Френди НЕ ТРОНЕТ ещё ${Math.round(FRENDY_TASK_GRACE_MS / 1000)} с — заслуженный отдых после задания`);
+        }
         if (a.win) {
           const kind: RubgItemKind = Math.random() < 0.5 ? 'medkit' : 'coffee';
           rubgGiveItem(p, kind);
