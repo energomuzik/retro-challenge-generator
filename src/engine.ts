@@ -1518,8 +1518,62 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const nx0 = cur % cols, ny0 = Math.floor(cur / cols);
     return { x: nx0 * CW + CW / 2, y: ny0 * CW + CW / 2 };
   };
-  const frendyAggr = (f: FrendyState): number => (f.total > 0 ? Math.min(1, f.burned / f.total) : 0);
-  const frendyRespawnMs = (f: FrendyState): number => Math.round(FRENDY_RESPAWN_MS - (FRENDY_RESPAWN_MS - FRENDY_RESPAWN_MIN_MS) * frendyAggr(f));
+  /* v0.131 АГРЕССИЯ ФРЕНДИ — уровень 0..1 по метрике, выбранной в редакторе карт (map.frendyAggr):
+     'now'/'chips' — доля сожжённых микросхем (как в v0.130); 'cells' — доля сломанных (пройденных)
+     ячеек заданий; 'rage'/'custom' — уровень не важен (параметры фиксированные/ручные). */
+  const frendyAggr = (f: FrendyState): number => {
+    if (map.frendyAggr === 'cells') {
+      let total = 0, broken = 0;
+      map.cells.forEach((c, i) => {
+        if (c.type !== 'task' || !cellTaskOf(s, map, i)) return;
+        total++;
+        if (s.broken?.[i]) broken++;
+      });
+      return total > 0 ? Math.min(1, broken / total) : 0;
+    }
+    return f.total > 0 ? Math.min(1, f.burned / f.total) : 0;
+  };
+  /* v0.131: ПАРАМЕТРЫ ФРЕНДИ ПО РЕЖИМУ АГРЕССИИ — скорость (множитель поверх скорости игрока),
+     пауза между охотами, длительность одной охоты, перерыв удара, урон за удар.
+     'now' — ТОЧНО как v0.130 (старые карты не меняются); 'chips'/'cells' — плавная шкала
+     «спокойный в начале → ярость в финале»; 'rage' — всегда максимум; 'custom' — ручные
+     параметры карты (map.frendyAggrCustom, значения за пределами диапазонов — к границам). */
+  const frendyParams = (f: FrendyState): { speed: number; sleepMs: number; huntMs: number; hitCd: number; dmg: number } => {
+    const a = frendyAggr(f);
+    switch (map.frendyAggr) {
+      case 'chips':
+      case 'cells':
+        return {
+          speed: 1.02 + (FRENDY_SPEED_BASE + FRENDY_SPEED_RAGE - 1.02) * a, // 1.02× в покое → 1.5× в ярости
+          sleepMs: Math.round(22000 - (22000 - FRENDY_RESPAWN_MIN_MS) * a),  // 22 с → 6 с
+          huntMs: Math.round(18000 + (FRENDY_HUNT_MAX_MS - 18000) * a),      // 18 с → 30 с
+          hitCd: Math.round(FRENDY_HIT_CD + 400 * (1 - a)),                  // 1.5 с → 1.1 с
+          dmg: FRENDY_HIT_DMG + Math.round(FRENDY_HIT_DMG_RAGE * a),
+        };
+      case 'rage':
+        return { speed: FRENDY_SPEED_BASE + FRENDY_SPEED_RAGE, sleepMs: FRENDY_RESPAWN_MIN_MS, huntMs: FRENDY_HUNT_MAX_MS, hitCd: FRENDY_HIT_CD, dmg: FRENDY_HIT_DMG + FRENDY_HIT_DMG_RAGE };
+      case 'custom': {
+        const c = map.frendyAggrCustom ?? {};
+        const cl = (v: number | undefined, lo: number, hi: number, d: number): number => (typeof v === 'number' && isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d);
+        return {
+          speed: cl(c.speed, 0.6, 2, 1.18),
+          sleepMs: Math.round(cl(c.sleepSec, 3, 90, 15) * 1000),
+          huntMs: Math.round(cl(c.huntSec, 8, 90, 30) * 1000),
+          hitCd: Math.round(cl(c.hitCdSec, 0.6, 4, 1.1) * 1000),
+          dmg: Math.round(cl(c.dmg, 1, 20, FRENDY_HIT_DMG + FRENDY_HIT_DMG_RAGE)),
+        };
+      }
+      default: // 'now' (и старые карты без поля) — как в v0.130
+        return {
+          speed: FRENDY_SPEED_BASE + FRENDY_SPEED_RAGE * a,
+          sleepMs: Math.round(FRENDY_RESPAWN_MS - (FRENDY_RESPAWN_MS - FRENDY_RESPAWN_MIN_MS) * a),
+          huntMs: FRENDY_HUNT_MAX_MS,
+          hitCd: FRENDY_HIT_CD,
+          dmg: FRENDY_HIT_DMG + Math.round(FRENDY_HIT_DMG_RAGE * a),
+        };
+    }
+  };
+  const frendyRespawnMs = (f: FrendyState): number => frendyParams(f).sleepMs;
   /** ТИК ФРЕНДИ (только хост, ~0.4 с): подбор предметов с поля + ИИ босса. */
   const frendyTickDo = () => {
     const f = s.frendy;
@@ -1545,8 +1599,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const brokenCells = taskCells.filter(({ i }) => !!s.broken?.[i]);
     const allBroken = taskCells.length > 0 && liveCells.length === 0;
     /* v0.130: общий шаг по полю (охота и поездка за ремонтом): BFS-обход стен (frendyStepToward) + скольжение */
-    const frendyWalk = (b: FrendyBossState, tx: number, ty: number, aggrN: number): void => {
-      const spd = clampMoveSpeed(map.moveSpeed ?? DEF_MOVE_SPEED) * CELL_PX * (FRENDY_SPEED_BASE + FRENDY_SPEED_RAGE * aggrN);
+    const frendyWalk = (b: FrendyBossState, tx: number, ty: number, speedMult: number): void => {
+      const spd = clampMoveSpeed(map.moveSpeed ?? DEF_MOVE_SPEED) * CELL_PX * speedMult; // v0.131: множитель приходит из frendyParams (режим агрессии карты)
       const step = spd * 0.4; // тик 400 мс
       const wp = frendyStepToward(b, { x: tx, y: ty });
       const dx = wp ? wp.x - b.x : tx - b.x;
@@ -1623,7 +1677,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!r) { f.boss = null; f.nextSpawnAt = now + frendyRespawnMs(f); return; }
       const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
       if (Math.hypot(cx - b.x, cy - b.y) > CELL_PX * 0.6) {
-        frendyWalk(b, cx, cy, frendyAggr(f));
+        frendyWalk(b, cx, cy, frendyParams(f).speed); // v0.131: скорость по режиму агрессии карты
         return;
       }
       if (s.broken) delete s.broken[b.tripCell];
@@ -1663,7 +1717,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const tp = s.journeyPos?.[tgt.id];
     if (!tp) return;
     const dist = Math.hypot(tp.x - b.x, tp.y - b.y);
-    const aggr = frendyAggr(f);
+    const prm = frendyParams(f); // v0.131: параметры по режиму агрессии (скорость/КД удара/урон/длительность охоты)
     const immune = (f.coffeeUntil[tgt.id] ?? 0) > now;
     /* ПОИМКА: продержал жертву в лапах — телепорт на задание + кража микросхемы/картриджа */
     if (!immune && !busy(tgt.id) && dist < FRENDY_CATCH_RANGE) b.holdMs += 400;
@@ -1736,18 +1790,18 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       return;
     }
     /* УДАР лапой (по всем в радиусе — кофе от ударов не спасает); v0.127: проходящего задание не бьёт */
-    if (!busy(tgt.id) && dist < FRENDY_HIT_RANGE && now - b.lastHitAt >= FRENDY_HIT_CD) {
+    if (!busy(tgt.id) && dist < FRENDY_HIT_RANGE && now - b.lastHitAt >= prm.hitCd) {
       b.lastHitAt = now;
       b.fx = 'attack'; b.fxTs = now;
-      const dmg = FRENDY_HIT_DMG + Math.round(FRENDY_HIT_DMG_RAGE * aggr);
+      const dmg = prm.dmg;
       tgt.hp = Math.max(0, (tgt.hp ?? RUBG_HP_MAX) - dmg);
       log(`😈 ФРЕНДИ бьёт ${tgt.name} когтями: −${dmg}% HP — HP ${Math.round(tgt.hp)}%${immune ? ' (кофе не спасает от УДАРОВ!)' : ''}`);
       checkElim();
     }
-    /* ДВИЖЕНИЕ к цели (v0.130: скорость в frendyWalk) */
-    if (dist > 1) frendyWalk(b, tp.x, tp.y, aggr);
+    /* ДВИЖЕНИЕ к цели (v0.131: скорость — множитель из frendyParams) */
+    if (dist > 1) frendyWalk(b, tp.x, tp.y, prm.speed);
     /* ОХОТА ЗАТЯНУЛАСЬ — растворился и уйдёт переваривать (вернётся злее) */
-    if (now - b.sinceTs > FRENDY_HUNT_MAX_MS && b.holdMs < FRENDY_CATCH_HOLD) {
+    if (now - b.sinceTs > prm.huntMs && b.holdMs < FRENDY_CATCH_HOLD) {
       log('🌫 ФРЕНДИ растворился в темноте… но он вернётся.');
       f.boss = null;
       f.nextSpawnAt = now + Math.round(frendyRespawnMs(f) * 0.75);

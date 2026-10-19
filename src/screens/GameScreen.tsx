@@ -31,7 +31,7 @@ import { sfx } from '../sound';
 
 /* v0.123 FRENDY: ОЗВУЧКА ФРАЗОЧЕК — mp3 из assets/frendy/*.mp3 (голос Дмитрий, заниженный питч).
    v0.124: сопоставление файлов ЯВНОЕ (по имени) — модуль ../frendyVoice; нет файла — фолбэк на синтез речи. */
-import { frendyPhraseVoice, frendyLaughVoice } from '../frendyVoice';
+import { frendyPhraseVoice } from '../frendyVoice';
 import { FrendyIntroCine, EndCredits } from './FrendyCine'; // v0.124: интро-катсцена + титры со стингером
 import { BogachPanel } from './BogachPanel'; // v0.109 БОГАЧ: панель донатов хоста
 import { hasDice } from '../bogach'; // v0.109: проверка пакостей/радостей «только для кубиков»
@@ -2294,20 +2294,8 @@ export default function GameScreen() {
       if (url) {
         const a = new Audio(url);
         a.volume = Math.max(0, Math.min(1, useApp.getState().options.volume));
-        a.playbackRate = 0.92; // чуть медленнее и ниже — жутче
+        /* v0.131: записи заказчика финальные (смех вшит в каждую фразу) — играем 1:1, без питч-сдвига и смеха после фразы (laugh-0/1 удалены) */
         void a.play().catch(() => { noVoice = true; });
-        /* v0.124: после фразы — ЗЛОЙ СМЕХ (смех звучит вместе с фразами — фирменная манера Френди) */
-        a.onended = () => {
-          const lu = frendyLaughVoice(Math.floor(Math.random() * 2)); // laugh-0/1
-          if (lu) {
-            try {
-              const la = new Audio(lu);
-              la.volume = Math.max(0, Math.min(1, useApp.getState().options.volume));
-              la.playbackRate = 0.95;
-              void la.play().catch(() => { /* noop */ });
-            } catch { /* noop */ }
-          }
-        };
       } else noVoice = true;
     } catch { noVoice = true; }
     if (noVoice && 'speechSynthesis' in window) {
@@ -2320,7 +2308,7 @@ export default function GameScreen() {
         window.speechSynthesis.speak(u);
       } catch { /* нет голоса — фраза остаётся в крике и логе */ }
     }
-    const t = window.setTimeout(() => setFrendyShout(null), 4200);
+    const t = window.setTimeout(() => setFrendyShout(null), 6500); // v0.131: фразы заказчика длиннее старых (до ~9 с) — плашка держится дольше
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frendyPhrase?.ts, frendyIntro]);

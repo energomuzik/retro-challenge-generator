@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GameMap, GameSession } from '../types';
 import { FRENDY_CINE, MAP_MODES, PLAYER_COLORS } from '../types';
 import { VERSION } from '../version';
-import { frendyCineVoice, frendyLaughVoice } from '../frendyVoice';
+import { frendyCineVoice } from '../frendyVoice';
 import { useApp } from '../store';
 import { sfx } from '../sound';
 
@@ -22,12 +22,11 @@ import { sfx } from '../sound';
 const vol = (): number => Math.max(0, Math.min(1, useApp.getState().options.volume ?? 0.8));
 const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
-function makeAudio(url: string | null, rate = 0.95): HTMLAudioElement | null {
+function makeAudio(url: string | null): HTMLAudioElement | null {
   if (!url) return null;
   try {
     const a = new Audio(url);
     a.volume = vol();
-    a.playbackRate = rate;
     return a;
   } catch { return null; }
 }
@@ -59,7 +58,8 @@ function playSeq(urls: (string | null)[], onDone: () => void, capMs = 16000): ()
   return () => { cancelled = true; clearTimeout(cap); try { audio?.pause(); } catch { /* noop */ } };
 }
 
-const laugh = (): string | null => frendyLaughVoice(Math.floor(Math.random() * 2)); // laugh-0/1
+/* v0.131: СМЕХ УДАЛЁН — заказчик перезаписал все фразы, смех ВШИТ В КАЖДУЮ ФРАЗУ
+   (отдельные треки laugh-0/1 удалены из ассетов и кода). */
 
 /* ---------- ФИГУРА ФРЕНДИ (рисованная заглушка на CSS) ---------- */
 function FrendyFigure({ size = 190, burning = false }: { size?: number; burning?: boolean }) {
@@ -105,7 +105,7 @@ export function FrendyIntroCine({ onDone }: { onDone: () => void }) {
       sfx.frendySpawn();
       const i = Math.max(0, FRENDY_CINE.intro.indexOf(phrase));
       stopRef.current = playSeq(
-        [frendyCineVoice('intro', i % Math.max(1, FRENDY_CINE.intro.length)), laugh()],
+        [frendyCineVoice('intro', i % Math.max(1, FRENDY_CINE.intro.length))],
         () => setStage(2),
         22000, // страховка: даже без звука катсцена закончится
       );
@@ -144,13 +144,14 @@ const LINE_MS = 2900; // одна фраза титров
 
 export function EndCredits({ map, sess, isFrendy, onClose }: { map: GameMap; sess: GameSession; isFrendy: boolean; onClose: () => void }) {
   const won = !!sess.frendy?.won;
-  const [phase, setPhase] = useState<'win1' | 'win2' | 'win3' | 'roll' | 'sting' | 'stingEnd' | 'done'>(isFrendy && won ? 'win1' : 'roll');
+  const [phase, setPhase] = useState<'win1' | 'win2' | 'win3' | 'lose1' | 'roll' | 'sting' | 'stingEnd' | 'done'>(isFrendy && won ? 'win1' : isFrendy ? 'lose1' : 'roll');
   const [idx, setIdx] = useState(0);
   const musicRef = useRef<HTMLAudioElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
   const winner = sess.players.find((p) => p.id === sess.winner) ?? null;
   const winPhrase = useMemo(() => pick(FRENDY_CINE.win), []);
   const stingPhrase = useMemo(() => pick(FRENDY_CINE.sting), []);
+  const losePhrase = useMemo(() => pick(FRENDY_CINE.badend), []); // v0.131: все проиграли — Френди глумится
 
   /* Список фраз титров (строится один раз) */
   const lines = useMemo<CineLine[]>(() => {
@@ -221,7 +222,7 @@ export function EndCredits({ map, sess, isFrendy, onClose }: { map: GameMap; ses
     if (phase === 'win2') {
       const i = Math.max(0, FRENDY_CINE.win.indexOf(winPhrase));
       stopRef.current = playSeq(
-        [frendyCineVoice('win', i % Math.max(1, FRENDY_CINE.win.length)), laugh()],
+        [frendyCineVoice('win', i % Math.max(1, FRENDY_CINE.win.length))],
         () => setPhase('win3'),
         24000,
       );
@@ -230,6 +231,17 @@ export function EndCredits({ map, sess, isFrendy, onClose }: { map: GameMap; ses
     if (phase === 'win3') {
       const t = window.setTimeout(() => setPhase('roll'), 2000); // «проходит 2 секунды»
       return () => clearTimeout(t);
+    }
+    /* v0.131: ВСЕ ПРОИГРАЛИ (Френди победил) — сначала его глумление (badend), потом титры */
+    if (phase === 'lose1') {
+      sfx.frendySpawn();
+      const i = Math.max(0, FRENDY_CINE.badend.indexOf(losePhrase));
+      stopRef.current = playSeq(
+        [frendyCineVoice('badend', i % Math.max(1, FRENDY_CINE.badend.length))],
+        () => setPhase('roll'),
+        24000,
+      );
+      return () => stopRef.current?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, winPhrase]);
@@ -257,7 +269,7 @@ export function EndCredits({ map, sess, isFrendy, onClose }: { map: GameMap; ses
     sfx.frendySpawn();
     const i = Math.max(0, FRENDY_CINE.sting.indexOf(stingPhrase));
     stopRef.current = playSeq(
-      [frendyCineVoice('sting', i % Math.max(1, FRENDY_CINE.sting.length)), laugh()],
+      [frendyCineVoice('sting', i % Math.max(1, FRENDY_CINE.sting.length))],
       () => setPhase('stingEnd'),
       26000,
     );
@@ -273,7 +285,7 @@ export function EndCredits({ map, sess, isFrendy, onClose }: { map: GameMap; ses
   }, [phase, stingAt]);
 
   /* ---------- ПОКАЗ ---------- */
-  if (phase === 'win1' || phase === 'win2' || phase === 'win3') {
+  if (phase === 'win1' || phase === 'win2' || phase === 'win3' || phase === 'lose1') {
     return (
       <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center cine-fadein">
         <button onClick={finish} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#5b2430] text-[#b98490] font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-[#ff5d73] cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить ✕</button>
@@ -290,6 +302,13 @@ export function EndCredits({ map, sess, isFrendy, onClose }: { map: GameMap; ses
           </div>
         )}
         {phase === 'win3' && <div className="w-full h-full bg-black" />}
+        {phase === 'lose1' && (
+          <div className="flex flex-col items-center gap-5">
+            <FrendyFigure size={210} />
+            <div className="font-display uppercase text-center text-base md:text-xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 14px rgba(255,45,45,0.55)' }}>КОШМАР ПОБЕДИЛ…</div>
+            <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{losePhrase}»</div>
+          </div>
+        )}
       </div>
     );
   }
