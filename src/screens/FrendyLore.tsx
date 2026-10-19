@@ -4,13 +4,15 @@ import { sfx } from '../sound';
 /* v0.128: ЛОР ФРЕНДИ — ОБЩИЙ БЛОК предыстории злодея.
    Живёт в двух местах:
    • «ПОМОЩЬ - ОБУЧЕНИЕ» — карточка под двумя курсами (v0.127);
-   • ЛОББИ партии FRENDY — там, где игрок выбирает фишку и хост нажимает
-     «Начать игру»: перед стартом каждый видит, ПРОТИВ КОГО играет (v0.128).
+   • ЭКРАН СТАРТА партии FRENDY (v0.129, перенесено из лобби) — панель
+     «ВСЕ СТАРТУЮТ ОДНОВРЕМЕННО», где каждый выбирает фишку и жмёт
+     «Старт игры»: перед стартом каждый видит, ПРОТИВ КОГО играет.
+     Там карточка КОМПАКТНАЯ (compact) — панель и без того высокая.
    Тексты — из запроса заказчика: Тайвань 90-х → нематериальное зло → плохая
    приставка на чердаке → печь → стальная перчатка из неописуемого зла →
    слияние с приставкой → ФРЕНДИ, мстящий детям плохими играми на Дэнди. */
 
-export function FrendyLore() {
+export function FrendyLore({ compact = false }: { compact?: boolean }) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -25,13 +27,13 @@ export function FrendyLore() {
       <button
         onClick={() => { sfx.click(); setOpen(true); }}
         onMouseEnter={() => sfx.hover()}
-        className="menu-row w-full text-left flex items-center gap-4 px-5 py-3.5 border-2 border-edge bg-[rgba(19,26,51,0.55)] transition-all hover:bg-panel2"
+        className={`menu-row w-full text-left flex items-center gap-4 border-2 border-edge bg-[rgba(19,26,51,0.55)] transition-all hover:bg-panel2 ${compact ? 'px-3.5 py-2.5' : 'px-5 py-3.5'}`}
         style={{ '--rowc': '#ff5d73' } as React.CSSProperties}
       >
-        <span className="shrink-0 font-pixel text-[15px]" style={{ color: '#ff5d73' }}>😈</span>
+        <span className={`shrink-0 font-pixel ${compact ? 'text-[12px]' : 'text-[15px]'}`} style={{ color: '#ff5d73' }}>😈</span>
         <span className="flex-1 min-w-0">
-          <span className="block font-display uppercase tracking-wide text-[14px] text-paper">Лор Френди — предыстория злодея</span>
-          <span className="block text-[10.5px] text-faint mt-0.5">Тайвань · чердак · печь · стальная перчатка — узнай, ПРОТИВ КОГО играешь, до того как нажмёшь «Начать игру»</span>
+          <span className={`block font-display uppercase tracking-wide text-paper ${compact ? 'text-[11.5px]' : 'text-[14px]'}`}>Лор Френди — предыстория злодея</span>
+          {!compact && <span className="block text-[10.5px] text-faint mt-0.5">Тайвань · чердак · печь · стальная перчатка — узнай, ПРОТИВ КОГО играешь, до того как нажмёшь «Начать игру»</span>}
         </span>
         <span className="font-pixel text-[9px]" style={{ color: '#ff5d73' }}>▶</span>
       </button>

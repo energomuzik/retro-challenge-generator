@@ -23,6 +23,7 @@ import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, 
 import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem } from '../types';
 import Randomizer from './Randomizer';
 import TradeWindow from './TradeWindow';
+import { FrendyLore } from './FrendyLore'; // v0.129: лор Френди — перенесён сюда из лобби (панель «ВСЕ СТАРТУЮТ ОДНОВРЕМЕННО»)
 import { nodeShowsQuests, nodeShowsShop } from '../dialogHubs';
 import { idbGet } from '../db';
 import { sfx } from '../sound';
@@ -1053,7 +1054,12 @@ export default function GameScreen() {
       const ch = sess.challenge;
       const emuRunning = !!ch && ch.started && (ch.status === 'playing' || ch.status === 'voting');
       const mine = act?.id === cur.selfId;
-      const myTask = emuRunning && mine; // МОЁ задание крутится — гасим звук только у меня
+      /* v0.129: + ЛИЧНЫЕ задания (QUEST/БОГАЧ/FRENDY/RUBG): их окно живёт в sess.qJobs/rubg.jobs,
+         sess.challenge НЕ ставится — раньше условие ниже НЕ срабатывало, и звуки карты
+         (мелодии с нот, idle NPC/боссов/анимаций) продолжали играть под эмулятором:
+         Френди затащил на ячейку — а мелодия с ноты накладывалась на музыку игры.
+         taskWinRef — окно МОЕГО личного задания открыто (любой из этих режимов). */
+      const myTask = (emuRunning && mine) || !!taskWinRef.current; // МОЁ задание крутится — гасим звук только у меня
       /* в QUEST «уши» — СВОЯ фишка (даже когда играет другой); иначе — фишка играющего */
       const questOwn = isQuestMode(m.mode)
         ? (sess.journeyPos?.[cur.selfId] ?? dispRef.current[cur.selfId] ?? null)
@@ -3702,6 +3708,13 @@ export default function GameScreen() {
                 )}
                 {isSkill && <p className="text-[11px] text-magma mt-2">SKILL CHALLENGE: играть будет только хост — вы зритель{mePlayer?.spect ? ' (и вы тоже)' : ''}.</p>}
                 {isSoloJourney && mePlayer?.spect && <p className="text-[11px] text-sky mt-2">JOURNEY: играет хост — вы зритель трансляции.</p>}
+                {/* v0.129: ЛОР ФРЕНДИ — на экране старта FRENDY (где «все стартуют одновременно», выбор фишки и «Старт игры»);
+                    перенесено из лобби: карточка компактная — панель и без того высокая. Модал открывается поверх. */}
+                {isFrendy && (
+                  <div className="mt-4 text-left">
+                    <FrendyLore compact />
+                  </div>
+                )}
                 {!isJourney && (
                   <div className="flex justify-center gap-4 mt-5 flex-wrap">
                     {roster.map((p) => (
