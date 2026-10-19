@@ -199,16 +199,17 @@ export function EndCredits({ map, sess, isFrendy, onClose }: { map: GameMap; ses
     onClose();
   };
 
-  /* Музыка титров (вшита в карту) — стартует с титрами */
+  /* Музыка титров (вшита в карту) — стартует с титрами. v0.128: громкость —
+     ползунок карты (creditsMusicVol, 0..1); у старых карт поля нет — как раньше 0.9 */
   useEffect(() => {
     if (phase !== 'roll' || !map.creditsMusic || musicRef.current) return;
     try {
       const a = new Audio(map.creditsMusic);
-      a.volume = Math.min(1, vol() * 0.9);
+      a.volume = Math.min(1, Math.max(0, vol() * (typeof map.creditsMusicVol === 'number' ? map.creditsMusicVol : 0.9)));
       void a.play().catch(() => { /* noop */ });
       musicRef.current = a;
     } catch { /* noop */ }
-  }, [phase, map.creditsMusic]);
+  }, [phase, map.creditsMusic, map.creditsMusicVol]);
 
   /* Победная катсцена: печь → Френди сгорает (озвучка по onended) → 2 секунды тишины → титры */
   useEffect(() => {

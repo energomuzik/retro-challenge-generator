@@ -11,6 +11,7 @@ import type { BossAnimDef, CustomChallenge, GameMap, MapMode, NpcAnimDef, Sessio
 import { mapModeModified, normResMode } from '../types';
 import { bossLibEntryOf, npcLibEntryOf, challengeSummaryLines, coinsStr, isSoloMode, PLAYER_COLORS, PLAYER_NAMES } from '../types';
 import { sfx } from '../sound';
+import { FrendyLore } from './FrendyLore'; // v0.128: лор Френди в лобби — виден при выборе фишки и перед «Начать игру»
 
 /* ---------- создание игры ---------- */
 
@@ -1341,6 +1342,14 @@ export function LobbyScreen() {
             {tokens.length === 0 && <span className="text-[11px] text-faint">Своих фишек нет — в «Редакторе фишек» можно нарисовать или загрузить PNG с прозрачностью</span>}
           </div>
         </div>
+        )}
+
+        {/* v0.128: ЛОР ФРЕНДИ в лобби карты FRENDY — предыстория злодея прямо там, где выбираешь
+           фишку и хост нажимает «Начать игру»: каждый игрок до старта видит, ПРОТИВ КОГО играет */}
+        {sessionMap?.mode === 'frendy' && (
+          <div className="mt-5">
+            <FrendyLore />
+          </div>
         )}
 
         <div className="mt-6 flex items-center justify-center gap-3 flex-wrap">

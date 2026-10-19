@@ -1060,6 +1060,7 @@ export default function GameScreen() {
         : null;
       const d = mine ? dispRef.current[cur.selfId] : questOwn;
       const wanted = new Map<string, string>();
+      const melGains = new Map<string, number>(); // v0.128: своя громкость каждой мелодии
       if (d && !myTask) {
         const alib = new Map((m.animLib ?? []).map((a) => [a.id, a]));
         for (const pa of m.anims ?? []) {
@@ -1093,7 +1094,23 @@ export default function GameScreen() {
           }
         }
       }
-      syncLoops('amb-', wanted);
+      /* ---------- v0.128: МЕЛОДИИ НА КАРТЕ — музыка с радиусом ----------
+         «Уши» — СВОЯ фишка КАЖДОГО игрока (в любом режиме): вошёл в круг — мелодия
+         плавно играет у него, вышел — затихает; r = 0/нет — слышна на всей карте.
+         ГЛАВНОЕ: у того, кто сейчас играет ЛИЧНОЕ ЗАДАНИЕ (myTask), мелодии ГЛОХНУТ
+         (wanted пуст), а после задания продолжатся С ТОГО ЖЕ МЕСТА (loopsnd хранит
+         позицию паузы) — старая проблема «NPC-музыка не глохла в задании» решена.
+         Громкость каждой мелодии — своя (gains). */
+      const melEar = sess.journeyPos?.[cur.selfId] ?? dispRef.current[cur.selfId] ?? null;
+      if (melEar && !myTask) {
+        for (const pm of m.melodies ?? []) {
+          if (!pm.src) continue;
+          if (pm.r && pm.r > 0 && Math.hypot(melEar.x - pm.x, melEar.y - pm.y) > pm.r) continue;
+          wanted.set('mel-' + pm.id, pm.src);
+          melGains.set('mel-' + pm.id, Math.max(0, Math.min(1, pm.vol ?? 1)));
+        }
+      }
+      syncLoops('amb-', wanted, undefined, melGains);
     }, 250);
     return () => { window.clearInterval(t); killGroup('amb-'); killGroup('mv-'); stopOneShot(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps

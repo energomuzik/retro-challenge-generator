@@ -156,6 +156,16 @@ export function bossAtPoint(map: GameMap, wx: number, wy: number): number {
   return -1;
 }
 
+/* v0.128: МЕЛОДИЯ под точкой — бейдж-нота (кружок ~30px); верхняя — та, что позже в массиве */
+export function melodyAtPoint(map: GameMap, wx: number, wy: number): number {
+  const ml = map.melodies ?? [];
+  for (let i = ml.length - 1; i >= 0; i--) {
+    const p = ml[i];
+    if (wx >= p.x - 15 && wx < p.x + 15 && wy >= p.y - 15 && wy < p.y + 15) return i;
+  }
+  return -1;
+}
+
 /* Текущий кадр клипа анимации по времени (мс): кадр = floor(секунды × fps) по кругу */
 export function clipFrameIdx(clip: AnimClip, timeMs: number): number {
   const n = clip.frames.length;
@@ -914,6 +924,48 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     } else {
       ctx.drawImage(img, -pa.w / 2, -pa.h / 2, pa.w, pa.h);
     }
+    ctx.restore();
+  }
+
+  // v0.128: МЕЛОДИИ НА КАРТЕ — бейдж-нота (виниловый кружок с ♪) и радиус проигрывания.
+  // Видны и в игре (полупрозрачно — видно, ОТКУДА музыка), и в редакторе;
+  // пунктирный круг радиуса — только в редакторе (o.sndRadii). r = 0/нет — без круга (вся карта)
+  for (const pm of map.melodies ?? []) {
+    if (o.sndRadii && pm.r && pm.r > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(pm.x, pm.y, pm.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(90,169,255,0.05)';
+      ctx.fill();
+      ctx.setLineDash([10, 7]);
+      ctx.strokeStyle = 'rgba(90,169,255,0.8)';
+      ctx.lineWidth = 2 / Math.max(0.05, view.zoom);
+      ctx.stroke();
+      ctx.restore();
+    }
+    const R = Math.max(11, 13 / Math.max(0.05, view.zoom));
+    ctx.save();
+    ctx.globalAlpha = o.sndRadii ? 1 : 0.62; // в редакторе ярче, в игре — скромный маркер
+    ctx.beginPath();
+    ctx.arc(pm.x, pm.y, R, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(13,18,38,0.85)';
+    ctx.fill();
+    ctx.lineWidth = 2 / Math.max(0.05, view.zoom);
+    ctx.strokeStyle = '#5aa9ff';
+    ctx.stroke();
+    // бороздки винила
+    ctx.strokeStyle = 'rgba(90,169,255,0.35)';
+    ctx.lineWidth = 1 / Math.max(0.05, view.zoom);
+    for (const rr of [R * 0.62, R * 0.38]) {
+      ctx.beginPath();
+      ctx.arc(pm.x, pm.y, rr, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#9bc4ff';
+    ctx.font = `${Math.round(R * 1.05)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('♪', pm.x, pm.y + R * 0.06);
     ctx.restore();
   }
 

@@ -13,6 +13,7 @@ interface LoopEntry {
   vol: number;   // текущая громкость 0..1 (до множителя базовой)
   target: number; // куда едем
   spd: number;    // скорость фейда за тик
+  g: number;      // v0.128: свой множитель громкости ключа (0..1) — у мелодий карты своя громкость
 }
 
 const loops = new Map<string, LoopEntry>();
@@ -35,7 +36,7 @@ const tick = () => {
     if (e.vol === e.target) continue;
     const d = e.spd;
     e.vol = Math.abs(e.target - e.vol) <= d ? e.target : e.vol + Math.sign(e.target - e.vol) * d;
-    e.audio.volume = Math.max(0, Math.min(1, e.vol * baseVolume()));
+    e.audio.volume = Math.max(0, Math.min(1, e.vol * baseVolume() * (e.g || 1)));
     if (e.target === 0 && e.vol === 0 && !e.audio.paused) e.audio.pause(); // затух — встал на паузу, но остаётся на случай возврата
   }
 };
@@ -43,20 +44,22 @@ const ensureTimer = () => {
   if (timer === null) timer = window.setInterval(tick, 90);
 };
 
-/** Запустить (или продолжить) зацикленный звук под ключом. instant — сразу полной громкостью. */
-export function startLoop(key: string, src: string, opts?: { instant?: boolean; spd?: number }) {
+/** Запустить (или продолжить) зацикленный звук под ключом. instant — сразу полной громкостью.
+    gain — свой множитель громкости ключа 0..1 (v0.128: у мелодий карты своя громкость). */
+export function startLoop(key: string, src: string, opts?: { instant?: boolean; spd?: number; gain?: number }) {
   let e = loops.get(key);
   if (!e || e.src !== src) {
     if (e) e.audio.pause();
     const audio = new Audio(src);
     audio.loop = true;
     audio.preload = 'auto';
-    e = { audio, src, vol: 0, target: 1, spd: opts?.spd ?? 0.08 };
+    e = { audio, src, vol: 0, target: 1, spd: opts?.spd ?? 0.08, g: opts?.gain ?? 1 };
     loops.set(key, e);
   }
   e.target = 1;
   e.spd = opts?.spd ?? e.spd;
-  if (opts?.instant) { e.vol = 1; e.audio.volume = Math.max(0, Math.min(1, baseVolume())); }
+  if (opts?.gain !== undefined) e.g = Math.max(0, Math.min(1, opts.gain));
+  if (opts?.instant) { e.vol = 1; e.audio.volume = Math.max(0, Math.min(1, baseVolume() * (e.g || 1))); }
   e.audio.play().catch(() => { /* автоплей до первого клика по странице — молча ждём */ });
   ensureTimer();
 }
@@ -89,10 +92,12 @@ export function killGroup(prefix: string) {
 
 /** Привести группу к желаемому состоянию: ключи из wanted играют (фейд-ин или
     ПРОДОЛЖЕНИЕ после паузы), остальные группы — гаснут. wanted: ключ(без префикса) → src.
+    gains (v0.128): ключ → свой множитель громкости 0..1 (мелодии карты); без записи — 1.
     Важно: луп, который уже есть и уже играл (затух и встал на паузу), при повторном
     появлении в wanted ПРОДОЛЖАЕТСЯ с места паузы — так звук радиуса звучит при каждом
-    входе в круг и возобновляется, когда в круге передали ход. */
-export function syncLoops(prefix: string, wanted: Map<string, string>, spd?: number) {
+    входе в круг и возобновляется, когда в круге передали ход; мелодия задания
+    продолжается с того же места после сдачи задания. */
+export function syncLoops(prefix: string, wanted: Map<string, string>, spd?: number, gains?: Map<string, number>) {
   for (const [key, e] of loops) {
     if (!key.startsWith(prefix)) continue;
     const id = key.slice(prefix.length);
@@ -102,7 +107,7 @@ export function syncLoops(prefix: string, wanted: Map<string, string>, spd?: num
   }
   // startLoop для ВСЕХ wanted: существующий луп просто вернёт target=1 и снимется с паузы,
   // уже играющий не пострадает (play() у играющего аудио — нет-оп)
-  for (const [id, src] of wanted) startLoop(prefix + id, src, { spd });
+  for (const [id, src] of wanted) startLoop(prefix + id, src, { spd, gain: gains?.get(id) });
   ensureTimer();
 }
 

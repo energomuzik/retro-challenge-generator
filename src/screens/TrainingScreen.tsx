@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store';
 import { GhostBtn, Ic, PxBtn } from '../ui';
 import { sfx } from '../sound';
+import { FrendyLore } from './FrendyLore'; // v0.128: общий блок лора Френди (карточка + окно) — он же в лобби
 import { TRAINING, type TSection, type TSlide } from '../trainingData';
 
 /* v0.81 ОБУЧЕНИЕ 2.0 — КАДРЫ-ШАГИ вместо одного снимка.
@@ -91,7 +92,6 @@ export default function TrainingScreen() {
   const { setScreen } = useApp();
 
   const [play, setPlay] = useState<PlayState | null>(null);
-  const [loreOpen, setLoreOpen] = useState(false); // v0.127: окно «ЛОР ФРЕНДИ» — предыстория злодея
   const [paused, setPaused] = useState(false);
   const [muted, setMuted] = useState(false);
   /* v0.92: голос озвучки — ДМИТРИЙ / КИНАМАН / БЛОГЕРЫ (заглушка: пока играет Дмитрий),
@@ -290,14 +290,6 @@ export default function TrainingScreen() {
     setFrame((f) => (f + 1) % it.slide.frames.length);
   }, [play]);
 
-  /* v0.127: Esc закрывает окно лора (когда слайды не открыты — у них свой Esc) */
-  useEffect(() => {
-    if (!loreOpen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLoreOpen(false); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [loreOpen]);
-
   /* Esc — закрыть окно слайдов; ←/→ — листать слайды; пробел — пауза */
   useEffect(() => {
     if (!play) return;
@@ -360,20 +352,10 @@ export default function TrainingScreen() {
             </button>
           ))}
         </div>
-        {/* v0.127: ЛОР ФРЕНДИ — карточка предыстории (текст без кадров/озвучки, по просьбе заказчика) */}
-        <button
-          onClick={() => { sfx.click(); setLoreOpen(true); }}
-          onMouseEnter={() => sfx.hover()}
-          className="menu-row sm:col-span-2 w-full text-left flex items-center gap-4 px-5 py-3.5 border-2 border-edge bg-[rgba(19,26,51,0.55)] transition-all hover:bg-panel2"
-          style={{ '--rowc': '#ff5d73' } as React.CSSProperties}
-        >
-          <span className="shrink-0 font-pixel text-[15px]" style={{ color: '#ff5d73' }}>😈</span>
-          <span className="flex-1 min-w-0">
-            <span className="block font-display uppercase tracking-wide text-[14px] text-paper">Лор Френди — предыстория злодея</span>
-            <span className="block text-[10.5px] text-faint mt-0.5">Тайвань · чердак · печь · стальная перчатка — откуда взялся кошмар на Дэнди</span>
-          </span>
-          <span className="font-pixel text-[9px]" style={{ color: '#ff5d73' }}>▶</span>
-        </button>
+        {/* v0.127→v0.128: ЛОР ФРЕНДИ — общий блок (карточка + окно), он же в лобби FRENDY */}
+        <div className="sm:col-span-2">
+          <FrendyLore />
+        </div>
         <p className="mt-3 mb-0.5 text-[10px] text-faint font-display uppercase tracking-wider">
           или один раздел по темам:
         </p>
@@ -503,26 +485,6 @@ export default function TrainingScreen() {
                   ? <GhostBtn small onClick={() => goTo(1)}>Далее ›</GhostBtn>
                   : <PxBtn small color="gold" onClick={close}>Готово</PxBtn>}
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* v0.127: окно «ЛОР ФРЕНДИ» — предыстория злодея (клик мимо панели или Esc закрывают) */}
-      {loreOpen && (
-        <div className="fixed inset-0 z-[85] bg-black/85 flex items-center justify-center p-4" onClick={() => setLoreOpen(false)}>
-          <div className="pixel-panel pixel-corners w-full max-w-xl max-h-[85vh] overflow-y-auto bg-[rgba(13,18,38,0.97)] border-2 border-[#ff5d73]/70 p-6" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between gap-3">
-              <div className="font-pixel text-[15px] title-glow" style={{ color: '#ff5d73' }}>ЛОР ФРЕНДИ</div>
-              <button title="Закрыть (Esc)" onClick={() => setLoreOpen(false)} className="px-2 py-1 border-2 border-edge text-dim font-pixel text-[10px] hover:text-paper hover:border-edge2">✕</button>
-            </div>
-            <p className="font-pixel text-[9px] text-faint uppercase tracking-wider mt-1 mb-4">предыстория злодея</p>
-            <div className="space-y-3.5 text-[12.5px] leading-relaxed text-paper/90">
-              <p>90-е. Тайвань. В недрах одной фабрики дешёвых приставок родилось зло — нематериальное, безымянное. Оно впитывало всё худшее из конвейера: хрип пиканья, ломаные крестовины, музыку, от которой сводило зубы, и бесконечные обещания красивых обложек.</p>
-              <p>Одну из приставок купили. Она оказалась настолько плоха, что её отправили пылиться на чердак. Прошло несколько лет — в доме затеяли уборку, и старый хлам полетел в печь. Вместе с приставкой.</p>
-              <p>Но среди хлама нашлась стальная перчатка с лезвиями на пальцах. Её выковали из зла, которое не описать словами. В огне печи перчатка слилась с приставкой — так родился <span className="font-display uppercase" style={{ color: '#ff5d73' }}>Френди</span>.</p>
-              <p>Теперь он мстит детям: заставляет играть в плохие игры на Дэнди — с ужасным управлением, пищащей музыкой, простейшей графикой и обнадёживающей обложкой. Соберёшь его микросхемы — придёт лично: с лапой-перчаткой и парой любезных фразочек.</p>
-              <p className="text-gold">Сожги все микросхемы Френди в печи — и, может быть, ты проснёшься.</p>
             </div>
           </div>
         </div>

@@ -22,6 +22,28 @@ const CORE_BASES: string[] = [LOCAL_DATA, ...CDN_FALLBACKS];
    После исчерпания остаётся ручная кнопка «Попробовать снова». */
 const AUTO_RETRY_MAX = 3;
 
+/* v0.128: АВАРИЙНАЯ ОЧИСТКА кэшей EmulatorJS (IndexedDB EmulatorJS-core/-bios/-roms/-states).
+   Диагноз «Uncaught RuntimeError: null function…» на КАЖДОМ запуске рома: при переполнении
+   диска C браузер мог записать в свой кэш ОБРЕЗАННЫЙ файл ядра — WebAssembly-модуль
+   собирается кривым и падает при первом вызове функции. Лечится только выкидыванием
+   кэша: чистим ТОЛЬКО кэши эмулятора — ромы/сохранения/карты приложения лежат в
+   СВОЕЙ базе retropolia-db и не пострадают. */
+async function wipeEmulatorCache(): Promise<void> {
+  const names = ['EmulatorJS-core', 'EmulatorJS-bios', 'EmulatorJS-roms', 'EmulatorJS-states'];
+  for (const n of names) {
+    try {
+      await new Promise<void>((res) => {
+        try {
+          const rq = indexedDB.deleteDatabase(n);
+          rq.onsuccess = () => res();
+          rq.onerror = () => res();
+          rq.onblocked = () => res(); // база занята живым iframe — попадёт под чистку после его закрытия
+        } catch { res(); }
+      });
+    } catch { /* noop */ }
+  }
+}
+
 export interface SegaApi {
   snapshot: () => Promise<string | null>; // base64-состояние ядра (живое, без перезапуска)
   /** Перезапуск ядра с применением сохранения (null = старт с начала).
@@ -121,12 +143,15 @@ export default function SegaBox({
   // АВТОПОВТОР: сколько раз ядро перезапускалось из-за сбоя загрузки (сбой CDN/сети/зависание).
   // Готовность сбрасывает счётчик; после AUTO_RETRY_MAX остаётся кнопка «Попробовать снова».
   const [autoRetry, setAutoRetry] = useState(0);
+  const [badRom, setBadRom] = useState(false); // v0.128: ром пустой/битый — внятная ошибка вместо бесконечных перезапусков
   const pausedRef = useRef(paused ?? false);
   pausedRef.current = paused ?? false;
   const pendingRef = useRef<Record<string, (s: string | null) => void>>({});
   const readyRef = useRef(false);
   // получили ли хоть одно «hello» от iframe (для точного сторожевого таймера)
   const gotHelloRef = useRef(false);
+  const wasmFixRef = useRef(false); // v0.128: аварийную чистку кэша EmulatorJS делаем ОДИН раз за жизнь компонента
+  const badRomRef = useRef(false); // v0.128: ром пустой/битый — не перезапускать автоповтором, показать внятную ошибку
   const romNameRef = useRef('game.' + (ext || 'md'));
   const romDataRef = useRef(romData);
   romDataRef.current = romData;
@@ -228,14 +253,39 @@ export default function SegaBox({
   useEffect(() => {
     const sendBoot = () => {
       try {
+        /* v0.128: пустой/обрезанный ром (переполненный диск C мог недописать блоб в IndexedDB)
+           раньше запускал ядро в никуда — вечная загрузка/невнятные ошибки ядра. Теперь —
+           внятная ошибка без автоповторов: перезагрузите ром в «Запусках эмулятора». */
+        const rom = romDataRef.current;
+        if (!rom || rom.byteLength < 512) {
+          badRomRef.current = true;
+          setBadRom(true);
+          setStatus('error');
+          return;
+        }
         frameRef.current?.contentWindow?.postMessage({ type: 'boot', rom: romDataRef.current, name: romNameRef.current }, '*');
       } catch { /* noop */ }
     };
     const onMsg = (e: MessageEvent) => {
       const frame = frameRef.current;
       if (frame && e.source && e.source !== frame.contentWindow) return;
-      const d = e.data as { type?: string; state?: string | null; reqId?: string } | null;
+      const d = e.data as { type?: string; state?: string | null; reqId?: string; wasm?: number } | null;
       if (!d || typeof d.type !== 'string') return;
+      if (d.type === 'ejs-fatal') {
+        /* v0.128: ядро упало с WASM-ошибкой («null function» — битый кэш ядра с переполненного
+           диска). Один раз за жизнь компонента: перемонтируем iframe (освобождает базы),
+           чистим кэши EmulatorJS, перемонтируем ещё раз — уже с чистым кэшем. */
+        if ((d.wasm ?? 0) === 1 && !wasmFixRef.current) {
+          wasmFixRef.current = true;
+          useApp.getState().toast('Ядро эмулятора повреждено в кэше браузера — чищу кэш эмулятора и перезапускаю…', 'info');
+          void (async () => {
+            setBootTick((t) => t + 1); // закрыть старый iframe — отпустить базы EmulatorJS
+            await wipeEmulatorCache();
+            setBootTick((t) => t + 1); // перезапуск на чистом кэше
+          })();
+        }
+        return;
+      }
       if (d.type === 'ejs-hello') {
         gotHelloRef.current = true; // iframe жив и отвечает — скрипт цел
         sendBoot();
@@ -368,13 +418,14 @@ export default function SegaBox({
   }, [status]);
   useEffect(() => {
     if (status !== 'error') return;
+    if (badRomRef.current) return; // v0.128: битый ром — автоповтор бессмыслен, ждём новый файл от пользователя
     if (autoRetry >= AUTO_RETRY_MAX) return;
     const t = setTimeout(() => {
       setAutoRetry((n) => n + 1);
       setBootTick((t2) => t2 + 1); // пересобрать srcDoc + перемонтировать iframe — полная новая попытка
     }, 2500);
     return () => clearTimeout(t);
-  }, [status, autoRetry]);
+  }, [status, autoRetry, badRom]);
 
   // внешняя пауза — сообщением в работающее ядро
   useEffect(() => {
@@ -422,14 +473,25 @@ export default function SegaBox({
       )}
       {status === 'error' && (
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-[#05070f] p-6 text-center">
-          <span className="font-pixel text-[9px] text-coral">НЕ УДАЛОСЬ ЗАГРУЗИТЬ ЯДРО</span>
-          <span className="text-[11px] text-dim leading-relaxed max-w-sm">
-            {autoRetry >= AUTO_RETRY_MAX
-              ? `Автоповторы (${AUTO_RETRY_MAX}) не помогли. Ядра лежат внутри сайта — если не грузятся даже они, проверьте соединение (запасной источник — CDN emulatorjs.org) и попробуйте ещё раз.`
-              : `Сбой загрузки ядра ${coreLabel} — сейчас перезапустимся автоматически (попытка ${autoRetry + 1} из ${AUTO_RETRY_MAX}). Основной источник — свой сайт, запасной — CDN.`}
-          </span>
+          {badRom ? (
+            <>
+              <span className="font-pixel text-[9px] text-coral">ROM-ФАЙЛ ПОВРЕЖДЁН ИЛИ ПУСТ</span>
+              <span className="text-[11px] text-dim leading-relaxed max-w-sm">
+                Внутри рома меньше половины килобайта — так бывает, когда диск был переполнен и браузер недописал файл в свою библиотеку. Сам ром не спасти: перезагрузите его заново в «Запусках эмулятора» (кнопка «Добавить ромы») — сохранения при этом не пропадут. Если беда со ВСЕМИ ромами — переподключите диск и проверьте, что на нём есть свободное место.
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="font-pixel text-[9px] text-coral">НЕ УДАЛОСЬ ЗАГРУЗИТЬ ЯДРО</span>
+              <span className="text-[11px] text-dim leading-relaxed max-w-sm">
+                {autoRetry >= AUTO_RETRY_MAX
+                  ? `Автоповторы (${AUTO_RETRY_MAX}) не помогли. Ядра лежат внутри сайта — если не грузятся даже они, проверьте соединение (запасной источник — CDN emulatorjs.org) и попробуйте ещё раз.`
+                  : `Сбой загрузки ядра ${coreLabel} — сейчас перезапустимся автоматически (попытка ${autoRetry + 1} из ${AUTO_RETRY_MAX}). Основной источник — свой сайт, запасной — CDN.`}
+              </span>
+            </>
+          )}
           <button
-            onClick={() => { setAutoRetry(0); setBootTick((t) => t + 1); }}
+            onClick={() => { badRomRef.current = false; setBadRom(false); setAutoRetry(0); setBootTick((t) => t + 1); }}
             className="px-4 py-1.5 border-2 border-gold text-gold font-pixel text-[9px] uppercase cursor-pointer hover:bg-gold/10"
           >↻ Попробовать снова</button>
         </div>
@@ -809,8 +871,18 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     'function b64ToU8(b){var bin=atob(b);var u8=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++){u8[i]=bin.charCodeAt(i);}return u8;}',
     'function showErr(t){var el=document.getElementById("err");el.textContent=t;el.style.display="block";try{parent.postMessage({type:"ejs-error"},"*");}catch(e){}}',
     // страховка: любые ошибки исполнения внутри эмулятора показываем на экране,
-    // чтобы поломка не выглядела как бесконечная загрузка
-    'window.onerror=function(m){try{showErr("Ошибка эмулятора: "+m);}catch(e){}};',
+    // чтобы поломка не выглядела как бесконечная загрузка. v0.128 — умный фильтр:
+    // (1) глюк геймпада EmulatorJS («Cannot read properties of undefined (reading 'id')»
+    //     в обработчике connect/disconnect) — НЕ показываем и НЕ перезапускаем ядро:
+    //     игра продолжает работать, раньше из-за этой мелочи эмулятор ПЕРЕЗАПУСКАЛСЯ;
+    // (2) WASM-ошибки («null function» — битый кэш ядра, см. чистку в SegaBox.tsx) —
+    //     помечаем «ЯДРО…» и сообщаем наружу (ejs-fatal) для автолечения;
+    // (3) прочее — как раньше.
+    'window.onerror=function(m){var s=String(m||"");',
+    '  if(s.indexOf("TypeError")>=0&&(s.indexOf("(reading \'id\')")>=0||s.indexOf("(reading \'index\')")>=0)){try{console.warn("глюк геймпада EmulatorJS — подавлен:",s);}catch(e0){}return;}',
+    '  var wasm=/null function|RuntimeError|memory access|abort\\(/.test(s);',
+    '  try{showErr((wasm?"ЯДРО ЭМУЛЯТОРА ПОВРЕЖДЕНО: ":"Ошибка эмулятора: ")+m);}catch(e){}',
+    '  try{parent.postMessage({type:"ejs-fatal",wasm:wasm?1:0},"*");}catch(e2){}};',
 
     // -------- пауза: каскад методов + повторы, пока ядро поднимается --------
     'function doPause(p){',

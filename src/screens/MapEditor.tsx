@@ -6,14 +6,14 @@ import { TradeShopEditor } from './TradeEditor';
 import { allDlgFlags, ensureQuestDialog, ensureShopDialog } from '../dialogHubs';
 import { patrolLen, patrolTimeline } from '../patrol';
 import {
-  CELL, mapSize, drawBoard, fitView, cellAtPoint, stampAtPoint, animAtPoint, bossAtPoint, cellBox, cellCenter,
+  CELL, mapSize, drawBoard, fitView, cellAtPoint, stampAtPoint, animAtPoint, bossAtPoint, melodyAtPoint, cellBox, cellCenter,
   renumberByPath, normCellsLegacy, fixLinksAfterDelete, startCellIdx, tileContentShift,
 } from '../render';
 import { extractTilesFromImage, scaleTileImg } from '../tilecut';
 import { METHOD_HINTS, METHOD_LABELS, methodFactors, runUpscale, upscaleWarn, type ScaleMethod } from '../upscaler'; // v0.98: апскейлер пиксель-картинок
 import type { ExtractInfo } from '../tilecut';
 import { idbDel, idbGet, idbPut, uid } from '../db';
-import type { AnimDef, BossAnimDef, CellDef, CellType, CustomChallenge, CutsceneDef, GameMap, MapEnding, MapTileInfo, NpcAnimDef, NpcLibEntry, NpcQuest, NpcShopOffer, PatrolDef, PlacedAnim, PlacedBoss, PlacedNpc, PlateBg, PortalZone, QuestGoal, QuestGoalKind, RubgItemKind, Stamp, TaskDef, TileGrid, TilePlay, TokenDef, TileGroup, TileImg, WallRect } from '../types';
+import type { AnimDef, BossAnimDef, CellDef, CellType, CustomChallenge, CutsceneDef, GameMap, MapEnding, MapTileInfo, NpcAnimDef, NpcLibEntry, NpcQuest, NpcShopOffer, PatrolDef, PlacedAnim, PlacedBoss, PlacedMelody, PlacedNpc, PlateBg, PortalZone, QuestGoal, QuestGoalKind, RubgItemKind, Stamp, TaskDef, TileGrid, TilePlay, TokenDef, TileGroup, TileImg, WallRect } from '../types';
 import { frameWallsOf, chaosLabel, DONATE_DICE_ONLY } from '../types';
 import { hasDice } from '../bogach'; // v0.109: карта с кубиковыми пакостями/радостями в режиме без кубиков не сохраняется
 import { baseModeOf, bossLibEntryOf, challengeSummaryLines, coinsStr, doorKeyHex, isJourneyLike, isQuestMode, isSoloMode, mapModeModified, MAP_MODES, MAP_MODES_TOP, MAX_FIELD, MODE_PRESETS, normResMode, npcLibEntryOf, PLATE_SIZES, questGoalText, soloVariantOf, tileGridDims, tileRectOf, tilePlayOf, TILE_PLAY_OPTS, DOOR_KEYS, RUBG_ITEMS, RUBG_ZONE_PHASES, rubgFmtZone } from '../types';
@@ -105,7 +105,7 @@ function migrateMap(m: GameMap, libTiles: { id: string; dataUrl: string; gw: num
 
 /* ---------- инструменты ---------- */
 
-type Tool = 'select' | 'tile' | 'cell' | 'link' | 'hop' | 'anim' | 'boss' | 'npc' | 'wall' | 'portal' | 'erase' | 'pan';
+type Tool = 'select' | 'tile' | 'cell' | 'link' | 'hop' | 'anim' | 'boss' | 'npc' | 'wall' | 'portal' | 'melody' | 'erase' | 'pan';
 
 /* ---------- v0.52: ПАТРУЛИРОВАНИЕ — общий редактор маршрута для NPC и боссов ----------
    Точка 1 — «дом» персонажа (там, где он стоит в редакторе); обход по кругу 1→2→…→1.
@@ -191,6 +191,7 @@ const TOOLS: { key: Tool; label: string; hint: string }[] = [
   { key: 'link', label: 'Стрелка', hint: 'клик по ячейке А, затем по Б. У БЕЗНОМЕРНОЙ ячейки стрелка — куда шагает фишка; у ПРОНУМЕРОВАННОЙ — прыжок при остановке. Клик по той же ячейке — убрать' },
   { key: 'hop', label: 'Переход', hint: 'ВТОРАЯ стрелка: клик по ячейке А, затем по Б — когда фишка ОСТАНОВИТСЯ на А, она прыгнет на Б (выход из круга, штраф-телепорт). Клик по той же ячейке — убрать' },
   { key: 'anim', label: 'Анимация', hint: 'выберите анимацию в левой панели, кликните по карте — поставится проигрыватель анимации. Клик по уже стоящей — выбрать и тянуть' },
+  { key: 'melody', label: 'Мелодия', hint: 'кликните по карте — выберите музыкальный файл, он вшьётся в карту нотой ♪. Громкость, радиус проигрывания и прослушка — в панели справа. Клик по ноте — выбрать и тянуть. На время задания мелодия у играющего ГЛОХНЕТ и продолжается после' },
   { key: 'boss', label: 'Босс', hint: 'вшейте босса в карту (спойлер «Боссы» слева), выберите его и кликните по карте — босс встанет на ячейку: живёт (idle), реагирует на победы/поражения игроков в радиусе' },
   { key: 'wall', label: 'Стена', hint: 'НЕВИДИМАЯ стена (JOURNEY, JOURNEY SOLO, QUEST, QUEST SOLO и RUBG): протяните прямоугольник — фишка не сможет зайти внутрь. Клик по стене — выбрать и тянуть. В игре стены НЕ видны; выполненный квест NPC может СНЯТЬ стену' },
   { key: 'npc', label: 'NPC', hint: 'вшейте NPC в карту (спойлер «🧑 NPC» слева), выберите его и кликните по карте — интерактивный персонаж режима QUEST: диалоговое дерево, квесты с наградами, снятие стен, радиус звука. Клик по уже стоящему — выбрать и тянуть' },
@@ -496,6 +497,7 @@ export default function MapEditor() {
   const [activeLayer, setActiveLayer] = useState(0); // слой, на который ставятся НОВЫЕ тайлы (0 — нижний)
   const [placeAnimId, setPlaceAnimId] = useState(''); // вшитая анимация, выбранная для размещения
   const [selAnim, setSelAnim] = useState<string | null>(null); // выбранная размещённая анимация
+  const [selMelody, setSelMelody] = useState<string | null>(null); // v0.128: выбранная мелодия на карте
   const [placeNpcId, setPlaceNpcId] = useState(''); // вшитый NPC, выбранный для размещения
   const [selNpc, setSelNpc] = useState<string | null>(null); // выбранный размещённый NPC
   const [dlgWinOpen, setDlgWinOpen] = useState(false); // окно «Редактор диалогов» NPC (всё на схеме, v0.51)
@@ -533,6 +535,10 @@ export default function MapEditor() {
   const filesRef = useRef<HTMLInputElement>(null);
   const bgRef = useRef<HTMLInputElement>(null);
   const credRef = useRef<HTMLInputElement>(null); // v0.124: выбор мелодии титров (вшивается в карту)
+  const melFileRef = useRef<HTMLInputElement>(null); // v0.128: выбор файла мелодии на карту (вшивается в карту)
+  const melPlacePtRef = useRef<{ x: number; y: number } | null>(null); // куда ставить мелодию после выбора файла
+  const melReplaceIdRef = useRef<string | null>(null); // v0.128: заменить файл У ЭТОЙ мелодии (вместо установки новой)
+  const melPrevRef = useRef<HTMLAudioElement | null>(null); // прослушка мелодии в панели свойств
   const extRef = useRef<HTMLInputElement>(null);
   const ghostRef = useRef<HTMLImageElement | null>(null);
   const ghostAnimRef = useRef<HTMLImageElement | null>(null); // первый кадр выбранной для размещения анимации (натуральный размер)
@@ -541,7 +547,7 @@ export default function MapEditor() {
   const viewRef = useRef(view); viewRef.current = view;
   const mapRef = useRef(map); mapRef.current = map;
   const dragRef = useRef<{ sx: number; sy: number; vx: number; vy: number } | null>(null);
-  const objDragRef = useRef<{ kind: 'cell' | 'stamp' | 'anim' | 'boss' | 'npc' | 'wall' | 'portal' | 'patrolNpc' | 'patrolBoss' | 'cutPt'; idx: number; ptIdx?: number; dx: number; dy: number; moved: boolean } | null>(null);
+  const objDragRef = useRef<{ kind: 'cell' | 'stamp' | 'anim' | 'boss' | 'npc' | 'wall' | 'portal' | 'melody' | 'patrolNpc' | 'patrolBoss' | 'cutPt'; idx: number; ptIdx?: number; dx: number; dy: number; moved: boolean } | null>(null);
   const wallDragRef = useRef<{ sx: number; sy: number; ex: number; ey: number } | null>(null); // протягивание НОВОЙ стены
   const portalDragRef = useRef<{ sx: number; sy: number; ex: number; ey: number } | null>(null); // протягивание НОВОГО портала
   const resizeRef = useRef<{ kind: 'stamp' | 'anim' | 'boss' | 'npc'; idx: number } | null>(null); // ресайз тайла/анимации/босса/NPC за уголок
@@ -817,6 +823,43 @@ export default function MapEditor() {
     }
     setMap((mm) => (mm ? { ...mm, anims: (mm.anims ?? []).filter((a) => a.id !== aid) } : mm));
     setSelAnim(null);
+    dirtyRef.current = true;
+    sfx.fail();
+  };
+  /* ---------- v0.128: МЕЛОДИИ НА КАРТЕ — обновить/удалить (с отменой через «Вернуть») ---------- */
+  const updMel = (idx: number, patch: Partial<PlacedMelody>) =>
+    setMap((m) => {
+      if (!m || !m.melodies || !m.melodies[idx]) return m;
+      const arr = m.melodies.slice();
+      arr[idx] = { ...arr[idx], ...patch };
+      return { ...m, melodies: arr };
+    });
+  const removeMel = (mid: string) => {
+    const m = mapRef.current;
+    const idx = m ? (m.melodies ?? []).findIndex((x) => x.id === mid) : -1;
+    if (m && idx >= 0) {
+      const snap = m.melodies![idx];
+      rememberDeleted({
+        label: `мелодию «${snap.name ?? 'без названия'}» с карты`,
+        restore: async () => {
+          setMap((mm) => {
+            if (!mm || mm.id !== m.id) return mm;
+            const arr = (mm.melodies ?? []).slice();
+            arr.splice(Math.min(idx, arr.length), 0, snap);
+            return { ...mm, melodies: arr };
+          });
+          const cur = await idbGet<GameMap>('maps', m.id);
+          if (cur) {
+            const arr = (cur.melodies ?? []).slice();
+            arr.splice(Math.min(idx, arr.length), 0, snap);
+            await idbPut('maps', m.id, { ...cur, melodies: arr, updatedAt: Date.now() });
+            await useApp.getState().refresh();
+          }
+        },
+      });
+    }
+    setMap((mm) => (mm ? { ...mm, melodies: (mm.melodies ?? []).filter((x) => x.id !== mid) } : mm));
+    setSelMelody(null);
     dirtyRef.current = true;
     sfx.fail();
   };
@@ -1680,6 +1723,41 @@ export default function MapEditor() {
     rd.readAsDataURL(f);
   };
 
+  /* v0.128: МЕЛОДИЯ НА КАРТУ — файл вшивается В КАРТУ нотой ♪ в точку клика.
+   Радиус по умолчанию 320px (клетка 64px — круг ~5 клеток), громкость 100%. */
+  const setMelodyFiles = (files: FileList | null) => {
+    const f = files?.[0];
+    const replaceId = melReplaceIdRef.current;
+    const pt = melPlacePtRef.current;
+    if (!f || (!pt && !replaceId)) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      const src = String(rd.result || '');
+      if (!src) { toast('Не удалось прочитать мелодию', 'err'); return; }
+      if (replaceId) {
+        // ЗАМЕНА файла у существующей ноты: позиция/радиус/громкость остаются
+        try { melPrevRef.current?.pause(); melPrevRef.current = null; } catch { /* noop */ }
+        setMap((mm) => (mm ? { ...mm, melodies: (mm.melodies ?? []).map((x) => (x.id === replaceId ? { ...x, src, name: f.name } : x)) } : mm));
+        dirtyRef.current = true;
+        sfx.coin();
+        toast('Файл мелодии заменён — нота осталась на месте', 'ok');
+        return;
+      }
+      const pm: PlacedMelody = { id: uid('mel'), x: pt!.x, y: pt!.y, src, name: f.name, vol: 1, r: 320 };
+      setMap((mm) => (mm ? { ...mm, melodies: [...(mm.melodies ?? []), pm] } : mm));
+      setSelMelody(pm.id);
+      setSelCell(null);
+      setSelStamp(null);
+      setSelAnim(null);
+      setSelBoss(null);
+      setSelNpc(null);
+      dirtyRef.current = true;
+      sfx.coin();
+      toast('Мелодия вшита в карту нотой ♪ — громкость, радиус и прослушку настройте в панели справа', 'ok');
+    };
+    rd.readAsDataURL(f);
+  };
+
   /* v0.99: выбор фона из УЖЕ ГОТОВЫХ тайлов карты (например, из спойлера «Апскейл» —
      найденную карту мира сначала апскейлим, потом берём её фоном ПРЯМО ИЗ ПАЛИТРЫ,
      без повторного выбора файла с компьютера). Картинка НЕ пережимается — в фон уходит
@@ -2270,6 +2348,20 @@ export default function MapEditor() {
         sfx.hover();
         return;
       }
+      /* v0.128: мелодии тоже таскаются «Выбором» — как анимации */
+      const mli = melodyAtPoint(m, w.x, w.y);
+      if (mli >= 0) {
+        const pm = (m.melodies ?? [])[mli];
+        objDragRef.current = { kind: 'melody', idx: mli, dx: w.x - pm.x, dy: w.y - pm.y, moved: false };
+        setSelMelody(pm.id);
+        setSelCell(null);
+        setSelStamp(null);
+        setSelAnim(null);
+        setSelBoss(null);
+        setSelNpc(null);
+        sfx.hover();
+        return;
+      }
       const ci = cellAtPoint(m, w.x, w.y);
       if (ci >= 0) {
         const c = cellCenter(m, ci);
@@ -2373,6 +2465,26 @@ export default function MapEditor() {
       } else {
         toast('Сначала выберите анимацию в левой панели (спойлер «Анимации»)', 'info');
       }
+      return;
+    }
+    if (tool === 'melody') {
+      // v0.128: клик по уже стоящей ноте — выбрать и тянуть; иначе — выбор файла и установка ноты в точку клика
+      const mli = melodyAtPoint(m, w.x, w.y);
+      if (mli >= 0) {
+        const pm = (m.melodies ?? [])[mli];
+        objDragRef.current = { kind: 'melody', idx: mli, dx: w.x - pm.x, dy: w.y - pm.y, moved: false };
+        setSelMelody(pm.id);
+        setSelCell(null);
+        setSelStamp(null);
+        setSelAnim(null);
+        setSelBoss(null);
+        setSelNpc(null);
+        sfx.hover();
+        return;
+      }
+      melPlacePtRef.current = { x: Math.round(w.x), y: Math.round(w.y) };
+      melReplaceIdRef.current = null;
+      melFileRef.current?.click();
       return;
     }
     if (tool === 'boss') {
@@ -2573,6 +2685,7 @@ export default function MapEditor() {
       dirtyRef.current = true;
       if (od.kind === 'cell') updCell(od.idx, { cx: Math.round(p.x), cy: Math.round(p.y) });
       else if (od.kind === 'anim') updAnim(od.idx, { x: Math.round(p.x), y: Math.round(p.y) });
+      else if (od.kind === 'melody') updMel(od.idx, { x: Math.round(w.x - od.dx), y: Math.round(w.y - od.dy) }); // нота — без привязки к сетке
       else if (od.kind === 'boss') updBoss(od.idx, { x: Math.round(p.x), y: Math.round(p.y) });
       else if (od.kind === 'npc') updNpc(od.idx, { x: Math.round(p.x), y: Math.round(p.y) });
       else if (od.kind === 'patrolNpc') {
@@ -2718,7 +2831,7 @@ export default function MapEditor() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
-      if (e.key === 'Escape') { setLinkFrom(null); setSelCell(null); setSelStamp(null); setSelAnim(null); setSelBoss(null); setSelWall(null); setSelPortal(null); setPickTargetFor(null); setPlaceAnimId(''); setCutZoneArm(false); setCutPtArm(false); setSelCutIdx(null); return; }
+      if (e.key === 'Escape') { setLinkFrom(null); setSelCell(null); setSelStamp(null); setSelAnim(null); setSelMelody(null); setSelBoss(null); setSelWall(null); setSelPortal(null); setPickTargetFor(null); setPlaceAnimId(''); setCutZoneArm(false); setCutPtArm(false); setSelCutIdx(null); return; }
       if (!map) return;
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (e.repeat) return; // удержание обрабатывает useKeyDelete (режим «долгое нажатие»)
@@ -2728,6 +2841,9 @@ export default function MapEditor() {
         } else if (selAnim) {
           const an = (map.anims ?? []).find((a) => a.id === selAnim);
           keyDel.keyDeleteStart(`анимацию «${(map.animLib ?? []).find((x) => x.id === an?.aid)?.name ?? 'с карты'}»`, () => removeAnim(selAnim));
+        } else if (selMelody) {
+          const pm = (map.melodies ?? []).find((x) => x.id === selMelody);
+          keyDel.keyDeleteStart(`мелодию «${pm?.name ?? 'без названия'}» с карты`, () => removeMel(selMelody));
         } else if (selBoss) {
           const b = (map.bosses ?? []).find((x) => x.id === selBoss);
           keyDel.keyDeleteStart(`босса «${(map.bossLib ?? []).find((x) => x.id === b?.bid)?.name ?? 'с карты'}»`, () => removeBossAt(selBoss));
@@ -3098,6 +3214,31 @@ export default function MapEditor() {
             ctx.strokeRect(hx - hs, hy - hs, hs * 2, hs * 2);
           }
         }
+        // v0.128: выделенная мелодия — золотое кольцо + ярче круг радиуса
+        const mIdx = (m.melodies ?? []).findIndex((x) => x.id === selMelody);
+        if (mIdx >= 0) {
+          const pm = m.melodies![mIdx];
+          if (pm.r && pm.r > 0) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(pm.x, pm.y, pm.r, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,207,63,0.06)';
+            ctx.fill();
+            ctx.setLineDash([10 / v.zoom, 7 / v.zoom]);
+            ctx.strokeStyle = 'rgba(255,207,63,0.85)';
+            ctx.lineWidth = 2.5 / v.zoom;
+            ctx.stroke();
+            ctx.restore();
+          }
+          const R = Math.max(11, 13 / v.zoom) + 5 / v.zoom;
+          ctx.save();
+          ctx.strokeStyle = '#ffcf3f';
+          ctx.lineWidth = 2.5 / v.zoom;
+          ctx.beginPath();
+          ctx.arc(pm.x, pm.y, R, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
         // выделенная ячейка
         if (selCell !== null && m.cells[selCell]) {
           const b = cellBox(m, selCell);
@@ -3162,7 +3303,13 @@ export default function MapEditor() {
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [legacyTileById, showGrid, selCell, selStamp, selStampIdx, selAnim, linkFrom, hoverW, tileId, selWall]);
+  }, [legacyTileById, showGrid, selCell, selStamp, selStampIdx, selAnim, selMelody, linkFrom, hoverW, tileId, selWall]);
+
+  /* v0.128: уходя с редактора (или при размонтировании) — остановить прослушку мелодии */
+  useEffect(() => () => {
+    try { melPrevRef.current?.pause(); } catch { /* noop */ }
+    melPrevRef.current = null;
+  }, []);
 
   /* ─── панели ─── */
   const saveMap = async () => {
@@ -3511,6 +3658,8 @@ export default function MapEditor() {
   const selAnimIdx = map ? (map.anims ?? []).findIndex((a) => a.id === selAnim) : -1;
   const selAnimDef = map && selAnimIdx >= 0 ? map.anims![selAnimIdx] : null;
   const selAnimLib = map && selAnimDef ? (map.animLib ?? []).find((x) => x.id === selAnimDef.aid) : null;
+  const selMelIdx = map ? (map.melodies ?? []).findIndex((x) => x.id === selMelody) : -1;
+  const selMelDef = map && selMelIdx >= 0 ? map.melodies![selMelIdx] : null;
   const selBossIdx = map ? (map.bosses ?? []).findIndex((b) => b.id === selBoss) : -1;
   const selBossDef = map && selBossIdx >= 0 ? map.bosses![selBossIdx] : null;
   const selBossLib = map && selBossDef ? (map.bossLib ?? []).find((x) => x.id === selBossDef.bid) : null;
@@ -3709,18 +3858,19 @@ export default function MapEditor() {
                 )}
                 {/* v0.99: фон можно взять ИЗ ТАЙЛОВ карты — например, уже заапскейленную карту мира из спойлера «Апскейл» */}
                 <GhostBtn small className="w-full mt-1.5" onClick={() => { setBgPick(true); sfx.hover(); }} title="Выбрать картинку фона из тайлов этой карты — например, из спойлера «Апскейл» (заапскейленная карта мира)">🖼 Взять фон из тайлов карты</GhostBtn>
-                {/* v0.124: МЕЛОДИЯ ТИТРОВ — вшивается в карту, играет в конце партии */}
+                {/* v0.124: МЕЛОДИЯ ТИТРОВ — вшивается в карту, играет в конце партии; v0.128: + громкость */}
                 <div className="mt-3 pt-2 border-t-2 border-edge">
                   <div className="tick-label mb-1.5">🎵 Мелодия титров</div>
                   {map.creditsMusic ? (
                     <div className="space-y-1">
                       <audio controls src={map.creditsMusic} className="w-full h-8" />
-                      <GhostBtn small className="w-full" onClick={() => { updMap({ creditsMusic: undefined }); sfx.fail(); }}>Убрать мелодию титров</GhostBtn>
+                      <div className="flex items-center justify-between"><span className="text-[10px] text-dim">Громкость в титрах</span><Stepper value={Math.round((map.creditsMusicVol ?? 0.9) * 100)} onChange={(v) => { updMap({ creditsMusicVol: Math.max(0, Math.min(1, v / 100)) } as Partial<GameMap>); dirtyRef.current = true; }} min={0} max={100} step={5} suffix=" %" /></div>
+                      <GhostBtn small className="w-full" onClick={() => { updMap({ creditsMusic: undefined, creditsMusicVol: undefined } as Partial<GameMap>); sfx.fail(); }}>Убрать мелодию титров</GhostBtn>
                     </div>
                   ) : (
                     <GhostBtn small className="w-full" onClick={() => { credRef.current?.click(); }}>{Ic.plus(12)} Добавить мелодию в титры</GhostBtn>
                   )}
-                  <p className="text-[9px] text-faint leading-tight mt-1">Музыка играет во время титров в конце партии (в любом режиме). Во FRENDY на стингере Френди она замирает и продолжает с того же места. Файл вшивается В КАРТУ — на сервер не заливается.</p>
+                  <p className="text-[9px] text-faint leading-tight mt-1">Музыка играет во время титров в конце партии (в любом режиме). Во FRENDY на стингере Френди она замирает и продолжает с того же места. Громкость — своя у карты (у старых карт без ползунка — как раньше 90%). Файл вшивается В КАРТУ — на сервер не заливается.</p>
                 </div>
               </div>
 
@@ -5002,7 +5152,7 @@ export default function MapEditor() {
                 {tool === 'portal' && <div className="text-[rgb(192,122,255)] font-pixel text-[8px]">{pickTargetFor !== null ? `ПОРТАЛ ${pickTargetFor + 1}: кликните по карте — КУДА переносить (плитку переключите в панели «Плитки и порталы») · Esc — отмена` : 'ПОРТАЛ: протяните зону входа · после этого кликните по карте — куда переносить · клик по порталу — выбрать и тянуть · Delete — удалить'}</div>}
               </div>
               {/* подсказки мыши (v0.46.0: фон + лимит ширины; скрыта, пока открыта правая панель, — раньше текст НАКЛАДЫВАЛСЯ на панель и на статус) */}
-              {!(selCellDef && selCell !== null) && !selStampDef && !selAnimDef && !selBossDef && !selNpcDef && (
+              {!(selCellDef && selCell !== null) && !selStampDef && !selAnimDef && !selMelDef && !selBossDef && !selNpcDef && (
                 <div className="absolute bottom-3 right-3 hud-chip pixel-corners px-2.5 py-1.5 max-w-[min(560px,44%)] tick-label text-faint text-right pointer-events-none">
                   колесо или ＋/− сверху — зум · ПКМ — камера · Delete — удалить (по режиму из Опций) · R — поворот · жёлтый угол тайла — размер
                 </div>
@@ -5409,6 +5559,70 @@ export default function MapEditor() {
                 </div>
               )}
 
+              {/* v0.128: панель размещённой МЕЛОДИИ (нота ♪ на карте) */}
+              {selMelDef && !selCellDef && !selStampDef && !selAnimDef && (
+                <div className="absolute top-14 right-3 w-[264px] pixel-panel pixel-corners p-3.5 space-y-3 pop-in shadow-[0_14px_40px_rgba(0,0,0,0.6)] max-h-[calc(100%-80px)] overflow-y-auto">
+                  <div className="flex items-center justify-between">
+                    <span className="font-display uppercase text-[12px] text-[#5aa9ff] truncate">Мелодия · {selMelDef.name ?? 'без названия'}</span>
+                    <button onClick={() => { setSelMelody(null); sfx.hover(); }} className="text-dim hover:text-coral cursor-pointer" aria-label="Закрыть">{Ic.cross(14)}</button>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <div className="w-14 h-14 shrink-0 flex items-center justify-center border-2 border-[#5aa9ff]/50 rounded-full" style={{ background: 'repeating-conic-gradient(#1a2244 0 25%, #10142a 0 50%) 0 0 / 10px 10px' }}>
+                      <span className="text-[22px] text-[#9bc4ff]">♪</span>
+                    </div>
+                    <div className="text-[10px] text-dim break-all">
+                      {selMelDef.name ?? 'файл без имени'} · зациклена
+                    </div>
+                  </div>
+
+                  {/* ПРОСЛУШКА: играет с выбранной громкостью — «проверить как звучит» */}
+                  <div className="flex gap-1.5">
+                    <GhostBtn small className="flex-1" onClick={() => {
+                      try {
+                        if (melPrevRef.current) { melPrevRef.current.pause(); melPrevRef.current = null; return; }
+                        const a = new Audio(selMelDef.src);
+                        a.loop = true;
+                        a.volume = Math.max(0, Math.min(1, selMelDef.vol ?? 1));
+                        void a.play().catch(() => { /* noop */ });
+                        melPrevRef.current = a;
+                      } catch { /* noop */ }
+                    }}>{melPrevRef.current ? '■ Стоп' : '▶ Прослушать'}</GhostBtn>
+                    <GhostBtn small className="flex-1" onClick={() => { melReplaceIdRef.current = selMelDef.id; melFileRef.current?.click(); }} title="Выбрать другой файл — мелодия заменится, нота останется на месте">Заменить файл</GhostBtn>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between"><span className="text-[10px] text-dim">Громкость</span><Stepper value={Math.round((selMelDef.vol ?? 1) * 100)} onChange={(v) => {
+                      const nv = Math.max(0, Math.min(1, v / 100));
+                      updMel(selMelIdx, { vol: nv });
+                      if (melPrevRef.current) melPrevRef.current.volume = nv; // громкость прослушки меняется на лету
+                      dirtyRef.current = true;
+                    }} min={0} max={100} step={5} suffix=" %" /></div>
+                    <div className="flex items-center justify-between"><span className="text-[10px] text-dim">Радиус</span><Stepper value={selMelDef.r ?? 0} onChange={(v) => { updMel(selMelIdx, { r: v }); dirtyRef.current = true; }} min={0} max={3000} step={10} suffix=" px" /></div>
+                  </div>
+
+                  <p className="text-[10px] text-[#5aa9ff] leading-tight border-2 border-[#5aa9ff]/40 px-2 py-1.5">Фишка вошла в круг — мелодия плавно играет, вышла — затихает. 0 px = слышна НА ВСЕЙ КАРТЕ (глобальная музыка). Во время ЛИЧНОГО ЗАДАНИЯ мелодия у играющего ГЛОХНЕТ, а после задания продолжается С ТОГО ЖЕ МЕСТА. Итоговая громкость = эта громкость × «Громкость эффектов» из Опций.</p>
+
+                  <GhostBtn small className="w-full" onClick={() => {
+                    const copy: PlacedMelody = { ...selMelDef, id: uid('mel'), x: selMelDef.x + 24, y: selMelDef.y + 24 };
+                    setMap((mm) => (mm ? { ...mm, melodies: [...(mm.melodies ?? []), copy] } : mm));
+                    setSelMelody(copy.id);
+                    dirtyRef.current = true;
+                    sfx.hover();
+                  }}>Дублировать (тот же файл)</GhostBtn>
+
+                  <HoldDeleteButton
+                    onFire={() => removeMel(selMelDef.id)}
+                    label={`мелодию «${selMelDef.name ?? 'без названия'}» с карты`}
+                    ariaLabel="Удалить мелодию с карты"
+                    title="Удалить мелодию с карты"
+                    className="w-full py-1.5 border-2 border-coral/60 text-coral font-display text-[10px] uppercase hover:bg-coral/10 transition-colors cursor-pointer"
+                  >
+                    Удалить мелодию
+                  </HoldDeleteButton>
+                </div>
+              )}
+
               {/* панель размещённого босса */}
               {selBossDef && !selCellDef && !selStampDef && !selAnimDef && (
                 <div className="absolute top-14 right-3 w-[264px] pixel-panel pixel-corners p-3.5 space-y-3 pop-in shadow-[0_14px_40px_rgba(0,0,0,0.6)] max-h-[calc(100%-80px)] overflow-y-auto">
@@ -5692,6 +5906,7 @@ export default function MapEditor() {
       <input ref={filesRef} type="file" multiple accept="image/*" style={{ display: 'none' }} onChange={(e) => { void addTileFiles(e.target.files, 'files'); e.currentTarget.value = ''; }} />
       <input ref={bgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { void setBg(e.target.files); e.currentTarget.value = ''; }} />
       <input ref={credRef} type="file" accept="audio/*" style={{ display: 'none' }} onChange={(e) => { setCreditsMusic(e.target.files); e.currentTarget.value = ''; }} />
+      <input ref={melFileRef} type="file" accept="audio/*" style={{ display: 'none' }} onChange={(e) => { setMelodyFiles(e.target.files); e.currentTarget.value = ''; }} />
       <input ref={extRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { void openExtract(e.target.files?.[0]); e.currentTarget.value = ''; }} />
       <input ref={upFileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { void takeUpscaleFile(e.target.files?.[0]); e.currentTarget.value = ''; }} />
 
