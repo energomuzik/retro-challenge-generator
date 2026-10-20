@@ -33,6 +33,8 @@ import { sfx } from '../sound';
    v0.124: сопоставление файлов ЯВНОЕ (по имени) — модуль ../frendyVoice; нет файла — фолбэк на синтез речи. */
 import { frendyPhraseVoice } from '../frendyVoice';
 import { FrendyIntroCine, EndCredits } from './FrendyCine'; // v0.124: интро-катсцена + титры со стингером
+import { agentFrame, agentPortrait, AGENT_NAMES, EPI_SCRIPT, type AgentWho } from '../agentsAssets'; // v0.132: агенты Альдер/Скаллер (эпилог FRENDY)
+import { AgentsVn, VnText } from './AgentsVn'; // v0.132: разговор агентов в стиле визуальной новеллы + печатная машинка
 import { BogachPanel } from './BogachPanel'; // v0.109 БОГАЧ: панель донатов хоста
 import { hasDice } from '../bogach'; // v0.109: проверка пакостей/радостей «только для кубиков»
 import { DONATE_DICE_ONLY } from '../types';
@@ -41,6 +43,9 @@ import { startLoop, stopLoop, syncLoops, stopGroup, killGroup, stopOneShot, play
 
 /* единичные векторы направлений фишки — для расчёта хода чужой фишки со СКОРОСТЬЮ КАРТЫ */
 const DIRV: Record<TokenDir, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+
+/* v0.132 ЭПИЛОГ: список спрайтов агентов для drawBoard (кадр выбран в rAF) */
+type BoardDrawAgents = { who: AgentWho; x: number; y: number; img: HTMLImageElement | null; flip?: boolean }[];
 
 /* НЕВИДИМЫЕ СТЕНЫ (JOURNEY): точка (центр фишки) внутри прямоугольника стены?
    Стены в игре НЕ рисуются — фишка просто не проходит сквозь них, скользя по краю. */
@@ -309,6 +314,12 @@ export default function GameScreen() {
   /* ---------- v0.123 FRENDY: хеллоуинский хоррор (Freddy Krueger × Dendy) ---------- */
   const isFrendy = isFrendyMode(map?.mode);
   const frendy = s?.frendy;
+  /* v0.132 ЭПИЛОГ «СЕКРЕТНЫЕ МАТЕРИАЛЫ»: после ПОБЕДЫ и стингера игра продолжается —
+     Альдер идёт к печи, хост ведёт Скаллер, разговор — визуальная новелла (видят все). */
+  const epi = frendy?.epi;
+  const epiMode = s?.phase === 'epilogue';
+  const epiTalk = epiMode && epi?.stage === 'talk' ? epi : null;
+  const hostId = s?.players.find((p) => p.isHost)?.id ?? null;
   const myQJob = (isQuest || isBogach || isFrendy) && s ? s.qJobs?.[me] : undefined;
   const myQTask = s && map && myQJob !== undefined ? cellTaskOf(s, map, myQJob.cellIdx) : null;
   const inStealth = !!mePlayer?.stealth;
@@ -712,6 +723,12 @@ export default function GameScreen() {
     }
     return null;
   }, [isFrendy, s, map, mePlayer, myJourneyPos?.x, myJourneyPos?.y]);
+  /* v0.132 ЭПИЛОГ: АЛЬДЕР рядом со СКАЛЛЕР (E — «поговорить») */
+  const epiNearAlder = useMemo(() => {
+    if (!epiMode || !epi || epi.stage === 'talk' || epi.stage === 'done' || !map || !myJourneyPos) return false;
+    if (!isHost) return false; // говорить подходит только хост (Скаллер)
+    return Math.hypot(myJourneyPos.x - epi.alder.x, myJourneyPos.y - epi.alder.y) <= CELL * 2.2;
+  }, [epiMode, epi, map, myJourneyPos?.x, myJourneyPos?.y, isHost]);
   const [furnOpen, setFurnOpen] = useState(false);
   const [dlgNpcId, setDlgNpcId] = useState<string | null>(null);
   const [dlgNode, setDlgNode] = useState<string | null>(null);
@@ -869,6 +886,8 @@ export default function GameScreen() {
         if (cur && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); openDialog(cur.npc.id); } // v0.56: в кат-сцене разговоров нет
         /* v0.123 FRENDY: E у ПЕЧИ — окно сжигания микросхемы */
         else if (isFrendy && nearFurnace && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setFurnOpen(true); }
+        /* v0.132 ЭПИЛОГ: E у АЛЬДЕРА — начать разговор в стиле визуальной новеллы (все видят) */
+        else if (epiNearAlder && !cutActiveRef.current) { e.preventDefault(); sfx.click(); dispatch({ t: 'epiTalk', id: me }); }
       }
       if (e.key === 'Escape' && dlgNpcId) closeDialog();
       /* v0.56: ESC пропускает кат-сцену (если автор разрешил пропуск);
@@ -891,7 +910,7 @@ export default function GameScreen() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [nearNpc, dlgNpcId, isFrendy, nearFurnace]);
+  }, [nearNpc, dlgNpcId, isFrendy, nearFurnace, epiNearAlder]);
   /* v0.62: отпустили ESC (или окно потеряло фокус) — отсчёт сбрасывается,
      подсказка плавно гаснет; при размонтировании таймер подчищается */
   useEffect(() => {
@@ -1173,6 +1192,10 @@ export default function GameScreen() {
      frendyShout — большой крик фразочки (слышат ВСЕ независимо от расстояния);
      frendyFlash — красная вспышка удара/поимки, если цель — я. */
   const frendyBossSmoothRef = useRef<{ x: number; y: number } | null>(null);
+  /* v0.132 ЭПИЛОГ: сглаживание Альдера между тиками хоста + последние направления взгляда агентов */
+  const epiAlderSmoothRef = useRef<{ x: number; y: number } | null>(null);
+  const alderFlipRef = useRef(false);   // true — смотрит влево (спрайты по умолчанию вправо)
+  const skallerFlipRef = useRef(false);
   const lastPhraseTsRef = useRef(0);
   const lastBossFxTsRef = useRef(0);
   const lastFrendyFxTsRef = useRef(0); // v0.130: fx уровня состояния (поимка/ремонт)
@@ -1583,7 +1606,8 @@ export default function GameScreen() {
               const jqRun = me && sess.qJobs ? sess.qJobs[me] : undefined;
               const rjRun = me && sess.rubg?.jobs ? sess.rubg.jobs[me] : undefined;
               const taskWinOpen = (jqRun !== undefined && !!cellTaskOf(sess, m, jqRun.cellIdx)) || (rjRun !== undefined && !!cellTaskOf(sess, m, rjRun.cellIdx));
-              const canWalk = sess.phase === 'playing' && !sess.moving && !sess.challenge && !sess.pendingCard && !sess.quiz && !sess.awaitPost && !fxList.some((f) => f.gate) && !(sess.qCards && me && sess.qCards[me]) && !taskWinOpen && !bossDragRef.current && !cutActiveRef.current; // v0.54: во время оттаскивания боссом ходить нельзя · v0.56: в кат-сцене мир замер · v0.59: при выполнении задания фишка стоит · v0.65: при несении тоже
+              const epiWalkUi = sess.phase === 'epilogue' && isFrendy && me === hostId && epi?.stage !== 'talk'; // v0.132: в эпилоге хост ведёт Скаллер (в разговоре стоит)
+              const canWalk = (sess.phase === 'playing' || epiWalkUi) && !sess.moving && !sess.challenge && !sess.pendingCard && !sess.quiz && !sess.awaitPost && !fxList.some((f) => f.gate) && !(sess.qCards && me && sess.qCards[me]) && !taskWinOpen && !bossDragRef.current && !cutActiveRef.current; // v0.54: во время оттаскивания боссом ходить нельзя · v0.56: в кат-сцене мир замер · v0.59: при выполнении задания фишка стоит · v0.65: при несении тоже · v0.132: в эпилоге ходит хост (Скаллер)
               /* v0.65: КИНО-ПОЛОСЫ ЗАХВАТА — УБИРАЮТСЯ, когда открылось задание босса
                  (управление вернули) или по страховочному таймеру (задание не начнётся) */
               if (carryBarsRef.current && (taskWinOpen || Date.now() > carryBarsMaxRef.current)) {
@@ -1851,9 +1875,13 @@ export default function GameScreen() {
 
         /* RUBG: чужие фишки в СТЕЛСЕ не рисуются; HP-бары считаются для всех
            (скрытые оверлей сам не рисует). Своя фишка в стелсе видна только мне. */
-        const tokens = isRubg
-          ? tokensAll.filter((_, i) => sess.players[i].id === me || !(sess.rubg?.stealth ?? []).includes(sess.players[i].id))
-          : tokensAll;
+        /* v0.132 ЭПИЛОГ: фишки игроков «спаслись из западни» — УБРАНЫ с поля (вместо них агенты) */
+        const tokensAllEpi = sess.phase === 'epilogue' ? [] : tokensAll;
+        const tokens = sess.phase === 'epilogue'
+          ? []
+          : isRubg
+          ? tokensAllEpi.filter((_, i) => sess.players[i].id === me || !(sess.rubg?.stealth ?? []).includes(sess.players[i].id))
+          : tokensAllEpi;
         const rubgBars = isRubg
           ? sess.players.map((p, i) => ({
               x: tokensAll[i].x, y: tokensAll[i].y,
@@ -1888,7 +1916,8 @@ export default function GameScreen() {
         } else {
           /* JOURNEY: в свободном режиме каждый следит за СВОЕЙ фишкой (ходят одновременно);
              пока идёт задание — камера у всех на игроке задания (трансляция, как всегда) */
-          const followId = journeyMode && journeyFree ? me : act?.id;
+          /* v0.132 ЭПИЛОГ: камера у ВСЕХ на Скаллер (хосте) — все следят за расследованием */
+          const followId = sess.phase === 'epilogue' ? (hostId ?? me) : journeyMode && journeyFree ? me : act?.id;
           const followP = followId ? dispRef.current[followId] : undefined;
           const baseZx = Math.min(2.1, Math.max(0.7, Math.min(w, h) / (CELL * 7.2)));
           /* v0.99: приближение при движении — по опции followZoom (по умолчанию ВЫКЛ:
@@ -2127,6 +2156,33 @@ export default function GameScreen() {
           sm.y += (fb0.y - sm.y) * 0.22;
           frendyBossSmoothRef.current = sm;
         } else frendyBossSmoothRef.current = null;
+        /* v0.132 ЭПИЛОГ: сглаживание позиции АЛЬДЕРА между тиками хоста + кадры агентов.
+           Направление: спрайты смотрят ВПРАВО — при движении влево флипаем. */
+        const epiS = sess.frendy?.epi ?? null;
+        let agentsDraw: BoardDrawAgents | null = null;
+        if (epiS) {
+          const as = epiAlderSmoothRef.current ?? { x: epiS.alder.x, y: epiS.alder.y };
+          as.x += (epiS.alder.x - as.x) * 0.22;
+          as.y += (epiS.alder.y - as.y) * 0.22;
+          epiAlderSmoothRef.current = as;
+          const alderMoving = epiS.stage === 'walk' && Math.hypot(epiS.alder.x - as.x, epiS.alder.y - as.y) > 2.5;
+          const alderImg = alderMoving ? agentFrame('alder', true, t) : agentFrame('alder', false, t, 0);
+          if (alderMoving && epiS.alder.x < as.x - 2) alderFlipRef.current = true;
+          if (alderMoving && epiS.alder.x > as.x + 2) alderFlipRef.current = false;
+          const skPos = sess.journeyPos?.[sess.players.find((p) => p.isHost)?.id ?? ''] ?? null;
+          const skDisp = skPos ? (dispRef.current[sess.players.find((p) => p.isHost)?.id ?? ''] ?? skPos) : null;
+          const skMoving = skDisp && skPos ? Math.hypot(skPos.x - skDisp.x, skPos.y - skDisp.y) > 2.5 : false;
+          const skImg = agentFrame('skaller', skMoving, t);
+          if (skMoving && skPos && skDisp) {
+            if (skPos.x < skDisp.x - 2) skallerFlipRef.current = true;
+            if (skPos.x > skDisp.x + 2) skallerFlipRef.current = false;
+          }
+          agentsDraw = [];
+          agentsDraw.push({ who: 'alder', x: as.x, y: as.y, img: alderImg, flip: alderFlipRef.current });
+          if (skPos) agentsDraw.push({ who: 'skaller', x: skDisp!.x, y: skDisp!.y, img: skImg, flip: skallerFlipRef.current });
+        } else {
+          epiAlderSmoothRef.current = null;
+        }
         /* v0.124: ТУМАН НЕОТКРЫТЫХ КАРТ-ПЛИТОК на карте мира (опция карты «скрывать не открытые»
            или FRENDY — чтобы не разглядеть микросхемы заранее). Открытой считается плитка, куда
            ДОШЁЛ хоть один игрок (по позициям фишек каждый кадр); однажды открытая — не гаснет. */
@@ -2181,6 +2237,7 @@ export default function GameScreen() {
           npcPin,
           /* v0.123 FRENDY: предметы на поле + Френди (fxTs переводим из часов Date.now хоста в rAF-часы клиента) */
           frendyChips: sess.frendy?.chips ?? null,
+          agents: agentsDraw, // v0.132: Альдер и Скаллер в эпилоге
           frendyBoss: sess.frendy?.boss
             ? {
                 x: frendyBossSmoothRef.current?.x ?? sess.frendy.boss.x,
@@ -2279,6 +2336,14 @@ export default function GameScreen() {
     return () => clearInterval(t);
   }, [isFrendy, room?.isHost, me, s?.phase, s, frendyIntro]);
 
+  /* ---------- v0.132 ЭПИЛОГ: тик хоста (~0.4 с) — АЛЬДЕР сам шагает к печи ---------- */
+  useEffect(() => {
+    if (!isFrendy || !room?.isHost || !s) return;
+    if (s.phase !== 'epilogue') return;
+    const t = setInterval(() => dispatch({ t: 'epiTick', id: me }), 400);
+    return () => clearInterval(t);
+  }, [isFrendy, room?.isHost, me, s?.phase]);
+
   /* ---------- v0.123 FRENDY: фразочка начала охоты — СЛЫШАТ ВСЕ (лог уже общий; тут крик + озвучка) ----------
      v0.125: во время интро-катсцены молчим (ts не запоминаем — фраза прозвучит после катсцены) */
   const frendyPhrase = s?.frendy?.phrase;
@@ -2329,13 +2394,22 @@ export default function GameScreen() {
 
   /* ---------- v0.124: ТИТРЫ в конце партии (ЛЮБОЙ режим) + во FRENDY перед ними — победная катсцена
      (печь + кто положил последнюю микросхему + Френди сгорает). Показ: phase === 'over'.
-     Информация титров локальная — на сайт не уходит и после показа не нужна. */
+     Информация титров локальная — на сайт не уходит и после показа не нужна.
+     v0.132 ЭПИЛОГ: после разговора агентов фаза снова 'over' — титры НЕ открываются второй раз
+     (guard по frendy.epi), показывается финальная панель ПОБЕДЫ. */
   const over = s?.phase === 'over';
   useEffect(() => {
     if (!over || !s || !map) return;
+    if (s.frendy?.epi) return; // v0.132: эпилог уже был/идёт — повторных титров нет
     setCreditsOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [over]);
+  /* v0.132 ЭПИЛОГ: у кого титры ещё открыты, когда хост запустил эпилог, — закрываем принудительно,
+     чтобы ВСЕ увидели сцену с агентами (EndCredits при размонтировании гасит свои звуки сам). */
+  useEffect(() => {
+    if (epiMode && creditsOpen) setCreditsOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [epiMode]);
 
   /* ---------- v0.123 FRENDY: звуки атаки/поимки + красная вспышка, если цель — я ---------- */
   const frendyBossFxTs = s?.frendy?.boss?.fxTs;
@@ -3806,6 +3880,35 @@ export default function GameScreen() {
             <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#ff8b3f] bg-[rgba(7,9,18,0.9)] border-2 border-[#ff8b3f]/50">🔥 ПЕЧЬ ФРЕНДИ — нажми <b className="text-paper">E</b></span>
           </div>
         )}
+        {/* ---------- v0.132 ЭПИЛОГ «СЕКРЕТНЫЕ МАТЕРИАЛЫ» ---------- */}
+        {epiMode && epi && epi.stage !== 'talk' && epi.stage !== 'done' && (
+          /* ЗАДАНИЕ хоста — в ЛЕВОМ УГЛУ, появляется (pop-in). Остальные тоже видят. */
+          <div className="absolute top-14 left-3 z-40 pop-in pointer-events-none max-w-[280px]">
+            <div className="border-[3px] border-gold/70 bg-[rgba(7,9,18,0.92)] pixel-corners px-3 py-2">
+              <div className="font-display uppercase text-[10px] text-gold tracking-wider">📁 Секретные материалы — задание</div>
+              <div className="text-[12px] text-paper leading-snug mt-1">
+                {epi.stage === 'walk' ? (
+                  <>Агенты на месте. <b className="text-gold">Альдер</b> направляется к печи…</>
+                ) : (
+                  <>Подойти к <b className="text-gold">АЛЬДЕРУ</b> у печи и поговорить {isHost ? <>(клавиша <b className="text-paper">E</b>)</> : <>— ведёт <b className="text-paper">хост</b> (Скаллер)</>}</>
+                )}
+              </div>
+              {isHost && epi.stage === 'idle' && <div className="font-pixel text-[9px] text-faint mt-1">Ты ведёшь СКАЛЛЕР как свою фишку — подойди и жми E</div>}
+            </div>
+          </div>
+        )}
+        {epiMode && epiNearAlder && epi?.stage !== 'talk' && (
+          <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-teal bg-[rgba(7,9,18,0.9)] border-2 border-teal/50">🕵️ АЛЬДЕР — нажми <b className="text-paper">E</b>, чтобы поговорить</span>
+          </div>
+        )}
+        {epiTalk && (
+          <AgentsVn
+            idx={epiTalk.talkIdx}
+            isHost={isHost}
+            onNext={(all) => dispatch({ t: 'epiTalkNext', id: me, all })}
+          />
+        )}
         {isFrendy && furnOpen && (() => {
           /* v0.130: печь ДВУХРЕЖИМНАЯ — слабый огонь (горят только КАРТРИДЖИ Dendy) и
              сильный (2 минуты после картриджа, таймер СКРЫТ — горят микросхемы Френди) */
@@ -3847,7 +3950,20 @@ export default function GameScreen() {
         {/* ---------- v0.124 FRENDY: интро-катсцена в начале раунда (появление + фраза + исчезновение) ---------- */}
         {frendyIntro && <FrendyIntroCine onDone={() => setFrendyIntro(false)} />}
         {/* ---------- v0.124: титры (все режимы) + во FRENDY перед ними победная катсцена; в конце стингер Френди ---------- */}
-        {creditsOpen && s && map && <EndCredits map={map} sess={s} isFrendy={isFrendy} onClose={() => setCreditsOpen(false)} />}
+        {creditsOpen && s && map && (
+          <EndCredits
+            map={map}
+            sess={s}
+            isFrendy={isFrendy}
+            onClose={() => setCreditsOpen(false)}
+            /* v0.132 ЭПИЛОГ: во FRENDY-победе после стингера игра НЕ заканчивается —
+               запускается сцена «Секретные материалы» (диспатчит только хост) */
+            onEpilogue={() => {
+              setCreditsOpen(false);
+              if (room?.isHost && me) dispatch({ t: 'frendyEpilogue', id: me });
+            }}
+          />
+        )}
         {/* ---------- победитель ---------- */}
         {s.phase === 'over' && !creditsOpen && ( // v0.124: пока идут титры/финальные катсцены — панель под ними скрыта
           <div className="absolute inset-0 flex items-center justify-center bg-[rgba(4,6,14,0.78)] z-30 overflow-hidden">
@@ -4539,6 +4655,33 @@ export default function GameScreen() {
                 /* v0.54 (наоборот к v0.53): сворачиваются ТОЛЬКО реплики с ПИНОМ автора
                    (node.pinHide); стартовый узел (dlg.root) пишется ВСЕГДА — даже с пином */
                 const seen = hideSeen && node.pinHide && node.id !== dlg.root && !!(s.dlgSeen?.[me]?.[node.id]);
+                /* v0.132: СТИЛЬ ВИЗУАЛЬНОЙ НОВЕЛЛЫ (галочка автора в редакторе диалогов):
+                   портрет реплики крупно, плашка говорящего, печатная машинка.
+                   Озвучка узла играет как раньше (эффект dlgVoice ниже). */
+                if (dlg.vn) {
+                  return (
+                    <div className="border-2 border-gold/40 bg-[rgba(10,8,20,0.92)] px-3 py-2.5 flex gap-3 items-start">
+                      {node.pic && <img src={node.pic} alt="" className="h-28 md:h-40 w-auto border-2 border-gold/40 object-cover shrink-0" draggable={false} />}
+                      <div className="min-w-0 flex-1">
+                        <div className="font-display uppercase text-[12px] text-gold tracking-wider mb-1 flex items-center gap-2">
+                          🎭 {node.who || dlgNpc.def.name}
+                        </div>
+                        {seen && !revealSeen ? (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[12px] text-faint italic leading-snug">…вы это уже слышали</span>
+                            <button
+                              onClick={() => { setRevealSeen(true); sfx.hover(); }}
+                              className="text-[10px] text-teal hover:text-paper underline cursor-pointer shrink-0"
+                              title="Показать реплику целиком"
+                            >показать</button>
+                          </div>
+                        ) : (
+                          <div className="text-[13px] text-paper leading-snug min-h-[3.2em]"><VnText text={node.text || '…'} /></div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
                 return (
                   <div className="border-2 border-teal/40 bg-teal/5 px-3 py-2.5">
                     {seen && !revealSeen ? (

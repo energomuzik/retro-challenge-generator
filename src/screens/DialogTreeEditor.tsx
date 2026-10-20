@@ -92,6 +92,29 @@ export function DialogTreeEditor({ dialog, endings, onChange, posStore, onPosSto
     a.play().catch(() => { /* автоплей до первого клика — кнопка и так нажата */ });
   };
   const removeVoice = () => { stopPreview(); if (selNode) updNode(selNode.id, { voice: undefined }); sfx.fail(); };
+
+  /* ---------- v0.132: ПОРТРЕТ РЕПЛИКИ (стиль визуальной новеллы) — картинка с компьютера,
+     вшивается в узел (node.pic, data:image) и уезжает всем игрокам вместе с картой ---------- */
+  const picIn = useRef<HTMLInputElement>(null);
+  const onPicFile = (ev: React.ChangeEvent<HTMLInputElement>) => {
+    const f = ev.target.files?.[0];
+    ev.target.value = '';
+    if (!f || !selNode) return;
+    if (f.size > 6 * 1024 * 1024) {
+      sfx.fail();
+      alert(`Картинка слишком большая (${(f.size / 1048576).toFixed(1)} МБ) — максимум 6 МБ. Портрет уезжает всем игрокам вместе с картой.`);
+      return;
+    }
+    const r = new FileReader();
+    r.onload = () => {
+      const url = typeof r.result === 'string' ? r.result : '';
+      if (!url) { sfx.fail(); return; }
+      updNode(selNode.id, { pic: url });
+      sfx.coin();
+    };
+    r.readAsDataURL(f);
+  };
+  const removePic = () => { if (selNode) updNode(selNode.id, { pic: undefined }); sfx.fail(); };
   const selFrom = selId !== undefined ? selId : selRaw;
   /* выбранная нода; сбрасывается на стартовую, если удалили текущую */
   const selIdEff = nodes.some((n) => n.id === selFrom) ? selFrom : dialog.root;
@@ -207,6 +230,15 @@ export function DialogTreeEditor({ dialog, endings, onChange, posStore, onPosSto
             <option key={n.id} value={n.id}>{`№${i + 1} · ${(n.text || '(пусто)').slice(0, 26)}`}</option>
           ))}
         </select>
+        {/* v0.132: СТИЛЬ ВИЗУАЛЬНОЙ НОВЕЛЛЫ — то же дерево диалога, другой ПОДАЧА в игре:
+            укрупнённые портреты реплик, плашки говорящих, печатная машинка, озвучка сама */}
+        <label
+          className={`flex items-center gap-1 text-[10px] shrink-0 cursor-pointer px-1.5 py-1 border-2 ${dialog.vn ? 'text-gold border-gold/60 bg-gold/5' : 'text-faint border-edge'}`}
+          title="Стиль визуальной новеллы: реплики показываются с укрупнённым портретом (картинка узла), плашкой говорящего и печатной машинкой; озвучка узла играет сама. Ветвления и маркеры (торговля/квесты) работают как обычно."
+        >
+          <input type="checkbox" checked={!!dialog.vn} onChange={(ev) => onChange({ ...dialog, vn: ev.target.checked || undefined })} />
+          🎭 визуальная новелла
+        </label>
       </div>
 
       {/* СХЕМА — главная поверхность: создать, соединить, разъединить, удалить */}
@@ -297,6 +329,39 @@ export function DialogTreeEditor({ dialog, endings, onChange, posStore, onPosSto
           </div>
           {!selNode.voice && (
             <p className="text-[8.5px] text-faint leading-tight">Файл вшивается в карту и поедет всем игрокам вместе с ней — на сервер ничего не грузится. В игре озвучка играет, когда диалог дойдёт до этой реплики. MP3 заметно легче FLAC — для длинных реплик берите mp3.</p>
+          )}
+
+          {/* v0.132: ПОЛЯ ВИЗУАЛЬНОЙ НОВЕЛЛЫ — видны только при включённом стиле «🎭 визуальная новелла»:
+              кто говорит (плашка) и его укрупнённый портрет (картинка узла) */}
+          {dialog.vn && (
+            <div className="border-2 border-gold/40 px-2 py-2 space-y-1.5 bg-[rgba(20,16,4,0.25)]">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="tick-label text-gold shrink-0">🎭 Говорящий:</span>
+                <input
+                  className="field-in flex-1 min-w-[120px] px-1.5 py-1 text-[10px]"
+                  value={selNode.who ?? ''}
+                  placeholder="имя на плашке (пусто — имя NPC)"
+                  onChange={(ev) => updNode(selNode.id, { who: ev.target.value || undefined })}
+                />
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="tick-label text-gold shrink-0">🖼 Портрет реплики:</span>
+                {selNode.pic ? (
+                  <>
+                    <img src={selNode.pic} alt="" className="h-10 w-auto border border-edge" />
+                    <button onClick={removePic} className="text-[10px] text-faint hover:text-coral cursor-pointer px-1" title="Убрать портрет из узла">✕ убрать</button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => picIn.current?.click()}
+                    className="px-1.5 py-0.5 border-2 border-gold/50 text-gold font-display text-[9px] uppercase hover:bg-gold/10 cursor-pointer"
+                    title="Картинка показывается укрупнённо, пока диалог на этом узле (портрет говорящего)"
+                  >＋ выбрать картинку</button>
+                )}
+                <input ref={picIn} type="file" accept=".png,.jpg,.jpeg,.webp,image/*" hidden onChange={onPicFile} />
+              </div>
+              <p className="text-[8.5px] text-faint leading-tight">В новелле картинка узла показывается крупно (справа), реплика печатается «машинкой», озвучка узла играет сама. Скачайте портреты персонажей и ставьте разные картинки на разные реплики.</p>
+            </div>
           )}
 
           <div className="flex items-center justify-between gap-1">

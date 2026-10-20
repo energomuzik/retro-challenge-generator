@@ -142,7 +142,7 @@ export function FrendyIntroCine({ onDone }: { onDone: () => void }) {
 type CineLine = { t: string; c?: string; style?: React.CSSProperties };
 const LINE_MS = 2900; // одна фраза титров
 
-export function EndCredits({ map, sess, isFrendy, onClose }: { map: GameMap; sess: GameSession; isFrendy: boolean; onClose: () => void }) {
+export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: GameMap; sess: GameSession; isFrendy: boolean; onClose: () => void; onEpilogue?: () => void }) {
   const won = !!sess.frendy?.won;
   const [phase, setPhase] = useState<'win1' | 'win2' | 'win3' | 'lose1' | 'roll' | 'sting' | 'stingEnd' | 'done'>(isFrendy && won ? 'win1' : isFrendy ? 'lose1' : 'roll');
   const [idx, setIdx] = useState(0);
@@ -193,12 +193,22 @@ export function EndCredits({ map, sess, isFrendy, onClose }: { map: GameMap; ses
   /* СТИНГЕР (только FRENDY-победа): после письма, перед финальной строкой версии */
   const stingAt = isFrendy && won ? lines.length : -1;
 
+  /* v0.132 ЭПИЛОГ: в FRENDY-победе после стингера игра НЕ заканчивается —
+     вместо закрытия титров вызывается onEpilogue (сцена «Секретные материалы») */
   const finish = () => {
     try { musicRef.current?.pause(); } catch { /* noop */ }
     stopRef.current?.();
     setPhase('done');
-    onClose();
+    if (isFrendy && won && onEpilogue) onEpilogue();
+    else onClose();
   };
+
+  /* v0.132: страховка — при принудительном закрытии (хост запустил эпилог раньше)
+     глушим музыку/озвучку титров */
+  useEffect(() => () => {
+    try { musicRef.current?.pause(); } catch { /* noop */ }
+    try { stopRef.current?.(); } catch { /* noop */ }
+  }, []);
 
   /* Музыка титров (вшита в карту) — стартует с титрами. v0.128: громкость —
      ползунок карты (creditsMusicVol, 0..1); у старых карт поля нет — как раньше 0.9 */

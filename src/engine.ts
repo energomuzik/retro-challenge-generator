@@ -4,6 +4,7 @@ import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
 import { CELL, cellAtPoint, cellCenter, hopTargetOf, prevCellOf, startCellIdx, stepNext, stepPrev, clampMoveSpeed, DEF_MOVE_SPEED } from './render';
+import { EPI_SCRIPT } from './agentsAssets'; // v0.132: сценарий разговора агентов (длина реплик)
 import { patrolPos } from './patrol';
 
 /* ПЛИТОЧНЫЙ РЕЖИМ КАРТ: пружка фишки НЕ может покинуть СВОЮ карту-плитку.
@@ -96,6 +97,10 @@ export type Action =
   | { t: 'frendyBurn'; id: string; what?: 'chip' | 'cart' } // v0.123 FRENDY: сжечь в ПЕЧИ (E у печи); v0.130: what 'cart' — картридж Dendy (разжечь сильный огонь), по умолчанию 'chip' — микросхему (только в сильном огне)
   | { t: 'frendyUse'; id: string; itemId: string } // v0.123 FRENDY: использовать предмет (аптечка — лечение, кофе — иммунитет к поимке 5 мин; микросхема — нельзя)
   | { t: 'frendyDrop'; id: string; itemId: string } // v0.123 FRENDY: выбросить предмет на землю (микросхема — тоже: другого применения в инвентаре нет)
+  | { t: 'frendyEpilogue'; id: string } // v0.132 ЭПИЛОГ: запуск после титров-стингера ПОБЕДЫ — фишки убраны («спаслись из западни»), Альдер идёт к печи, хост ведёт Скаллер
+  | { t: 'epiTick'; id: string } // v0.132: тик хоста в эпилоге — Альдер сам шагает к печи (BFS), у печи замирает в IDLE
+  | { t: 'epiTalk'; id: string } // v0.132: хост (Скаллер) у Альдера нажал E — начать разговор в стиле визуальной новеллы (ВСЕ видят синхронно)
+  | { t: 'epiTalkNext'; id: string; all?: boolean } // v0.132: следующая реплика разговора (all — пропустить весь разговор)
 
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
 const rnd6 = () => 1 + Math.floor(Math.random() * 6);
@@ -2706,13 +2711,19 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     case 'journeyMove': {
       /* v0.55: в SKILL CHALLENGE с тумблером «свободное перемещение» хост тоже ходит напрямую */
       const walkableMode = isJourneyLike(map.mode) || (map.mode === 'skill' && !!map.skillFree);
-      if (s.phase !== 'playing' || !walkableMode) break;
+      /* v0.132: ЭПИЛОГ FRENDY — фаза 'epilogue': ходит только ХОСТ (ведёт СКАЛЛЕР как фишку),
+         триггеры ячеек не срабатывают (заданий/бонусов больше нет — это финальная сцена). */
+      const epiWalk = s.phase === 'epilogue' && isFrendyMode(map.mode) && !!s.frendy?.epi;
+      if (s.phase !== 'playing' && !epiWalk) break;
+      if (!walkableMode && !epiWalk) break;
       /* Очередь ходов отсутствует — каждый игрок ведёт СВОЮ фишку
          (авторитет проверок — хост). Зритель и выбывший не ходят. */
       const p = s.players.find((x) => x.id === a.id);
       if (!p || p.spect) break;
+      /* v0.132 ЭПИЛОГ: ведёт Скаллер ТОЛЬКО хост (даже если он погиб в катке) */
+      if (epiWalk && a.id !== s.players[0]?.id) break;
       /* v0.123 FRENDY: погибший — фишка-НАБЛЮДАТЕЛЬ: ходит по плиткам, но клетки не триггерит (ветка frendy ниже) */
-      if (!p.alive && !isFrendyMode(map.mode)) break;
+      if (!p.alive && !isFrendyMode(map.mode) && !epiWalk) break;
       if (s.moving || s.challenge || s.pendingCard || s.quiz || s.awaitPost || gatingFx()) break;
       /* v0.106: починка разбитых ячеек ПО ВРЕМЕНИ (Джёрни/Спринтер — ходов нет).
          Ленивый тик: движение постоянно — ячейки оживут сразу, как выйдет минута.
@@ -2765,6 +2776,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (prev && !stopped && !a.tp && Math.hypot(x - prev.x, y - prev.y) > CELL_PX * 2.5) break;
       s.journeyPos = s.journeyPos ?? {};
       s.journeyPos[p.id] = { x, y, dir: a.dir, ts: Date.now(), mv: a.mv !== false, tp: a.tp || undefined };
+      /* v0.132 ЭПИЛОГ: только позиция Скаллер — никаких триггеров ячеек (сцена финальная) */
+      if (epiWalk) break;
       /* RUBG: вход в ячейку — ЛИЧНОЕ задание (никого не останавливает). ЯЩИКИ больше
          НЕ вскрываются проходом — только взломом (отмычка/сила). Стелс слетает при входе в ячейку. */
       if (map.mode === 'rubg' && s.rubg) {
@@ -3279,6 +3292,98 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!isFrendyMode(map.mode) || !s.frendy || !host || a.id !== host.id) break;
       if (s.phase !== 'playing') break;
       frendyTickDo();
+      break;
+    }
+    /* ---------- v0.132 ЭПИЛОГ «СЕКРЕТНЫЕ МАТЕРИАЛЫ»: после стингера ПОБЕДЫ игра продолжается ----------
+       Фишки игроков «спаслись из западни» (с поля убраны), АЛЬДЕР сам идёт от стартовой ячейки
+       к ПЕЧИ и замирает в IDLE, хост ведёт СКАЛЛЕР как свою фишку; задание «подойти и поговорить
+       (E)» — в левом углу. Разговор — визуальная новелла, ВСЕ видят синхронно (state живёт тут). */
+    case 'frendyEpilogue': {
+      const host = s.players.find((p) => p.isHost);
+      if (!isFrendyMode(map.mode) || !s.frendy || !host || a.id !== host.id) break;
+      if (s.phase !== 'over' || !s.frendy.won || s.frendy.epi) break;
+      /* стартовая ячейка и печь */
+      const sc = map.cells[startCellIdx(map)];
+      const eW = map.mw ?? map.cols * CELL_PX;
+      const eH = map.mh ?? map.rows * CELL_PX;
+      const ax = sc ? (sc.cx ?? (sc.x + (sc.w || 1) / 2) * CELL_PX) : eW / 2;
+      const ay = sc ? (sc.cy ?? (sc.y + (sc.h || 1) / 2) * CELL_PX) : eH / 2;
+      s.frendy.epi = { stage: 'walk', alder: { x: ax, y: ay }, talkIdx: -1, startedAt: Date.now() };
+      /* мир «очищается»: остатки кошмара убираем */
+      s.frendy.chips = [];
+      s.frendy.boss = null;
+      s.frendy.fx = null;
+      s.frendy.phrase = null;
+      s.qJobs = {};
+      s.challenge = null;
+      s.pendingCard = null;
+      s.moving = null;
+      s.phase = 'epilogue';
+      log('🚪 ВСЕ ИГРОКИ ВЫБРАЛИСЬ ИЗ ЗАПАДНИ — фишки покинули проклятую карту…');
+      log('🕵️ На место происшествия прибыли АГЕНТЫ АЛЬДЕР и СКАЛЛЕР (ФБР, неофициально). «Секретные материалы» продолжаются…');
+      break;
+    }
+    case 'epiTick': {
+      const host = s.players.find((p) => p.isHost);
+      if (!isFrendyMode(map.mode) || !s.frendy?.epi || !host || a.id !== host.id) break;
+      if (s.phase !== 'epilogue') break;
+      const epi = s.frendy.epi;
+      if (epi.stage !== 'walk') break;
+      const fi = map.cells.findIndex((c) => c.type === 'furnace');
+      const fr = fi >= 0 ? cellRectOf(map, fi) : null;
+      if (!fr) { epi.stage = 'idle'; break; }
+      const tx = fr.x + fr.w / 2;
+      const ty = fr.y + fr.h / 2;
+      const d = Math.hypot(tx - epi.alder.x, ty - epi.alder.y);
+      const spd = clampMoveSpeed(map.moveSpeed ?? DEF_MOVE_SPEED) * CELL_PX * 0.42 * 0.4; // как у спокойного игрока
+      if (d <= Math.max(10, spd)) {
+        epi.alder = { x: tx, y: ty };
+        epi.stage = 'idle';
+        log('🕵️ АЛЬДЕР у печи. Задание хоста: подойти к Альдеру и поговорить (клавиша E).');
+        break;
+      }
+      const st = frendyStepToward(epi.alder, { x: tx, y: ty });
+      if (st) {
+        epi.alder = { x: epi.alder.x + (st.x - epi.alder.x) / Math.max(1, Math.hypot(st.x - epi.alder.x, st.y - epi.alder.y)) * spd, y: epi.alder.y + (st.y - epi.alder.y) / Math.max(1, Math.hypot(st.x - epi.alder.x, st.y - epi.alder.y)) * spd };
+      } else {
+        epi.alder = { x: tx, y: ty };
+        epi.stage = 'idle';
+        log('🕵️ АЛЬДЕР у печи. Задание хоста: подойти к Альдеру и поговорить (клавиша E).');
+      }
+      break;
+    }
+    case 'epiTalk': {
+      const host = s.players.find((p) => p.isHost);
+      if (!isFrendyMode(map.mode) || !s.frendy?.epi || !host || a.id !== host.id) break;
+      if (s.phase !== 'epilogue') break;
+      const epi = s.frendy.epi;
+      if (epi.stage !== 'walk' && epi.stage !== 'idle') break;
+      const pa = playerPx(s, map, host.id);
+      if (!pa) break;
+      const d = Math.hypot(pa.x - epi.alder.x, pa.y - epi.alder.y);
+      if (d > CELL_PX * 2.2) { log(`🕵️ ${host.name}: Альдер далеко — подойди ближе и нажми E`); break; }
+      epi.stage = 'talk';
+      epi.talkIdx = 0;
+      log('🎙 СКАЛЛЕР и АЛЬДЕР начинают разговор… (все игроки видят диалог)');
+      break;
+    }
+    case 'epiTalkNext': {
+      const host = s.players.find((p) => p.isHost);
+      if (!isFrendyMode(map.mode) || !s.frendy?.epi || !host || a.id !== host.id) break;
+      if (s.phase !== 'epilogue') break;
+      const epi = s.frendy.epi;
+      if (epi.stage !== 'talk') break;
+      if (a.all) {
+        epi.stage = 'done';
+        epi.talkIdx = 999;
+      } else {
+        epi.talkIdx += 1;
+        if (epi.talkIdx >= EPI_SCRIPT.length) { epi.stage = 'done'; epi.talkIdx = EPI_SCRIPT.length - 1; }
+      }
+      if (epi.stage === 'done') {
+        log('📁 Дело №X-132 закрыто: «Парильщик» снова в деле. АГЕНТЫ покидают проклятую карту. ПОБЕДА!');
+        s.phase = 'over';
+      }
       break;
     }
     case 'frendyBurn': {

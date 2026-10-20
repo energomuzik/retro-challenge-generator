@@ -448,6 +448,8 @@ export interface BoardDrawOpts {
   /* v0.123 FRENDY: предметы НА ПОЛЕ (микросхемы/выброшенное) и супер-босс Френди (позиция сглажена клиентом) */
   frendyChips?: { x: number; y: number; kind?: string }[] | null;
   frendyBoss?: { x: number; y: number; fx?: string | null; fxTs?: number; targetId?: string | null } | null;
+  /* v0.132 ЭПИЛОГ: спрайты агентов АЛЬДЕР/СКАЛЛЕР (кадр уже выбран в GameScreen: ходьба/IDLE) */
+  agents?: { who: 'alder' | 'skaller'; x: number; y: number; img: HTMLImageElement | null; flip?: boolean }[] | null;
 }
 
 function px(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, pattern: string[], color: string) {
@@ -1795,6 +1797,25 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   }
   if (o.frendyBoss) {
     drawFrendyBoss(ctx, o.frendyBoss.x, o.frendyBoss.y, o.time, o.frendyBoss.fx, o.frendyBoss.fxTs);
+  }
+  /* v0.132 ЭПИЛОГ: агенты АЛЬДЕР и СКАЛЛЕР — живые спрайты поверх мира.
+     Кадры выровнены по низу — рисуем с якорем «ноги» в точке (x,y). */
+  if (o.agents) {
+    for (const ag of o.agents) {
+      if (!ag.img) continue;
+      const h = CELL * 1.55;               // рост на поле (~99px при клетке 64)
+      const w = h * (ag.img.naturalWidth / Math.max(1, ag.img.naturalHeight));
+      ctx.save();
+      ctx.translate(ag.x, ag.y);
+      /* тень под ногами */
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.beginPath();
+      ctx.ellipse(0, 3, w * 0.22, h * 0.035, 0, 0, Math.PI * 2);
+      ctx.fill();
+      if (ag.flip) ctx.scale(-1, 1);
+      ctx.drawImage(ag.img, -w / 2, -h, w, h);
+      ctx.restore();
+    }
   }
 
   /* РЕЖИМ КОМНАТ (АЙЗЕК): в игре видна ТОЛЬКО текущая плитка-комната — всё за её
