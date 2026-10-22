@@ -81,6 +81,7 @@ export const useApp = create<AppState>()((set, get) => ({
     autoReloadOnViolation: true,
     showCellNumbers: true,
     volume: 0.6,
+    frendyVol: 1, // v0.133: громкость реплик Френди и агентов (0..1.5), по умолчанию 100% — громче прежнего (раньше бралась громкость эффектов)
     streamFps: 30, // v0.100: дефолт поднят с 10 до 30 (одноразовая миграция ниже переведёт на 30 тех, у кого осталось старое значение)
     fpsReset: false, // v0.100: одноразовая миграция streamFps ещё не выполнялась
     emuSound: true,

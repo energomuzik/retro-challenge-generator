@@ -4,8 +4,50 @@
    cine-intro-N.mp3 / cine-win-N.mp3 / cine-sting-N.mp3 — реплики кат-сцен (FRENDY_CINE),
    cine-badend-N.mp3 — глумление, когда все проиграли (титры поражения, FRENDY_CINE.badend).
    Сопоставление файлов ЯВНОЕ (по имени), а не по сортировке папки.
-   Нет файла — вызывающий код фолбэчится на синтез речи. */
+   Нет файла — вызывающий код фолбэчится на синтез речи.
+   v0.133 ГРОМКОСТЬ ФРЕНДИ: все реплики Френди (фразы охоты, кат-сцены) и разговор
+   агентов в эпилоге играются с СОБСТВЕННОЙ громкостью из Опций (options.frendyVol,
+   0..150%) — больше не привязаны к «Эффектам интерфейса». По умолчанию 100% —
+   громче прежнего (раньше бралась громкость эффектов, по умолчанию 60%).
+   Значения больше 100% усиливаются через WebAudio GainNode (сам Audio.volume
+   ограничен единицей); если контекст звука ещё нельзя запустить — играем как 100%. */
 const FILES = import.meta.glob('./assets/frendy/*.mp3', { eager: true, import: 'default', query: '?url' }) as Record<string, string>;
+
+import { useApp } from './store';
+
+/** Громкость реплик Френди из Опций (0..1.5; отсутствие поля у старых настроек = 100%). */
+export const frendyVol = (): number => {
+  const v = useApp.getState().options.frendyVol;
+  return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(1.5, v)) : 1;
+};
+
+/* WebAudio-усиление (>100%): один AudioContext на страницу, GainNode на каждый элемент.
+   Контекст может быть запрещён до первого клика — тогда усиление не подключаем вовсе
+   (элемент играет как обычно), звук НЕ пропадает никогда. */
+let AC: AudioContext | null = null;
+function boostGain(a: HTMLAudioElement, factor: number): void {
+  try {
+    AC = AC ?? new AudioContext();
+    if (AC.state === 'suspended') void AC.resume().catch(() => { /* noop */ });
+    if (AC.state !== 'running') return; // усиливать нельзя — остаёмся на 100% (звук не теряем)
+    const src = AC.createMediaElementSource(a);
+    const g = AC.createGain();
+    g.gain.value = factor;
+    src.connect(g);
+    g.connect(AC.destination);
+  } catch { /* элемент уже подключён или WebAudio недоступен — обычная громкость */ }
+}
+
+/** Audio-элемент реплики Френди с громкостью из Опций (создаёт Audio, но НЕ вызывает play). */
+export function makeFrendyAudio(url: string | null): HTMLAudioElement | null {
+  if (!url) return null;
+  try {
+    const a = new Audio(url);
+    const v = frendyVol();
+    if (v > 1) { boostGain(a, v); a.volume = 1; } else a.volume = v;
+    return a;
+  } catch { return null; }
+}
 
 const byName = (name: string): string | null => FILES[`./assets/frendy/${name}`] ?? null;
 

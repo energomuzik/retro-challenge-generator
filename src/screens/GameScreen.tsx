@@ -31,7 +31,7 @@ import { sfx } from '../sound';
 
 /* v0.123 FRENDY: ОЗВУЧКА ФРАЗОЧЕК — mp3 из assets/frendy/*.mp3 (голос Дмитрий, заниженный питч).
    v0.124: сопоставление файлов ЯВНОЕ (по имени) — модуль ../frendyVoice; нет файла — фолбэк на синтез речи. */
-import { frendyPhraseVoice } from '../frendyVoice';
+import { frendyPhraseVoice, makeFrendyAudio, frendyVol } from '../frendyVoice';
 import { FrendyIntroCine, EndCredits } from './FrendyCine'; // v0.124: интро-катсцена + титры со стингером
 import { agentFrame, agentPortrait, AGENT_NAMES, EPI_SCRIPT, type AgentWho } from '../agentsAssets'; // v0.132: агенты Альдер/Скаллер (эпилог FRENDY)
 import { AgentsVn, VnText } from './AgentsVn'; // v0.132: разговор агентов в стиле визуальной новеллы + печатная машинка
@@ -911,6 +911,36 @@ export default function GameScreen() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [nearNpc, dlgNpcId, isFrendy, nearFurnace, epiNearAlder]);
+  /* v0.133 FRENDY: ПЕЧЬ С ДЖОЙСТИКА — лицевые кнопки (W3C 0/1/2/3 = A/B/X/Y всех падов)
+     и назначенные под A/B в раскладках консолей открывают окно печи рядом, как клавиша E.
+     Край-триггер: открывает только НОВОЕ нажатие — удержание и кнопка, зажатая ДО
+     подхода к печи, окно не хлопают. */
+  const furnPadPrevRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!isFrendy || !nearFurnace || furnOpen || s?.phase !== 'playing') return;
+    const collect = (out: Set<number>) => {
+      const prefs = loadEmuPrefs();
+      if (prefs.gamepad === false) return;
+      for (const gp of listGamepads()) {
+        for (const b of [0, 1, 2, 3]) if (gp.buttons[b]?.pressed) out.add(b);
+        for (const idx of [prefs.gpad?.A, prefs.gpad?.B, prefs.segaPad?.A, prefs.segaPad?.B, prefs.snesPad?.A, prefs.snesPad?.B, prefs.gbaPad?.A, prefs.gbaPad?.B]) {
+          if (typeof idx === 'number' && idx >= 0 && idx <= 17 && gp.buttons[idx]?.pressed) out.add(idx);
+        }
+      }
+    };
+    const init = new Set<number>();
+    collect(init);
+    furnPadPrevRef.current = init; // уже зажатое в момент подхода — не открывает
+    const iv = window.setInterval(() => {
+      const cur = new Set<number>();
+      collect(cur);
+      let fresh = false;
+      for (const b of cur) if (!furnPadPrevRef.current.has(b)) { fresh = true; break; }
+      furnPadPrevRef.current = cur;
+      if (fresh) { sfx.click(); setFurnOpen(true); }
+    }, 66);
+    return () => window.clearInterval(iv);
+  }, [isFrendy, !!nearFurnace, furnOpen, s?.phase]);
   /* v0.62: отпустили ESC (или окно потеряло фокус) — отсчёт сбрасывается,
      подсказка плавно гаснет; при размонтировании таймер подчищается */
   useEffect(() => {
@@ -2357,10 +2387,12 @@ export default function GameScreen() {
     let noVoice = false;
     try {
       if (url) {
-        const a = new Audio(url);
-        a.volume = Math.max(0, Math.min(1, useApp.getState().options.volume));
-        /* v0.131: записи заказчика финальные (смех вшит в каждую фразу) — играем 1:1, без питч-сдвига и смеха после фразы (laugh-0/1 удалены) */
-        void a.play().catch(() => { noVoice = true; });
+        /* v0.133: громкость — из Опций «Голос Френди» (0–150%), больше не привязана к «Эффектам интерфейса» */
+        const a = makeFrendyAudio(url);
+        if (a) {
+          /* v0.131: записи заказчика финальные (смех вшит в каждую фразу) — играем 1:1, без питч-сдвига и смеха после фразы (laugh-0/1 удалены) */
+          void a.play().catch(() => { noVoice = true; });
+        } else noVoice = true;
       } else noVoice = true;
     } catch { noVoice = true; }
     if (noVoice && 'speechSynthesis' in window) {
@@ -2369,7 +2401,7 @@ export default function GameScreen() {
         u.lang = 'ru-RU';
         u.pitch = 0.55;
         u.rate = 0.9;
-        u.volume = Math.max(0, Math.min(1, useApp.getState().options.volume));
+        u.volume = Math.min(1, frendyVol()); // v0.133: тоже громкость Френди
         window.speechSynthesis.speak(u);
       } catch { /* нет голоса — фраза остаётся в крике и логе */ }
     }
@@ -3252,8 +3284,15 @@ export default function GameScreen() {
               const wx = v.x + (e.clientX - r.left - r.width / 2) / v.zoom;
               const wy = v.y + (e.clientY - r.top - r.height / 2) / v.zoom;
               const idx = cellAtPoint(map, wx, wy);
-              setInspectIdx(idx >= 0 ? idx : null);
-              if (idx >= 0) sfx.hover();
+              /* v0.133 FRENDY: КЛИК ПО ПЕЧИ (стоишь рядом) — открыть окно печи, как по E:
+                 осмотр ячейки в этом случае не нужен, печь важнее */
+              if (isFrendy && idx >= 0 && nearFurnace && nearFurnace.idx === idx && !dlgOpenIdRef.current && !cutActiveRef.current) {
+                sfx.click();
+                setFurnOpen(true);
+              } else {
+                setInspectIdx(idx >= 0 ? idx : null);
+                if (idx >= 0) sfx.hover();
+              }
             }
             dragRef.current = null;
             lookDragRef.current = null;
@@ -3877,7 +3916,7 @@ export default function GameScreen() {
         {/* ---------- v0.123 FRENDY: подсказка у печи + окно «Сжечь микросхему» ---------- */}
         {isFrendy && nearFurnace && !furnOpen && s?.phase === 'playing' && mePlayer?.alive && !mePlayer.spect && (
           <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
-            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#ff8b3f] bg-[rgba(7,9,18,0.9)] border-2 border-[#ff8b3f]/50">🔥 ПЕЧЬ ФРЕНДИ — нажми <b className="text-paper">E</b></span>
+            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#ff8b3f] bg-[rgba(7,9,18,0.9)] border-2 border-[#ff8b3f]/50">🔥 ПЕЧЬ ФРЕНДИ — <b className="text-paper">E</b> · джойстик · клик</span>
           </div>
         )}
         {/* ---------- v0.132 ЭПИЛОГ «СЕКРЕТНЫЕ МАТЕРИАЛЫ» ---------- */}

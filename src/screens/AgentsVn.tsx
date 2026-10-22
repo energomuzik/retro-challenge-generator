@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { useApp } from '../store';
 import { agentPortrait, AGENT_NAMES, EPI_SCRIPT, type EpiLine } from '../agentsAssets';
 import type { AgentWho } from '../agentsAssets';
+import { makeFrendyAudio } from '../frendyVoice';
 
 /* v0.132: ПЕЧАТНАЯ МАШИНКА — общий кирпичик для VN-подачи (эпилог агентов и
    диалоги NPC с галочкой «🎭 визуальная новелла»). Печатает текст посимвольно. */
@@ -37,21 +37,19 @@ export function AgentsVn({ idx, isHost, onNext }: { idx: number; isHost: boolean
   const [typed, setTyped] = useState('');
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  const vol = (): number => Math.max(0, Math.min(1, useApp.getState().options.volume ?? 0.8));
-
-  /* смена реплики: стоп прошлого звука, старт нового, печатная машинка */
+  /* смена реплики: стоп прошлого звука, старт нового, печатная машинка.
+     v0.133: громкость реплик агентов — из Опций «Голос Френди» (как и все реплики FRENDY) */
   useEffect(() => {
     setTyped('');
     try { audioRef.current?.pause(); } catch { /* noop */ }
     audioRef.current = null;
     let cancelled = false;
     if (ln.src) {
-      try {
-        const a = new Audio(ln.src);
-        a.volume = vol();
+      const a = makeFrendyAudio(ln.src);
+      if (a) {
         audioRef.current = a;
         void a.play().catch(() => { /* автоплей заблокирован — субтитры продолжают */ });
-      } catch { /* noop */ }
+      }
     }
     const full = ln.text;
     let i = 0;

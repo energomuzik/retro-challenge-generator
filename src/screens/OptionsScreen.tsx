@@ -189,6 +189,22 @@ export default function OptionsScreen() {
                   className="w-full"
                 />
               </div>
+              {/* v0.133: отдельная громкость реплик Френди (FRENDY) и разговора агентов в эпилоге */}
+              <div className="border-t-2 border-edge pt-3">
+                <span className="tick-label block mb-2">Голос Френди (реплики FRENDY) · {Math.round((typeof options.frendyVol === 'number' ? options.frendyVol : 1) * 100)}%</span>
+                <input
+                  type="range" min={0} max={1.5} step={0.05}
+                  value={typeof options.frendyVol === 'number' ? options.frendyVol : 1}
+                  onChange={(e) => setOptions({ frendyVol: Number(e.target.value) })}
+                  onMouseUp={() => sfx.hover()}
+                  className="w-full"
+                  aria-label="Громкость реплик Френди"
+                />
+                <p className="text-[10px] text-faint leading-relaxed mt-1.5">
+                  Фразочки охоты, реплики кат-сцен (интро/победа/стингер) и разговор агентов Альдера и Скаллер.
+                  Не зависит от «Эффектов интерфейса». Выше 100% — усиление: до 150%.
+                </p>
+              </div>
               <div className="border-t-2 border-edge pt-3">
                 <p className="text-[10px] text-faint leading-relaxed">
                   Звук эмуляторов (NES и SEGA) регулируется ползунком «Звук эмулятора» рядом с окном эмулятора —

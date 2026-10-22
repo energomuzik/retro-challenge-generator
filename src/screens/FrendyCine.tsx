@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GameMap, GameSession } from '../types';
 import { FRENDY_CINE, MAP_MODES, PLAYER_COLORS } from '../types';
 import { VERSION } from '../version';
-import { frendyCineVoice } from '../frendyVoice';
+import { frendyCineVoice, makeFrendyAudio } from '../frendyVoice';
 import { useApp } from '../store';
 import { sfx } from '../sound';
 
@@ -23,12 +23,8 @@ const vol = (): number => Math.max(0, Math.min(1, useApp.getState().options.volu
 const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
 function makeAudio(url: string | null): HTMLAudioElement | null {
-  if (!url) return null;
-  try {
-    const a = new Audio(url);
-    a.volume = vol();
-    return a;
-  } catch { return null; }
+  /* v0.133: реплики Френди играются с громкостью из Опций «Голос Френди» (0–150%, усиление WebAudio внутри) */
+  return makeFrendyAudio(url);
 }
 
 /** Последовательное проигрывание озвучки; onDone — после последней или по капу (страховка).
@@ -289,7 +285,12 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
   useEffect(() => {
     if (phase !== 'stingEnd') return;
     try { void musicRef.current?.play().catch(() => { /* noop */ }); } catch { /* noop */ }
-    const t = window.setTimeout(() => setIdx(stingAt + 1), 3400); // продолжаем с того же места
+    /* v0.133 ФИКС БАГА v0.132: после стингера менялся только ИНДЕКС, а фаза экрана
+       оставалась 'stingEnd' — «ВЫ ПРОШЛИ ИГРУ» висело навсегда, до финала и эпилога
+       дело не доходило (помогала только кнопка «Пропустить титры» заранее). Теперь
+       фаза возвращается в прокрутку: титры показывают хвостовую строку версии,
+       после чего finish() сам запускает эпилог (сцена с Альдером и Скаллер). */
+    const t = window.setTimeout(() => { setIdx(stingAt + 1); setPhase('roll'); }, 3400); // продолжаем с того же места
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, stingAt]);
@@ -326,6 +327,8 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
   if (phase === 'sting' || phase === 'stingEnd') {
     return (
       <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center">
+        {/* v0.133: «Пропустить» доступен и на стингере — раньше отсюда нельзя было уйти вовсе */}
+        <button onClick={finish} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#5b2430] text-[#b98490] font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-[#ff5d73] cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить ✕</button>
         <div className="cine-shake flex flex-col items-center gap-5">
           <FrendyFigure size={220} burning={phase === 'sting'} />
           {phase === 'sting' && (
