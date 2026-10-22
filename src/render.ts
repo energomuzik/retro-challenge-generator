@@ -450,6 +450,10 @@ export interface BoardDrawOpts {
   frendyBoss?: { x: number; y: number; fx?: string | null; fxTs?: number; targetId?: string | null } | null;
   /* v0.132 ЭПИЛОГ: спрайты агентов АЛЬДЕР/СКАЛЛЕР (кадр уже выбран в GameScreen: ходьба/IDLE) */
   agents?: { who: 'alder' | 'skaller'; x: number; y: number; img: HTMLImageElement | null; flip?: boolean }[] | null;
+  /* v0.134 ЭПИЛОГ «Секретные материалы»: место преступления очищено — ВСЕ ячейки СКРЫТЫ,
+     кроме одной (индекс ячейки печи). Стрелки/номера/флаг старта/боссы/NPC тоже скрыты.
+     Ячейки в данных остаются (логика не тронута) — их просто не видно игрокам. */
+  keepCellOnly?: number | null;
 }
 
 function px(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, pattern: string[], color: string) {
@@ -1062,7 +1066,8 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   const N = map.cells.length;
   /* наконечники явных стрелок, рисуемые ПОВЕРХ ячеек отдельным проходом (заполняется ниже) */
   const topHeads: { x: number; y: number; ux: number; uy: number; hl: number; hw: number; col: string }[] = [];
-  if (N > 1) {
+  /* v0.134 ЭПИЛОГ: keepCellOnly — стрелки между ячейками не рисуем (место преступления очищено) */
+  if (N > 1 && o.keepCellOnly == null) {
     // Стрелки: ЗОЛОТАЯ — явная «дорога» (у безномерной — куда шагает фишка, у
     // пронумерованной — прыжок при остановке); белый ПУНКТИР — авто-порядок у
     // пронумерованных; КОРАЛЛОВАЯ с подписью «ПЕРЕХОД» — вторая стрелка-прыжок.
@@ -1154,6 +1159,8 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   // ячейки
   for (let i = 0; i < N; i++) {
     const cell = map.cells[i];
+    /* v0.134 ЭПИЛОГ: все ячейки СКРЫТЫ, кроме одной (печь) — данные целы, рисования нет */
+    if (o.keepCellOnly != null && i !== o.keepCellOnly) continue;
     const { x: cx, y: cy } = cellCenter(map, i);
     const box = cellBox(map, i);
     const owner = o.captured[i];
@@ -1448,7 +1455,8 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   }
 
   // флаг старта — над стартовой ячейкой (или над первой, если старой разметки нет)
-  if (N > 0) {
+  // v0.134 ЭПИЛОГ: при keepCellOnly флаг старта тоже скрыт (ячейка невидима)
+  if (N > 0 && o.keepCellOnly == null) {
     const c0 = cellCenter(map, startCellIdx(map));
     ctx.save();
     ctx.translate(c0.x + 20, c0.y - 34);
@@ -1547,6 +1555,8 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   for (const pb of map.bosses ?? []) {
     const def = blibDraw.get(pb.bid);
     if (!def) continue;
+    /* v0.134 ЭПИЛОГ: боссов на очищенном месте преступления не показываем */
+    if (o.keepCellOnly != null) continue;
     /* ПАТРУЛЬ: живой босс стоит в точке маршрута (формула от времени партии);
        повержённый замерает в точке гибели (patrolFreeze — ts fx bossDef, а в QUEST v0.53 —
        момент победы из qBossDownAt: побеждённый босс больше не патрулирует).
@@ -1631,6 +1641,8 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   // Круг радиуса (звук + диалог) — только в редакторе карт.
   for (const it of o.npcs ?? []) {
     const { npc, def, done } = it;
+    /* v0.134 ЭПИЛОГ: NPC на очищенном месте преступления не показываем */
+    if (o.keepCellOnly != null) continue;
     /* ПАТРУЛЬ: NPC с маршрутом рисуется в текущей точке (формула от времени партии);
        без маршрута — на своём месте (npc.x/y). v0.54: если с NPC ОТКРЫТ ДИАЛОГ —
        время заморожено на момент открытия (npcFreeze): NPC стоит на месте, а не уходит;

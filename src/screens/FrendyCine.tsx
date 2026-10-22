@@ -138,54 +138,59 @@ export function FrendyIntroCine({ onDone }: { onDone: () => void }) {
 type CineLine = { t: string; c?: string; style?: React.CSSProperties };
 const LINE_MS = 2900; // одна фраза титров
 
+/* Список фраз титров (v0.134: вынесен из EndCredits — тот же список крутится
+   в финале «Секретные материалы» после разговора агентов) */
+function buildCreditLines(map: GameMap, sess: GameSession, isFrendy: boolean, won: boolean): CineLine[] {
+  const out: CineLine[] = [];
+  const modeName = MAP_MODES.find((m) => m.id === map.mode)?.name ?? 'РЕТРОПОЛИЯ';
+  out.push({ t: 'RETRO CHALLENGE GENERATOR', c: 'font-pixel text-[13px] tracking-[0.35em] text-teal' });
+  out.push({ t: map.name || 'Безымянная карта', c: 'font-display uppercase text-base text-paper' });
+  out.push({ t: `Режим: ${modeName}`, c: 'font-pixel text-[10px] text-dim' });
+  if (isFrendy) {
+    out.push(won
+      ? { t: 'ВСЕ МИКРОСХЕМЫ СОЖЖЕНЫ — ФРЕНДИ ПОВЕРЖЕН', c: 'font-display uppercase text-sm text-teal' }
+      : { t: 'КОШМАР ПОБЕДИЛ…', c: 'font-display uppercase text-sm text-[#ff5d73]' });
+    out.push({ t: `Сожжено микросхем: ${sess.frendy?.burned ?? 0} из ${sess.frendy?.total ?? '?'}`, c: 'font-pixel text-[10px] text-dim' });
+    const roster = sess.players.filter((p) => !p.spect);
+    for (const p of roster) {
+      const tasks = (sess.qDone?.[p.id] ?? []).length;
+      const caught = sess.frendy?.caught?.[p.id] ?? 0;
+      out.push({
+        t: `${p.alive ? '🧡' : '💀'} ${p.name} — ${p.alive ? 'ВЫЖИЛ' : 'ПОГИБ'} · заданий пройдено: ${tasks} · поимок Френди: ${caught}`,
+        c: 'font-pixel text-[10px]',
+        style: { color: PLAYER_COLORS[p.color] ?? '#e8e2d0' },
+      });
+    }
+    if (winnerOf(sess)) out.push({ t: `Последнюю микросхему в печь положил ${winnerOf(sess)!.name}`, c: 'font-display uppercase text-[11px] text-gold' });
+  } else if (winnerOf(sess)) {
+    out.push({ t: `🏆 ${winnerOf(sess)!.name} — ПОБЕДИТЕЛЬ!`, c: 'font-display uppercase text-base', style: { color: PLAYER_COLORS[winnerOf(sess)!.color] ?? '#ffd76a' } });
+  } else {
+    out.push({ t: 'Партия завершена', c: 'font-display uppercase text-base text-dim' });
+  }
+  out.push({ t: '— БЛАГОДАРНОСТЬ ДОНАТЕРАМ —', c: 'font-pixel text-[10px] tracking-[0.2em] text-gold' });
+  out.push({ t: 'Я благодарю всех донатеров за поддержку моих проектов и начинаний.', c: 'text-[12px] text-paper/90' });
+  out.push({ t: 'Особенно Юки Штиль. Он не только поддерживает меня финансово, но и морально. Большое ему спасибо.', c: 'text-[12px] text-paper/90' });
+  out.push({ t: 'Спасибо всем тем, кто любит ретро и играет в мои проекты.', c: 'text-[12px] text-paper/90' });
+  out.push({ t: 'Желаю ретростримерам здоровья. И поиграйте в мои другие режимы — они классные.', c: 'text-[12px] text-paper/90' });
+  out.push({ t: 'Ваш ЭНЕРГО МУЖИК.', c: 'font-display uppercase text-[13px] text-gold' });
+  return out;
+}
+
+const winnerOf = (sess: GameSession) => sess.players.find((p) => p.id === sess.winner) ?? null;
+
 export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: GameMap; sess: GameSession; isFrendy: boolean; onClose: () => void; onEpilogue?: () => void }) {
   const won = !!sess.frendy?.won;
   const [phase, setPhase] = useState<'win1' | 'win2' | 'win3' | 'lose1' | 'roll' | 'sting' | 'stingEnd' | 'done'>(isFrendy && won ? 'win1' : isFrendy ? 'lose1' : 'roll');
   const [idx, setIdx] = useState(0);
   const musicRef = useRef<HTMLAudioElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
-  const winner = sess.players.find((p) => p.id === sess.winner) ?? null;
+  const winner = winnerOf(sess);
   const winPhrase = useMemo(() => pick(FRENDY_CINE.win), []);
   const stingPhrase = useMemo(() => pick(FRENDY_CINE.sting), []);
   const losePhrase = useMemo(() => pick(FRENDY_CINE.badend), []); // v0.131: все проиграли — Френди глумится
 
-  /* Список фраз титров (строится один раз) */
-  const lines = useMemo<CineLine[]>(() => {
-    const out: CineLine[] = [];
-    const modeName = MAP_MODES.find((m) => m.id === map.mode)?.name ?? 'РЕТРОПОЛИЯ';
-    out.push({ t: 'RETRO CHALLENGE GENERATOR', c: 'font-pixel text-[13px] tracking-[0.35em] text-teal' });
-    out.push({ t: map.name || 'Безымянная карта', c: 'font-display uppercase text-base text-paper' });
-    out.push({ t: `Режим: ${modeName}`, c: 'font-pixel text-[10px] text-dim' });
-    if (isFrendy) {
-      out.push(won
-        ? { t: 'ВСЕ МИКРОСХЕМЫ СОЖЖЕНЫ — ФРЕНДИ ПОВЕРЖЕН', c: 'font-display uppercase text-sm text-teal' }
-        : { t: 'КОШМАР ПОБЕДИЛ…', c: 'font-display uppercase text-sm text-[#ff5d73]' });
-      out.push({ t: `Сожжено микросхем: ${sess.frendy?.burned ?? 0} из ${sess.frendy?.total ?? '?'}`, c: 'font-pixel text-[10px] text-dim' });
-      const roster = sess.players.filter((p) => !p.spect);
-      for (const p of roster) {
-        const tasks = (sess.qDone?.[p.id] ?? []).length;
-        const caught = sess.frendy?.caught?.[p.id] ?? 0;
-        out.push({
-          t: `${p.alive ? '🧡' : '💀'} ${p.name} — ${p.alive ? 'ВЫЖИЛ' : 'ПОГИБ'} · заданий пройдено: ${tasks} · поимок Френди: ${caught}`,
-          c: 'font-pixel text-[10px]',
-          style: { color: PLAYER_COLORS[p.color] ?? '#e8e2d0' },
-        });
-      }
-      if (winner) out.push({ t: `Последнюю микросхему в печь положил ${winner.name}`, c: 'font-display uppercase text-[11px] text-gold' });
-    } else if (winner) {
-      out.push({ t: `🏆 ${winner.name} — ПОБЕДИТЕЛЬ!`, c: 'font-display uppercase text-base', style: { color: PLAYER_COLORS[winner.color] ?? '#ffd76a' } });
-    } else {
-      out.push({ t: 'Партия завершена', c: 'font-display uppercase text-base text-dim' });
-    }
-    out.push({ t: '— БЛАГОДАРНОСТЬ ДОНАТЕРАМ —', c: 'font-pixel text-[10px] tracking-[0.2em] text-gold' });
-    out.push({ t: 'Я благодарю всех донатеров за поддержку моих проектов и начинаний.', c: 'text-[12px] text-paper/90' });
-    out.push({ t: 'Особенно Юки Штиль. Он не только поддерживает меня финансово, но и морально. Большое ему спасибо.', c: 'text-[12px] text-paper/90' });
-    out.push({ t: 'Спасибо всем тем, кто любит ретро и играет в мои проекты.', c: 'text-[12px] text-paper/90' });
-    out.push({ t: 'Желаю ретростримерам здоровья. И поиграйте в мои другие режимы — они классные.', c: 'text-[12px] text-paper/90' });
-    out.push({ t: 'Ваш ЭНЕРГО МУЖИК.', c: 'font-display uppercase text-[13px] text-gold' });
-    return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  /* Список фраз титров (строится один раз; v0.134 — общий с финалом «Секретные материалы») */
+  const lines = useMemo<CineLine[]>(() => buildCreditLines(map, sess, isFrendy, won), []);
   /* СТИНГЕР (только FRENDY-победа): после письма, перед финальной строкой версии */
   const stingAt = isFrendy && won ? lines.length : -1;
 
@@ -235,7 +240,12 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
       return () => stopRef.current?.();
     }
     if (phase === 'win3') {
-      const t = window.setTimeout(() => setPhase('roll'), 2000); // «проходит 2 секунды»
+      /* v0.134: НОВЫЙ ПОРЯДОК ФИНАЛА FRENDY — после прощальной фразы и 2 секунд тишины
+         СРАЗУ появляются агенты (эпилог на карте): разговор → тёмный экран «executive
+         producer SERGIO ENERGO» + «to be continued...» → мгновенные титры как в
+         «Секретных материалах» → СТИНГЕР → конец игры. Прокрутка титров отсюда больше
+         не стартует (она теперь в XFinale, мгновенная — как в сериале). */
+      const t = window.setTimeout(() => finish(), 2000); // «проходит 2 секунды»
       return () => clearTimeout(t);
     }
     /* v0.131: ВСЕ ПРОИГРАЛИ (Френди победил) — сначала его глумление (badend), потом титры */
@@ -350,6 +360,172 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
           <div key={idx} className={`cine-line ${lines[idx].c ?? 'text-[12px] text-dim'}`} style={lines[idx].style}>{lines[idx].t}</div>
         ) : (
           <div className="font-pixel text-[10px] text-faint tracking-[0.3em]">RETRO CHALLENGE GENERATOR · v{VERSION}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- v0.134 ФИНАЛ «СЕКРЕТНЫЕ МАТЕРИАЛЫ» — после разговора агентов ----------
+   Порядок финала FRENDY-победы по заказу: сжигание + прощальная фраза → АГЕНТЫ и
+   разговор (эпилог на карте) → ТЁМНЫЙ ЭКРАН: по центру «пишущей машинкой» печатается
+   «executive producer SERGIO ENERGO» (как «executive producer CHRIS CARTER» в сериале),
+   в левом углу «to be continued...» → ТИТРЫ как в «Секретных материалах»: тот же шрифт,
+   тот же размер, тот же цвет, чёрный фон, строки появляются и исчезают МГНОВЕННО (без
+   плавного фейда) → СТИНГЕР Френди → «ВЫ ПРОШЛИ ИГРУ» → конец игры.
+   Шрифт — пишущая машинка (Courier), цвет — бледно-белый, фон — чёрный. */
+const XF_FONT = '"Courier New", "Courier", monospace';
+const XF_COLOR = '#e8e8e8';
+const XF_EP_TEXT = 'executive producer SERGIO ENERGO';
+const XF_TBC_TEXT = 'to be continued...';
+const XF_TYPE_MS = 72;     // один символ «машинки»
+const XF_TBC_MS = 3000;    // сколько держится «to be continued...»
+const XF_LINE_MS = 1900;   // строка титров на экране
+const XF_GAP_MS = 300;     // чёрный пробел между строками (мгновенная смена)
+
+export function XFinale({ map, sess, onDone }: { map: GameMap; sess: GameSession; onDone: () => void }) {
+  const [phase, setPhase] = useState<'type' | 'tbc' | 'credits' | 'sting' | 'stingEnd'>('type');
+  const [typed, setTyped] = useState(0);   // сколько символов напечатано
+  const [idx, setIdx] = useState(0);
+  const [lineOn, setLineOn] = useState(true);
+  const musicRef = useRef<HTMLAudioElement | null>(null);
+  const stopRef = useRef<(() => void) | null>(null);
+  const doneRef = useRef(false);
+  const stingPhrase = useMemo(() => pick(FRENDY_CINE.sting), []);
+  const lines = useMemo(() => {
+    const out = buildCreditLines(map, sess, true, true);
+    out.push({ t: `RETRO CHALLENGE GENERATOR · v${VERSION}` }); // финальная строка — перед стингером
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const finish = () => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    try { musicRef.current?.pause(); } catch { /* noop */ }
+    try { stopRef.current?.(); } catch { /* noop */ }
+    onDone();
+  };
+
+  /* страховка: при размонтировании глушим музыку/озвучку */
+  useEffect(() => () => {
+    try { musicRef.current?.pause(); } catch { /* noop */ }
+    try { stopRef.current?.(); } catch { /* noop */ }
+  }, []);
+
+  /* «МАШИНКА»: печатаем «executive producer SERGIO ENERGO» посимвольно */
+  useEffect(() => {
+    if (phase !== 'type') return;
+    if (typed >= XF_EP_TEXT.length) {
+      const t = window.setTimeout(() => setPhase('tbc'), 900);
+      return () => clearTimeout(t);
+    }
+    const t = window.setTimeout(() => setTyped((x) => x + 1), XF_TYPE_MS);
+    return () => clearTimeout(t);
+  }, [phase, typed]);
+
+  /* «to be continued...» в левом углу — та же машинка, мгновенно появилась */
+  useEffect(() => {
+    if (phase !== 'tbc') return;
+    const t = window.setTimeout(() => setPhase('credits'), XF_TBC_MS);
+    return () => clearTimeout(t);
+  }, [phase]);
+
+  /* Музыка титров (вшита в карту) — стартует с мгновенных титров, как раньше с прокрутки */
+  useEffect(() => {
+    if (phase !== 'credits' || !map.creditsMusic || musicRef.current) return;
+    try {
+      const a = new Audio(map.creditsMusic);
+      a.volume = Math.min(1, Math.max(0, vol() * (typeof map.creditsMusicVol === 'number' ? map.creditsMusicVol : 0.9)));
+      void a.play().catch(() => { /* noop */ });
+      musicRef.current = a;
+    } catch { /* noop */ }
+  }, [phase, map.creditsMusic, map.creditsMusicVol]);
+
+  /* ТИТРЫ «как в Секретных материалах»: строка появилась МГНОВЕННО → держится →
+     исчезла МГНОВЕННО (чёрный пробел) → следующая. Никаких фейдов. */
+  useEffect(() => {
+    if (phase !== 'credits') return;
+    if (idx >= lines.length) { setPhase('sting'); return; }
+    if (lineOn) {
+      const t = window.setTimeout(() => setLineOn(false), XF_LINE_MS);
+      return () => clearTimeout(t);
+    }
+    const t = window.setTimeout(() => { setIdx((x) => x + 1); setLineOn(true); }, XF_GAP_MS);
+    return () => clearTimeout(t);
+  }, [phase, idx, lineOn, lines.length]);
+
+  /* СТИНГЕР: музыка замолкает → Френди является с прощальной фразой */
+  useEffect(() => {
+    if (phase !== 'sting') return;
+    try { musicRef.current?.pause(); } catch { /* noop */ }
+    sfx.frendySpawn();
+    const i = Math.max(0, FRENDY_CINE.sting.indexOf(stingPhrase));
+    stopRef.current = playSeq(
+      [frendyCineVoice('sting', i % Math.max(1, FRENDY_CINE.sting.length))],
+      () => setPhase('stingEnd'),
+      26000,
+    );
+    return () => stopRef.current?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, stingPhrase]);
+
+  /* «ВЫ ПРОШЛИ ИГРУ» → конец игры (финальная панель ПОБЕДЫ) */
+  useEffect(() => {
+    if (phase !== 'stingEnd') return;
+    try { void musicRef.current?.play().catch(() => { /* noop */ }); } catch { /* noop */ }
+    const t = window.setTimeout(() => finish(), 3400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  const xfText = (t: string, extra?: React.CSSProperties): React.CSSProperties => ({
+    fontFamily: XF_FONT, color: XF_COLOR, ...extra,
+  });
+
+  /* тёмный экран «машинки» (до титров) */
+  if (phase === 'type' || phase === 'tbc') {
+    return (
+      <div className="fixed inset-0 z-[80] bg-black">
+        <button onClick={finish} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#333] text-[#888] text-[10px] uppercase tracking-wider hover:text-white hover:border-[#777] cursor-pointer bg-[rgba(10,10,10,0.7)]" style={{ fontFamily: XF_FONT }}>Пропустить ✕</button>
+        <div className="absolute inset-0 flex items-center justify-center px-6">
+          <div className="text-center text-[17px] md:text-[21px] tracking-wide" style={xfText({})}>
+            {XF_EP_TEXT.slice(0, typed)}
+            {typed < XF_EP_TEXT.length && <span className="inline-block w-[0.6em] h-[1.1em] align-[-0.15em] ml-0.5 blink-hard" style={{ background: XF_COLOR }} />}
+          </div>
+        </div>
+        {phase === 'tbc' && (
+          <div className="absolute left-5 bottom-7 md:left-8 md:bottom-10 text-[15px] md:text-[19px]" style={xfText({})}>{XF_TBC_TEXT}</div>
+        )}
+      </div>
+    );
+  }
+
+  /* мгновенные титры */
+  if (phase === 'credits') {
+    return (
+      <div className="fixed inset-0 z-[80] bg-black">
+        <button onClick={finish} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#333] text-[#888] text-[10px] uppercase tracking-wider hover:text-white hover:border-[#777] cursor-pointer bg-[rgba(10,10,10,0.7)]" style={{ fontFamily: XF_FONT }}>Пропустить ✕</button>
+        <div className="absolute inset-0 flex items-center justify-center px-6">
+          {lineOn && idx < lines.length ? (
+            <div key={idx} className="text-center text-[16px] md:text-[20px] leading-relaxed max-w-3xl whitespace-pre-line" style={xfText({})}>{lines[idx].t}</div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  /* стингер + «ВЫ ПРОШЛИ ИГРУ» — как в EndCredits, но после титров-машинки */
+  return (
+    <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center">
+      <button onClick={finish} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#5b2430] text-[#b98490] font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-[#ff5d73] cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить ✕</button>
+      <div className="cine-shake flex flex-col items-center gap-5">
+        <FrendyFigure size={220} burning={phase === 'sting'} />
+        {phase === 'sting' && (
+          <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{stingPhrase}»</div>
+        )}
+        {phase === 'stingEnd' && (
+          <div className="font-pixel uppercase tracking-[0.4em] text-teal text-xl md:text-3xl" style={{ textShadow: '0 0 22px rgba(46,230,168,0.7)' }}>ВЫ ПРОШЛИ ИГРУ</div>
         )}
       </div>
     </div>

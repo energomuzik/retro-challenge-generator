@@ -32,7 +32,7 @@ import { sfx } from '../sound';
 /* v0.123 FRENDY: ОЗВУЧКА ФРАЗОЧЕК — mp3 из assets/frendy/*.mp3 (голос Дмитрий, заниженный питч).
    v0.124: сопоставление файлов ЯВНОЕ (по имени) — модуль ../frendyVoice; нет файла — фолбэк на синтез речи. */
 import { frendyPhraseVoice, makeFrendyAudio, frendyVol } from '../frendyVoice';
-import { FrendyIntroCine, EndCredits } from './FrendyCine'; // v0.124: интро-катсцена + титры со стингером
+import { FrendyIntroCine, EndCredits, XFinale } from './FrendyCine'; // v0.124: интро-катсцена + титры со стингером; v0.134: финал «Секретные материалы»
 import { agentFrame, agentPortrait, AGENT_NAMES, EPI_SCRIPT, type AgentWho } from '../agentsAssets'; // v0.132: агенты Альдер/Скаллер (эпилог FRENDY)
 import { AgentsVn, VnText } from './AgentsVn'; // v0.132: разговор агентов в стиле визуальной новеллы + печатная машинка
 import { BogachPanel } from './BogachPanel'; // v0.109 БОГАЧ: панель донатов хоста
@@ -1225,7 +1225,8 @@ export default function GameScreen() {
   /* v0.132 ЭПИЛОГ: сглаживание Альдера между тиками хоста + последние направления взгляда агентов */
   const epiAlderSmoothRef = useRef<{ x: number; y: number } | null>(null);
   const alderFlipRef = useRef(false);   // true — смотрит влево (спрайты по умолчанию вправо)
-  const skallerFlipRef = useRef(false);
+  const skallerFlipRef = useRef(false); // v0.134: у Скаллер спрайты смотрят ВЛЕВО — true = флип (смотрит вправо)
+  const epiSpawnTsRef = useRef(0);      // v0.134: startedAt эпилога, для которого снап Скаллер уже сделан
   const lastPhraseTsRef = useRef(0);
   const lastBossFxTsRef = useRef(0);
   const lastFrendyFxTsRef = useRef(0); // v0.130: fx уровня состояния (поимка/ремонт)
@@ -2189,6 +2190,31 @@ export default function GameScreen() {
         /* v0.132 ЭПИЛОГ: сглаживание позиции АЛЬДЕРА между тиками хоста + кадры агентов.
            Направление: спрайты смотрят ВПРАВО — при движении влево флипаем. */
         const epiS = sess.frendy?.epi ?? null;
+        /* v0.134: СКАЛЛЕР СТАРТУЕТ СО СТАРТОВОЙ ЯЧЕЙКИ — хост телепортирует фишку в момент
+           запуска эпилога (engine). По первому кадру эпилога (новый startedAt) снапим
+           отображение и локальную симуляцию хоста к авторитетной позиции: иначе Скаллер
+           «плывёт» от старого места к стартовой ячейке, а камера ползёт за ней. */
+        if (epiS && epiSpawnTsRef.current !== epiS.startedAt) {
+          epiSpawnTsRef.current = epiS.startedAt;
+          const epiHostId = sess.players.find((p) => p.isHost)?.id ?? '';
+          const epiJp = sess.journeyPos?.[epiHostId];
+          if (epiJp) {
+            dispRef.current[epiHostId] = { x: epiJp.x, y: epiJp.y };
+            snapCamRef.current = true; // камера мгновенно за Скаллер
+            if (epiHostId === me && journeySelf.current) {
+              const selfS = journeySelf.current;
+              selfS.x = epiJp.x;
+              selfS.y = epiJp.y;
+              selfS.dir = undefined;
+              selfS.moving = false;
+              selfS.dirty = true; // синхронизировать новую позицию
+              selfS.tp = false;
+              selfS.pinside.clear(); // порталы вокруг точки — «уже внутри», чтобы не сработали сразу
+              for (const q of (m.portals ?? [])) if (epiJp.x >= q.x && epiJp.x < q.x + q.w && epiJp.y >= q.y && epiJp.y < q.y + q.h) selfS.pinside.add(q.id);
+            }
+          }
+          epiAlderSmoothRef.current = null; // Альдер — сразу со стартовой ячейки (без «подлёта»)
+        }
         let agentsDraw: BoardDrawAgents | null = null;
         if (epiS) {
           const as = epiAlderSmoothRef.current ?? { x: epiS.alder.x, y: epiS.alder.y };
@@ -2203,9 +2229,12 @@ export default function GameScreen() {
           const skDisp = skPos ? (dispRef.current[sess.players.find((p) => p.isHost)?.id ?? ''] ?? skPos) : null;
           const skMoving = skDisp && skPos ? Math.hypot(skPos.x - skDisp.x, skPos.y - skDisp.y) > 2.5 : false;
           const skImg = agentFrame('skaller', skMoving, t);
+          /* v0.134 ФИКС: у СКАЛЛЕР спрайты смотрят ВЛЕВО (в отличие от Альдера) — флип был
+             перепутан: при ходе влево она смотрела вправо и наоборот. Поменяли местами:
+             влево — как есть (смотрит влево), вправо — флип (смотрит вправо). */
           if (skMoving && skPos && skDisp) {
-            if (skPos.x < skDisp.x - 2) skallerFlipRef.current = true;
-            if (skPos.x > skDisp.x + 2) skallerFlipRef.current = false;
+            if (skPos.x < skDisp.x - 2) skallerFlipRef.current = false;
+            if (skPos.x > skDisp.x + 2) skallerFlipRef.current = true;
           }
           agentsDraw = [];
           agentsDraw.push({ who: 'alder', x: as.x, y: as.y, img: alderImg, flip: alderFlipRef.current });
@@ -2268,6 +2297,11 @@ export default function GameScreen() {
           /* v0.123 FRENDY: предметы на поле + Френди (fxTs переводим из часов Date.now хоста в rAF-часы клиента) */
           frendyChips: sess.frendy?.chips ?? null,
           agents: agentsDraw, // v0.132: Альдер и Скаллер в эпилоге
+          /* v0.134 ЭПИЛОГ: «место преступления очищено» — все ячейки скрыты, кроме печи
+             (на ней лежит вся сцена с агентами); стрелки/номера/флаг/боссы/NPC тоже скрыты */
+          keepCellOnly: sess.phase === 'epilogue'
+            ? (() => { const fi = m.cells.findIndex((c) => c.type === 'furnace'); return fi >= 0 ? fi : null; })()
+            : null,
           frendyBoss: sess.frendy?.boss
             ? {
                 x: frendyBossSmoothRef.current?.x ?? sess.frendy.boss.x,
@@ -2442,6 +2476,20 @@ export default function GameScreen() {
     if (epiMode && creditsOpen) setCreditsOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [epiMode]);
+  /* ---------- v0.134 ФИНАЛ «СЕКРЕТНЫЕ МАТЕРИАЛЫ»: разговор кончился — тёмный экран ----------
+     У ВСЕХ синхронно (стадия 'done' живёт в сессии): «машинка» печатает «executive producer
+     SERGIO ENERGO», в левом углу «to be continued...», затем мгновенные титры как в сериале,
+     затем СТИНГЕР — и только потом финальная панель ПОБЕДЫ (конец игры). */
+  const [xfOpen, setXfOpen] = useState(false);
+  const xfDoneRef = useRef(false);
+  const epiDone = !!s?.frendy?.epi && s.frendy.epi.stage === 'done';
+  useEffect(() => {
+    if (s?.phase !== 'over' || !s.frendy?.won || !epiDone) return;
+    if (xfDoneRef.current) return; // один раз за партию
+    xfDoneRef.current = true;
+    setXfOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s?.phase, epiDone]);
 
   /* ---------- v0.123 FRENDY: звуки атаки/поимки + красная вспышка, если цель — я ---------- */
   const frendyBossFxTs = s?.frendy?.boss?.fxTs;
@@ -3948,6 +3996,16 @@ export default function GameScreen() {
             onNext={(all) => dispatch({ t: 'epiTalkNext', id: me, all })}
           />
         )}
+        {/* ---------- v0.134 ФИНАЛ «СЕКРЕТНЫЕ МАТЕРИАЛЫ» (после разговора агентов): тёмный экран
+            с «машинкой» (executive producer SERGIO ENERGO + to be continued...), мгновенные
+            титры, стингер — финальная панель под ними скрыта, показывается после всего ---------- */}
+        {xfOpen && s && map && (
+          <XFinale
+            map={map}
+            sess={s}
+            onDone={() => setXfOpen(false)}
+          />
+        )}
         {isFrendy && furnOpen && (() => {
           /* v0.130: печь ДВУХРЕЖИМНАЯ — слабый огонь (горят только КАРТРИДЖИ Dendy) и
              сильный (2 минуты после картриджа, таймер СКРЫТ — горят микросхемы Френди) */
@@ -4004,7 +4062,7 @@ export default function GameScreen() {
           />
         )}
         {/* ---------- победитель ---------- */}
-        {s.phase === 'over' && !creditsOpen && ( // v0.124: пока идут титры/финальные катсцены — панель под ними скрыта
+        {s.phase === 'over' && !creditsOpen && !xfOpen && ( // v0.124: пока идут титры/финальные катсцены — панель под ними скрыта; v0.134: и пока идёт финал «Секретные материалы»
           <div className="absolute inset-0 flex items-center justify-center bg-[rgba(4,6,14,0.78)] z-30 overflow-hidden">
             {[...Array(36)].map((_, i) => (
               <span

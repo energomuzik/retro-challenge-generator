@@ -3309,6 +3309,10 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const ax = sc ? (sc.cx ?? (sc.x + (sc.w || 1) / 2) * CELL_PX) : eW / 2;
       const ay = sc ? (sc.cy ?? (sc.y + (sc.h || 1) / 2) * CELL_PX) : eH / 2;
       s.frendy.epi = { stage: 'walk', alder: { x: ax, y: ay }, talkIdx: -1, startedAt: Date.now() };
+      /* v0.134: СКАЛЛЕР ТОЖЕ СТАРТУЕТ СО СТАРТОВОЙ ЯЧЕЙКИ — фишка хоста переносится туда
+         (как Альдер: оба агента «прибыли на место» через вход). Клиенты снапят отображение
+         по новому epi.startedAt — Скаллер не «плывёт» через всю карту, а стоит на старте. */
+      s.journeyPos = { ...(s.journeyPos ?? {}), [host.id]: { x: ax, y: ay, mv: false, ts: Date.now() } };
       /* мир «очищается»: остатки кошмара убираем */
       s.frendy.chips = [];
       s.frendy.boss = null;
