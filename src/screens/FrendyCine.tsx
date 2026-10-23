@@ -3,6 +3,7 @@ import type { GameMap, GameSession } from '../types';
 import { FRENDY_CINE, MAP_MODES, PLAYER_COLORS } from '../types';
 import { VERSION } from '../version';
 import { frendyCineVoice, makeFrendyAudio } from '../frendyVoice';
+import { frendyFrame } from '../frendyAssets'; // v0.135: спрайт Френди в стиле агентов
 import { useApp } from '../store';
 import { sfx } from '../sound';
 
@@ -17,7 +18,11 @@ import { sfx } from '../sound';
    ВСЯ информация титров живёт ТОЛЬКО на компе игрока (на сервер не уходит) — после
    завершения показа она больше не нужна.
    ТАЙМИНГ АДАПТИВНЫЙ: сцены листаются по окончании ОЗВУЧКИ (onended) — длительность mp3
-   может быть любой; страховочные таймеры (cap) не дают катсцене зависнуть без звука. */
+   может быть любой; страховочные таймеры (cap) не дают катсцене зависнуть без звука.
+   v0.135 ПРОПУСК УБРАН из финала: кнопка «Пропустить» осталась ТОЛЬКО в интро (фраза
+   Френди в начале партии — игроки начинают партию много раз). Титры/печь/стингер/
+   финал «Секретных материалов» НЕ пропускаются: финал редкий, смотрим целиком —
+   всё листается автоматически, кнопок нет. */
 
 const vol = (): number => Math.max(0, Math.min(1, useApp.getState().options.volume ?? 0.8));
 const pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
@@ -58,26 +63,29 @@ function playSeq(urls: (string | null)[], onDone: () => void, capMs = 16000): ()
    (отдельные треки laugh-0/1 удалены из ассетов и кода). */
 
 /* ---------- ФИГУРА ФРЕНДИ (рисованная заглушка на CSS) ---------- */
+/* v0.135: ФРЕНДИ — СПРАЙТ (src/frendyAssets) вместо CSS-заглушки: федора, полосатый
+   свитер и лапа-коготь Крюгера убраны — это был ЧУЖОЙ персонаж. Канонический облик:
+   сутулый мужчина в оливковой рабочей куртке с жетоном-слоном и POWER GLOVE с шипами.
+   Кадры idle ×2 (лёгкое «дыхание», смена каждые 460 мс); при burning кадр затемняется
+   и обгорает (CSS .frendy-fig.burning сверху добавляет огонь 🔥 как раньше). */
 function FrendyFigure({ size = 190, burning = false }: { size?: number; burning?: boolean }) {
+  const [f, setF] = useState(0);
+  useEffect(() => {
+    const iv = window.setInterval(() => setF((x) => x + 1), 460);
+    return () => window.clearInterval(iv);
+  }, []);
+  const im = frendyFrame(false, 0, f); // в кат-сценах Френди стоит — дышит
   return (
-    <div className={`frendy-fig relative ${burning ? 'burning' : ''}`} style={{ width: size, height: size * 1.18 }}>
-      {/* шляпа-федора */}
-      <div className="absolute left-1/2 -translate-x-1/2" style={{ top: 0, width: size * 0.78, height: size * 0.2, background: 'linear-gradient(180deg,#17141a,#0a090c)', borderRadius: '46% 46% 12% 12%', boxShadow: 'inset 0 -6px 12px rgba(255,45,45,0.16)' }} />
-      <div className="absolute left-1/2 -translate-x-1/2" style={{ top: size * 0.16, width: size * 1.04, height: size * 0.075, background: '#0a090c', borderRadius: '50%' }} />
-      {/* лицо-тень */}
-      <div className="absolute left-1/2 -translate-x-1/2" style={{ top: size * 0.2, width: size * 0.66, height: size * 0.42, background: 'linear-gradient(180deg,#241d20 0%,#120e11 70%)', borderRadius: '38% 38% 30% 30%' }} />
-      {/* глаза — красное свечение */}
-      <div className="ff-eyes absolute" style={{ top: size * 0.33, left: size * 0.3, width: size * 0.13, height: size * 0.07, background: 'radial-gradient(circle,#ff3b2f 0%,#7a0d08 60%,transparent 100%)', borderRadius: '50%', boxShadow: '0 0 18px 6px rgba(255,60,40,0.75)' }} />
-      <div className="ff-eyes absolute" style={{ top: size * 0.33, right: size * 0.3, width: size * 0.13, height: size * 0.07, background: 'radial-gradient(circle,#ff3b2f 0%,#7a0d08 60%,transparent 100%)', borderRadius: '50%', boxShadow: '0 0 18px 6px rgba(255,60,40,0.75)' }} />
-      {/* свитер в полоску */}
-      <div className="absolute left-1/2 -translate-x-1/2 overflow-hidden" style={{ top: size * 0.6, width: size * 0.92, height: size * 0.55, borderRadius: '26% 26% 12% 12%', background: 'repeating-linear-gradient(160deg,#3d0f10 0 14px,#16090a 14px 28px)', boxShadow: 'inset 0 10px 24px rgba(0,0,0,0.7)' }} />
-      {/* лапа с когтями (заглушка) */}
-      <div className="ff-claw absolute" style={{ top: size * 0.42, right: -size * 0.1, width: size * 0.4, height: size * 0.5 }}>
-        <div style={{ position: 'absolute', right: size * 0.1, top: size * 0.34, width: size * 0.16, height: size * 0.18, background: '#2a1b1d', borderRadius: '40% 40% 20% 20%' }} />
-        {[0, 1, 2].map((i) => (
-          <div key={i} style={{ position: 'absolute', right: size * (0.02 + i * 0.09), top: size * 0.1, width: size * 0.035, height: size * 0.3, background: 'linear-gradient(180deg,#d8d2c8,#8d8578)', borderRadius: '40%', boxShadow: '0 0 6px rgba(255,255,255,0.35)', transform: `rotate(${(i - 1) * 9}deg)` }} />
-        ))}
-      </div>
+    <div className={`frendy-fig relative ${burning ? 'burning' : ''}`} style={{ width: size, height: size * 1.3 }}>
+      {im && (
+        <img
+          src={im.src}
+          alt="Френди"
+          draggable={false}
+          className="absolute left-1/2 bottom-0 -translate-x-1/2 h-full w-auto max-w-none"
+          style={{ imageRendering: 'pixelated', filter: burning ? 'brightness(0.55) saturate(1.35) sepia(0.3) hue-rotate(-20deg)' : undefined }}
+        />
+      )}
       {burning && (
         <>
           <span className="ff-flame" style={{ left: '8%', fontSize: size * 0.3 }}>🔥</span>
@@ -93,15 +101,14 @@ function FrendyFigure({ size = 190, burning = false }: { size?: number; burning?
 /* ---------- ИНТРО (начало раунда FRENDY без своих кат-сцен) ---------- */
 export function FrendyIntroCine({ onDone }: { onDone: () => void }) {
   const [stage, setStage] = useState(0); // 0 темнота, 1 Френди, 2 уход
-  const phrase = useMemo(() => pick(FRENDY_CINE.intro), []);
+  const phrase = useMemo(() => pick(FRENDY_CINE.intro), []); // { t, f } — v0.135
   const stopRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     const t0 = window.setTimeout(() => {
       setStage(1);
       sfx.frendySpawn();
-      const i = Math.max(0, FRENDY_CINE.intro.indexOf(phrase));
       stopRef.current = playSeq(
-        [frendyCineVoice('intro', i % Math.max(1, FRENDY_CINE.intro.length))],
+        [frendyCineVoice('intro', phrase.f)],
         () => setStage(2),
         22000, // страховка: даже без звука катсцена закончится
       );
@@ -126,7 +133,7 @@ export function FrendyIntroCine({ onDone }: { onDone: () => void }) {
       {stage >= 1 && (
         <div className="flex flex-col items-center gap-5">
           <FrendyFigure size={200} />
-          <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{phrase}»</div>
+          <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{phrase.t}»</div>
           <div className="font-pixel text-[9px] text-[#6c5a60] uppercase">Френди проснулся…</div>
         </div>
       )}
@@ -185,7 +192,7 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
   const musicRef = useRef<HTMLAudioElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
   const winner = winnerOf(sess);
-  const winPhrase = useMemo(() => pick(FRENDY_CINE.win), []);
+  const winPhrase = useMemo(() => pick(FRENDY_CINE.win), []);   // { t, f } — v0.135
   const stingPhrase = useMemo(() => pick(FRENDY_CINE.sting), []);
   const losePhrase = useMemo(() => pick(FRENDY_CINE.badend), []); // v0.131: все проиграли — Френди глумится
 
@@ -231,9 +238,8 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
       return () => clearTimeout(t);
     }
     if (phase === 'win2') {
-      const i = Math.max(0, FRENDY_CINE.win.indexOf(winPhrase));
       stopRef.current = playSeq(
-        [frendyCineVoice('win', i % Math.max(1, FRENDY_CINE.win.length))],
+        [frendyCineVoice('win', winPhrase.f)],
         () => setPhase('win3'),
         24000,
       );
@@ -251,9 +257,8 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
     /* v0.131: ВСЕ ПРОИГРАЛИ (Френди победил) — сначала его глумление (badend), потом титры */
     if (phase === 'lose1') {
       sfx.frendySpawn();
-      const i = Math.max(0, FRENDY_CINE.badend.indexOf(losePhrase));
       stopRef.current = playSeq(
-        [frendyCineVoice('badend', i % Math.max(1, FRENDY_CINE.badend.length))],
+        [frendyCineVoice('badend', losePhrase.f)],
         () => setPhase('roll'),
         24000,
       );
@@ -283,9 +288,8 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
     if (phase !== 'sting') return;
     try { musicRef.current?.pause(); } catch { /* noop */ }
     sfx.frendySpawn();
-    const i = Math.max(0, FRENDY_CINE.sting.indexOf(stingPhrase));
     stopRef.current = playSeq(
-      [frendyCineVoice('sting', i % Math.max(1, FRENDY_CINE.sting.length))],
+      [frendyCineVoice('sting', stingPhrase.f)],
       () => setPhase('stingEnd'),
       26000,
     );
@@ -309,7 +313,7 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
   if (phase === 'win1' || phase === 'win2' || phase === 'win3' || phase === 'lose1') {
     return (
       <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center cine-fadein">
-        <button onClick={finish} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#5b2430] text-[#b98490] font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-[#ff5d73] cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить ✕</button>
+        {/* v0.135: кнопки «Пропустить» здесь НЕТ — финал смотрим целиком */}
         {phase === 'win1' && (
           <div className="flex flex-col items-center gap-6">
             <div className="relative text-7xl md:text-8xl" style={{ filter: 'drop-shadow(0 0 30px rgba(255,122,26,0.8))' }}>🔥🧱🔥</div>
@@ -319,7 +323,7 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
         {phase === 'win2' && (
           <div className="flex flex-col items-center gap-5">
             <FrendyFigure size={210} burning />
-            <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{winPhrase}»</div>
+            <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{winPhrase.t}»</div>
           </div>
         )}
         {phase === 'win3' && <div className="w-full h-full bg-black" />}
@@ -327,7 +331,7 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
           <div className="flex flex-col items-center gap-5">
             <FrendyFigure size={210} />
             <div className="font-display uppercase text-center text-base md:text-xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 14px rgba(255,45,45,0.55)' }}>КОШМАР ПОБЕДИЛ…</div>
-            <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{losePhrase}»</div>
+            <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{losePhrase.t}»</div>
           </div>
         )}
       </div>
@@ -337,12 +341,11 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
   if (phase === 'sting' || phase === 'stingEnd') {
     return (
       <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center">
-        {/* v0.133: «Пропустить» доступен и на стингере — раньше отсюда нельзя было уйти вовсе */}
-        <button onClick={finish} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#5b2430] text-[#b98490] font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-[#ff5d73] cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить ✕</button>
+        {/* v0.135: кнопки «Пропустить» на стингере больше НЕТ (и v0.133-хвост убран) */}
         <div className="cine-shake flex flex-col items-center gap-5">
           <FrendyFigure size={220} burning={phase === 'sting'} />
           {phase === 'sting' && (
-            <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{stingPhrase}»</div>
+            <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{stingPhrase.t}»</div>
           )}
           {phase === 'stingEnd' && (
             <div className="font-pixel uppercase tracking-[0.4em] text-teal text-xl md:text-3xl" style={{ textShadow: '0 0 22px rgba(46,230,168,0.7)' }}>ВЫ ПРОШЛИ ИГРУ</div>
@@ -354,7 +357,7 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
 
   return (
     <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center cine-fadein">
-      <button onClick={finish} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-edge text-faint font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-teal cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить титры ✕</button>
+      {/* v0.135: кнопку «Пропустить титры» убрали — титры крутятся сами */}
       <div className="text-center px-6 max-w-2xl">
         {idx < lines.length ? (
           <div key={idx} className={`cine-line ${lines[idx].c ?? 'text-[12px] text-dim'}`} style={lines[idx].style}>{lines[idx].t}</div>
@@ -391,7 +394,7 @@ export function XFinale({ map, sess, onDone }: { map: GameMap; sess: GameSession
   const musicRef = useRef<HTMLAudioElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
   const doneRef = useRef(false);
-  const stingPhrase = useMemo(() => pick(FRENDY_CINE.sting), []);
+  const stingPhrase = useMemo(() => pick(FRENDY_CINE.sting), []); // { t, f } — v0.135
   const lines = useMemo(() => {
     const out = buildCreditLines(map, sess, true, true);
     out.push({ t: `RETRO CHALLENGE GENERATOR · v${VERSION}` }); // финальная строка — перед стингером
@@ -460,9 +463,8 @@ export function XFinale({ map, sess, onDone }: { map: GameMap; sess: GameSession
     if (phase !== 'sting') return;
     try { musicRef.current?.pause(); } catch { /* noop */ }
     sfx.frendySpawn();
-    const i = Math.max(0, FRENDY_CINE.sting.indexOf(stingPhrase));
     stopRef.current = playSeq(
-      [frendyCineVoice('sting', i % Math.max(1, FRENDY_CINE.sting.length))],
+      [frendyCineVoice('sting', stingPhrase.f)],
       () => setPhase('stingEnd'),
       26000,
     );
@@ -479,7 +481,7 @@ export function XFinale({ map, sess, onDone }: { map: GameMap; sess: GameSession
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  const xfText = (t: string, extra?: React.CSSProperties): React.CSSProperties => ({
+  const xfText = (extra?: React.CSSProperties): React.CSSProperties => ({
     fontFamily: XF_FONT, color: XF_COLOR, ...extra,
   });
 
@@ -487,7 +489,7 @@ export function XFinale({ map, sess, onDone }: { map: GameMap; sess: GameSession
   if (phase === 'type' || phase === 'tbc') {
     return (
       <div className="fixed inset-0 z-[80] bg-black">
-        <button onClick={finish} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#333] text-[#888] text-[10px] uppercase tracking-wider hover:text-white hover:border-[#777] cursor-pointer bg-[rgba(10,10,10,0.7)]" style={{ fontFamily: XF_FONT }}>Пропустить ✕</button>
+        {/* v0.135: без кнопки «Пропустить» — финал смотрим целиком, как серию */}
         <div className="absolute inset-0 flex items-center justify-center px-6">
           <div className="text-center text-[17px] md:text-[21px] tracking-wide" style={xfText({})}>
             {XF_EP_TEXT.slice(0, typed)}
@@ -505,7 +507,7 @@ export function XFinale({ map, sess, onDone }: { map: GameMap; sess: GameSession
   if (phase === 'credits') {
     return (
       <div className="fixed inset-0 z-[80] bg-black">
-        <button onClick={finish} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#333] text-[#888] text-[10px] uppercase tracking-wider hover:text-white hover:border-[#777] cursor-pointer bg-[rgba(10,10,10,0.7)]" style={{ fontFamily: XF_FONT }}>Пропустить ✕</button>
+        {/* v0.135: без кнопки «Пропустить» — титры крутятся сами */}
         <div className="absolute inset-0 flex items-center justify-center px-6">
           {lineOn && idx < lines.length ? (
             <div key={idx} className="text-center text-[16px] md:text-[20px] leading-relaxed max-w-3xl whitespace-pre-line" style={xfText({})}>{lines[idx].t}</div>
@@ -518,11 +520,11 @@ export function XFinale({ map, sess, onDone }: { map: GameMap; sess: GameSession
   /* стингер + «ВЫ ПРОШЛИ ИГРУ» — как в EndCredits, но после титров-машинки */
   return (
     <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center">
-      <button onClick={finish} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#5b2430] text-[#b98490] font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-[#ff5d73] cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить ✕</button>
+      {/* v0.135: без кнопки «Пропустить» */}
       <div className="cine-shake flex flex-col items-center gap-5">
         <FrendyFigure size={220} burning={phase === 'sting'} />
         {phase === 'sting' && (
-          <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{stingPhrase}»</div>
+          <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{stingPhrase.t}»</div>
         )}
         {phase === 'stingEnd' && (
           <div className="font-pixel uppercase tracking-[0.4em] text-teal text-xl md:text-3xl" style={{ textShadow: '0 0 22px rgba(46,230,168,0.7)' }}>ВЫ ПРОШЛИ ИГРУ</div>

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { agentPortrait, AGENT_NAMES, EPI_SCRIPT, type EpiLine } from '../agentsAssets';
 import type { AgentWho } from '../agentsAssets';
 import { makeFrendyAudio } from '../frendyVoice';
+import { collectPadButtons } from '../input';
 
 /* v0.132: ПЕЧАТНАЯ МАШИНКА — общий кирпичик для VN-подачи (эпилог агентов и
    диалоги NPC с галочкой «🎭 визуальная новелла»). Печатает текст посимвольно. */
@@ -30,7 +31,9 @@ export function VnText({ text, speed = 28, className }: { text: string; speed?: 
    Портреты: СКАЛЛЕР слева, АЛЬДЕР справа (как заказано); реплика печатается
    «машинкой», озвучка (flac заказчика) играет у каждого локально при смене реплики.
    Листает ТОЛЬКО хост (его фишка — Скаллер): кнопка «Далее» / клик по экрану /
-   E, Space, Enter; «Пропустить» — сразу финал. */
+   E, Space, Enter; «Пропустить» — сразу финал.
+   v0.135: ДЖОЙСТИК — следующая реплика по лицевой кнопке (A/Xbox = крест/PS и любые
+   лицевые A/B/X/Y, плюс назначенные под A/B в раскладках) — край-триггер, как у печи. */
 export function AgentsVn({ idx, isHost, onNext }: { idx: number; isHost: boolean; onNext: (all?: boolean) => void }) {
   const safeIdx = Math.max(0, Math.min(idx, EPI_SCRIPT.length - 1));
   const ln: EpiLine = EPI_SCRIPT[safeIdx];
@@ -81,6 +84,28 @@ export function AgentsVn({ idx, isHost, onNext }: { idx: number; isHost: boolean
     return () => window.removeEventListener('keydown', onKey);
   }, [isHost, onNext]);
 
+  /* v0.135: хост листает реплики ДЖОЙСТИКОМ — лицевые кнопки всех падов (W3C 0..3 =
+     A/B/X/Y Xbox = крест/круг/квадрат/треугольник PS) и назначенные под A/B в раскладках.
+     Край-триггер: НОВОЕ нажатие — удержание не листает; снапшот на маунте не даёт
+     кнопке, зажатой ДО открытия разговора, проскочить первую реплику. */
+  const onNextRef = useRef(onNext);
+  onNextRef.current = onNext;
+  useEffect(() => {
+    if (!isHost) return;
+    const prev = new Set<number>();
+    collectPadButtons(prev);
+    const iv = window.setInterval(() => {
+      const cur = new Set<number>();
+      collectPadButtons(cur);
+      let fresh = false;
+      for (const b of cur) if (!prev.has(b)) { fresh = true; break; }
+      prev.clear();
+      cur.forEach((b) => prev.add(b));
+      if (fresh) onNextRef.current(false);
+    }, 66);
+    return () => window.clearInterval(iv);
+  }, [isHost]);
+
   const port = (who: AgentWho) => agentPortrait(who);
   const active = ln.who;
   const sideCls = (who: AgentWho): string =>
@@ -111,7 +136,7 @@ export function AgentsVn({ idx, isHost, onNext }: { idx: number; isHost: boolean
       <div
         className="absolute bottom-6 left-1/2 -translate-x-1/2 w-[94%] max-w-3xl border-[3px] border-edge bg-[rgba(6,8,18,0.93)] pixel-corners px-5 py-4 cursor-pointer"
         onClick={() => { if (isHost) onNext(false); }}
-        title={isHost ? 'Дальше (E / Space / клик)' : undefined}
+        title={isHost ? 'Дальше (E · джойстик A · клик)' : undefined}
       >
         <div className="text-[14px] md:text-[15px] text-paper leading-snug min-h-[3.4em]">
           {typed}
@@ -125,7 +150,7 @@ export function AgentsVn({ idx, isHost, onNext }: { idx: number; isHost: boolean
                 onClick={(e) => { e.stopPropagation(); onNext(true); }}
                 className="text-[10px] font-display uppercase px-2 py-1 border-2 border-edge text-faint hover:text-paper hover:border-teal cursor-pointer"
               >Пропустить ✕</button>
-              <span className="text-gold text-sm blink-hard">▼ Далее (E)</span>
+              <span className="text-gold text-sm blink-hard">▼ Далее: E · A · клик</span>
             </span>
           ) : (
             <span className="font-pixel text-[9px] text-faint uppercase">разговор ведёт хост…</span>

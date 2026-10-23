@@ -11,7 +11,7 @@ import SegaBox, { type SegaApi } from '../SegaBox';
 import { isFloatT, opOk, readAt } from '../memcode';
 import KeyBinder from '../KeyBinder';
 import {
-  loadEmuPrefs, PREFS_EVENT, codeToEjsKey, listGamepads,
+  loadEmuPrefs, PREFS_EVENT, codeToEjsKey, listGamepads, collectPadButtons,
   PAD_ACTIONS, SEGA_ACTIONS,
   NES_TO_RETRO, SEGA_TO_RETRO,
   FAMILY_ACTIONS, FAMILY_KEYS_FIELD, FAMILY_KEY_KIND, FAMILY_RETRO, FAMILY_HINT,
@@ -24,7 +24,8 @@ import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, 
 import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem } from '../types';
 import Randomizer from './Randomizer';
 import TradeWindow from './TradeWindow';
-import { FrendyLore } from './FrendyLore'; // v0.129: лор Френди — перенесён сюда из лобби (панель «ВСЕ СТАРТУЮТ ОДНОВРЕМЕННО»)
+/* v0.135: карточка «Лор Френди» убрана из игры (и отсюда, и из обучения) — предысторию
+   злодея игрок пока НЕ узнаёт: продолжение расследования со Скаллер и Алдер впереди. */
 import { nodeShowsQuests, nodeShowsShop } from '../dialogHubs';
 import { idbGet } from '../db';
 import { sfx } from '../sound';
@@ -914,26 +915,18 @@ export default function GameScreen() {
   /* v0.133 FRENDY: ПЕЧЬ С ДЖОЙСТИКА — лицевые кнопки (W3C 0/1/2/3 = A/B/X/Y всех падов)
      и назначенные под A/B в раскладках консолей открывают окно печи рядом, как клавиша E.
      Край-триггер: открывает только НОВОЕ нажатие — удержание и кнопка, зажатая ДО
-     подхода к печи, окно не хлопают. */
+     подхода к печи, окно не хлопают.
+     v0.135: сбор кнопок вынесен в общий collectPadButtons (input.ts) — тот же набор
+     работает у печи, у Альдера и при листании реплик. */
   const furnPadPrevRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     if (!isFrendy || !nearFurnace || furnOpen || s?.phase !== 'playing') return;
-    const collect = (out: Set<number>) => {
-      const prefs = loadEmuPrefs();
-      if (prefs.gamepad === false) return;
-      for (const gp of listGamepads()) {
-        for (const b of [0, 1, 2, 3]) if (gp.buttons[b]?.pressed) out.add(b);
-        for (const idx of [prefs.gpad?.A, prefs.gpad?.B, prefs.segaPad?.A, prefs.segaPad?.B, prefs.snesPad?.A, prefs.snesPad?.B, prefs.gbaPad?.A, prefs.gbaPad?.B]) {
-          if (typeof idx === 'number' && idx >= 0 && idx <= 17 && gp.buttons[idx]?.pressed) out.add(idx);
-        }
-      }
-    };
     const init = new Set<number>();
-    collect(init);
+    collectPadButtons(init);
     furnPadPrevRef.current = init; // уже зажатое в момент подхода — не открывает
     const iv = window.setInterval(() => {
       const cur = new Set<number>();
-      collect(cur);
+      collectPadButtons(cur);
       let fresh = false;
       for (const b of cur) if (!furnPadPrevRef.current.has(b)) { fresh = true; break; }
       furnPadPrevRef.current = cur;
@@ -941,6 +934,25 @@ export default function GameScreen() {
     }, 66);
     return () => window.clearInterval(iv);
   }, [isFrendy, !!nearFurnace, furnOpen, s?.phase]);
+  /* v0.135: АЛЬДЕР С ДЖОЙСТИКА — те же лицевые кнопки открывают разговор в эпилоге,
+     когда Скаллер (хост) стоит рядом с Альдером, как клавиша E. Край-триггер тот же. */
+  const alderPadPrevRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!epiMode || !epiNearAlder || !epi || epi.stage === 'talk' || epi.stage === 'done') return;
+    const init = new Set<number>();
+    collectPadButtons(init);
+    alderPadPrevRef.current = init; // кнопка, зажатая ДО подхода, разговор не открывает
+    const iv = window.setInterval(() => {
+      if (cutActiveRef.current || dlgOpenIdRef.current) return;
+      const cur = new Set<number>();
+      collectPadButtons(cur);
+      let fresh = false;
+      for (const b of cur) if (!alderPadPrevRef.current.has(b)) { fresh = true; break; }
+      alderPadPrevRef.current = cur;
+      if (fresh) { sfx.click(); dispatch({ t: 'epiTalk', id: me }); }
+    }, 66);
+    return () => window.clearInterval(iv);
+  }, [epiMode, !!epiNearAlder, epi?.stage]);
   /* v0.62: отпустили ESC (или окно потеряло фокус) — отсчёт сбрасывается,
      подсказка плавно гаснет; при размонтировании таймер подчищается */
   useEffect(() => {
@@ -3332,9 +3344,16 @@ export default function GameScreen() {
               const wx = v.x + (e.clientX - r.left - r.width / 2) / v.zoom;
               const wy = v.y + (e.clientY - r.top - r.height / 2) / v.zoom;
               const idx = cellAtPoint(map, wx, wy);
-              /* v0.133 FRENDY: КЛИК ПО ПЕЧИ (стоишь рядом) — открыть окно печи, как по E:
-                 осмотр ячейки в этом случае не нужен, печь важнее */
-              if (isFrendy && idx >= 0 && nearFurnace && nearFurnace.idx === idx && !dlgOpenIdRef.current && !cutActiveRef.current) {
+              /* v0.135 FRENDY: КЛИК ПО АЛЬДЕРУ (стоишь рядом) — начать разговор, как по E:
+                 спрайт Альдера якорен ногами в epi.alder (рост CELL*1.55, центр по x) —
+                 ловим попадание в прямоугольник фигуры с запасом; осмотр ячейки не нужен */
+              const alderHit = epiMode && !!epi && epi.stage !== 'talk' && epi.stage !== 'done' && epiNearAlder && !cutActiveRef.current
+                && Math.abs(wx - epi.alder.x) <= CELL * 0.55
+                && wy >= epi.alder.y - CELL * 1.75 && wy <= epi.alder.y + CELL * 0.3;
+              if (alderHit) {
+                sfx.click();
+                dispatch({ t: 'epiTalk', id: me });
+              } else if (isFrendy && idx >= 0 && nearFurnace && nearFurnace.idx === idx && !dlgOpenIdRef.current && !cutActiveRef.current) {
                 sfx.click();
                 setFurnOpen(true);
               } else {
@@ -3874,13 +3893,7 @@ export default function GameScreen() {
                 )}
                 {isSkill && <p className="text-[11px] text-magma mt-2">SKILL CHALLENGE: играть будет только хост — вы зритель{mePlayer?.spect ? ' (и вы тоже)' : ''}.</p>}
                 {isSoloJourney && mePlayer?.spect && <p className="text-[11px] text-sky mt-2">JOURNEY: играет хост — вы зритель трансляции.</p>}
-                {/* v0.129: ЛОР ФРЕНДИ — на экране старта FRENDY (где «все стартуют одновременно», выбор фишки и «Старт игры»);
-                    перенесено из лобби: карточка компактная — панель и без того высокая. Модал открывается поверх. */}
-                {isFrendy && (
-                  <div className="mt-4 text-left">
-                    <FrendyLore compact />
-                  </div>
-                )}
+                {/* v0.135: карточку «Лор Френди» со экрана старта убрали — лор злодея игрок не узнаёт заранее */}
                 {!isJourney && (
                   <div className="flex justify-center gap-4 mt-5 flex-wrap">
                     {roster.map((p) => (
@@ -3977,16 +3990,16 @@ export default function GameScreen() {
                 {epi.stage === 'walk' ? (
                   <>Агенты на месте. <b className="text-gold">Альдер</b> направляется к печи…</>
                 ) : (
-                  <>Подойти к <b className="text-gold">АЛЬДЕРУ</b> у печи и поговорить {isHost ? <>(клавиша <b className="text-paper">E</b>)</> : <>— ведёт <b className="text-paper">хост</b> (Скаллер)</>}</>
+                  <>Подойти к <b className="text-gold">АЛЬДЕРУ</b> у печи и поговорить {isHost ? <>(<b className="text-paper">E</b> · джойстик · клик по Альдеру)</> : <>— ведёт <b className="text-paper">хост</b> (Скаллер)</>}</>
                 )}
               </div>
-              {isHost && epi.stage === 'idle' && <div className="font-pixel text-[9px] text-faint mt-1">Ты ведёшь СКАЛЛЕР как свою фишку — подойди и жми E</div>}
+              {isHost && epi.stage === 'idle' && <div className="font-pixel text-[9px] text-faint mt-1">Ты ведёшь СКАЛЛЕР как свою фишку — подойди и жми E (или A на джойстике, или клик по Альдеру)</div>}
             </div>
           </div>
         )}
         {epiMode && epiNearAlder && epi?.stage !== 'talk' && (
           <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
-            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-teal bg-[rgba(7,9,18,0.9)] border-2 border-teal/50">🕵️ АЛЬДЕР — нажми <b className="text-paper">E</b>, чтобы поговорить</span>
+            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-teal bg-[rgba(7,9,18,0.9)] border-2 border-teal/50">🕵️ АЛЬДЕР — поговорить: <b className="text-paper">E</b> · джойстик · клик</span>
           </div>
         )}
         {epiTalk && (

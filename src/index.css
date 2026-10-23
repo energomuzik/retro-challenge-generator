@@ -547,7 +547,8 @@ input[type="range"] { accent-color: var(--color-gold); }
   from { opacity: 1; }
   to { opacity: 0; }
 }
-/* Фигура Френди (заглушка): федора, горящие глаза, лапа-когти */
+/* Фигура Френди: с v0.135 — СПРАЙТ в стиле агентов (frendyAssets); классы дают
+   красный ореол (.frendy-fig) и огненное зарево при сжигании (.burning) */
 .frendy-fig {
   position: relative;
   filter: drop-shadow(0 0 26px rgba(255, 45, 45, 0.55));

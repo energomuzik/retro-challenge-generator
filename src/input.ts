@@ -467,3 +467,19 @@ export function listGamepads(): Gamepad[] {
     return [];
   }
 }
+
+/** v0.135: ОБЩИЙ «ИНТЕРАКТИВ» ДЖОЙСТИКА — лицевые кнопки всех падов
+    (W3C 0..3 = A/B/X/Y Xbox = крест/круг/квадрат/треугольник PS) плюс кнопки,
+    назначенные под A/B в раскладках консолей. Один набор — для всех контекстных
+    действий на поле: печь (v0.133), разговор с Альдером и листание реплик (v0.135).
+    Записывает НАЖАТЫЕ сейчас индексы кнопок в out. */
+export function collectPadButtons(out: Set<number>): void {
+  const prefs = loadEmuPrefs();
+  if (prefs.gamepad === false) return;
+  for (const gp of listGamepads()) {
+    for (const b of [0, 1, 2, 3]) if (gp.buttons[b]?.pressed) out.add(b);
+    for (const idx of [prefs.gpad?.A, prefs.gpad?.B, prefs.segaPad?.A, prefs.segaPad?.B, prefs.snesPad?.A, prefs.snesPad?.B, prefs.gbaPad?.A, prefs.gbaPad?.B]) {
+      if (typeof idx === 'number' && idx >= 0 && idx <= 17 && gp.buttons[idx]?.pressed) out.add(idx);
+    }
+  }
+}

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store';
 import { GhostBtn, Ic, PxBtn } from '../ui';
 import { sfx } from '../sound';
-import { FrendyLore } from './FrendyLore'; // v0.128: общий блок лора Френди (карточка + окно) — он же в лобби
 import { TRAINING, type TSection, type TSlide } from '../trainingData';
 
 /* v0.81 ОБУЧЕНИЕ 2.0 — КАДРЫ-ШАГИ вместо одного снимка.
@@ -352,10 +351,8 @@ export default function TrainingScreen() {
             </button>
           ))}
         </div>
-        {/* v0.127→v0.128: ЛОР ФРЕНДИ — общий блок (карточка + окно), он же в лобби FRENDY */}
-        <div className="sm:col-span-2">
-          <FrendyLore />
-        </div>
+        {/* v0.135: карточку «Лор Френди» из обучения убрали — предыстория злодея
+            будет раскрыта в продолжении расследования (лоры в игре больше нет) */}
         <p className="mt-3 mb-0.5 text-[10px] text-faint font-display uppercase tracking-wider">
           или один раздел по темам:
         </p>
