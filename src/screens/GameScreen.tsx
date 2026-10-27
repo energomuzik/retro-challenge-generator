@@ -672,6 +672,11 @@ export default function GameScreen() {
     invBlockRef.current = invOpen;
     if (invOpen) journeyKeys.current.clear(); // залипшие до окна клавиши сбрасываем
   }, [invOpen]);
+  /* v0.140: партия кончилась (например, сожгли ПОСЛЕДНЮЮ микросхему прямо из рюкзака) —
+     инвентарь закрывается сам, чтобы не закрывать финал/титры */
+  useEffect(() => {
+    if (invOpen && s && s.phase !== 'playing') setInvOpen(false);
+  }, [invOpen, s?.phase]);
   /* v0.59: челлендж открылся (JOURNEY/SKILL/classic) — зажатые до него клавиши тоже сбрасываем,
      чтобы после задания фишка не убегала на старых зажатиях */
   useEffect(() => {
@@ -2478,23 +2483,39 @@ export default function GameScreen() {
     }
   }, [isMapless, room?.isHost, s, me, maplessFxGate]);
 
-  /* ---------- RUBG: тик хоста (~1 с) — фазы зоны, урон, форс-высадка ---------- */
+  /* ---------- RUBG: тик хоста (~1 с) — фазы зоны, урон, форс-высадка ----------
+     v0.140: БЕЗ s в зависимостях — раньше интервал ПЕРЕСОЗДАВАЛСЯ на каждом journeyMove (~6/с,
+     пока кто-то бежит) и тик ГОЛОДАЛ: зона замерала, пока движутся фишки. Эталон — epiTick ниже. */
   useEffect(() => {
     if (!isRubg || !room?.isHost || !s) return;
     if (s.phase !== 'playing' && s.phase !== 'rollOff') return;
     const t = setInterval(() => dispatch({ t: 'rubgTick', id: me }), 1000);
     return () => clearInterval(t);
-  }, [isRubg, room?.isHost, me, s?.phase, s]);
+  }, [isRubg, room?.isHost, me, s?.phase]);
 
   /* ---------- v0.123 FRENDY: тик хоста (~0.4 с) — ИИ Френди (охота/удары/поимка) и подбор микросхем ----------
      v0.125: во время интро-катсцены ИИ ЗАМОРОЖЕН (мир стоит, фраз охоты нет — раньше просыпался
-     на 25-й секунде и говорил поверх зависшей катсцены) */
+     на 25-й секунде и говорил поверх зависшей катсцены)
+     v0.140 ГЛАВНАЯ ПОЧИНКА ЯРОСТИ: из зависимостей УБРАН s — раньше интервал ПЕРЕСОЗДАВАЛСЯ на
+     КАЖДОМ обновлении состояния (journeyMove бегущей фишки шлёт ~6 событий/с) и тик 400 мс НЕ ДОТИКАЛ:
+     Френди СТОЯЛ, пока фишка бежала («герой просто убегает, а Френди стоит» — заказчик).
+     Базовая пассивность (движение только к стоящей цели) теперь ЯВНО в движке (frendyTickDo). */
   useEffect(() => {
     if (!isFrendy || !room?.isHost || !s || frendyIntro) return;
     if (s.phase !== 'playing') return;
     const t = setInterval(() => dispatch({ t: 'frendyTick', id: me }), 400);
     return () => clearInterval(t);
-  }, [isFrendy, room?.isHost, me, s?.phase, s, frendyIntro]);
+  }, [isFrendy, room?.isHost, me, s?.phase, frendyIntro]);
+
+  /* ---------- v0.140: «Я ЗАНЯТ» — пока открыт ИНВЕНТАРЬ, клиент шлёт пульс каждые 2.5 с.
+     Хост считает занятость свежей (FRENDY_UIBUSY_MS), Френди наказывает копающихся в рюкзаке
+     (переключается на них и телепортируется с атакой — логика в движке, в помощи НЕ описана). ---------- */
+  useEffect(() => {
+    if (!isFrendy || !me || !invOpen || s?.phase !== 'playing') return;
+    dispatch({ t: 'frendyBusy', id: me, on: true });
+    const hb = setInterval(() => dispatch({ t: 'frendyBusy', id: me, on: true }), 2500);
+    return () => { clearInterval(hb); dispatch({ t: 'frendyBusy', id: me, on: false }); };
+  }, [isFrendy, me, invOpen, s?.phase]);
 
   /* ---------- v0.132 ЭПИЛОГ: тик хоста (~0.4 с) — АЛЬДЕР сам шагает к печи ---------- */
   useEffect(() => {
@@ -4115,7 +4136,9 @@ export default function GameScreen() {
         )}
         {isFrendy && furnOpen && (() => {
           /* v0.130: печь ДВУХРЕЖИМНАЯ — слабый огонь (горят только КАРТРИДЖИ Dendy) и
-             сильный (2 минуты после картриджа, таймер СКРЫТ — горят микросхемы Френди) */
+             сильный (2 минуты после картриджа, таймер СКРЫТ — горят микросхемы Френди).
+             v0.140: СЖИГАНИЕ ПЕРЕЕХАЛО В ИНВЕНТАРЬ (усложнение по заказу): окно печи —
+             только СТАТУС и инструкция; сами кнопки — в «Кошмарном рюкзаке» инвентаря. */
           const strong = (s?.frendy?.strongUntil ?? 0) > Date.now();
           const haveChip = mePlayer?.items?.some((x) => x.kind === 'frendyChip') ?? false;
           const haveCart = mePlayer?.items?.some((x) => x.kind === 'dendyCart') ?? false;
@@ -4127,25 +4150,10 @@ export default function GameScreen() {
                   {strong ? '🔥🔥🔥 СИЛЬНЫЙ ОГОНЬ! Микросхемы Френди ГОРЯТ — жгите, пока печь не погасла!' : 'Огонь СЛАБЫЙ: микросхемы в нём НЕ горят. Разожгите печь КАРТРИДЖЕМ Dendy'}
                 </div>
                 {frendy && <div className="font-pixel text-[10px] text-dim">Сожжено {frendy.burned} из {frendy.total} — сожгите ВСЕ, чтобы победить</div>}
-                {strong ? (
-                  haveChip ? (
-                    <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.frendyBurn(); dispatch({ t: 'frendyBurn', id: me, what: 'chip' }); setFurnOpen(false); }}>
-                      🔩 СЖЕЧЬ МИКРОСХЕМУ
-                    </PxBtn>
-                  ) : (
-                    <p className="text-[12px] text-dim">Нечего жечь — принесите МИКРОСХЕМУ Френди 🔩 (они разбросаны по карте и подбираются проходом; Френди может отобрать вашу при поимке). Пока горит сильный огонь — успейте найти!</p>
-                  )
-                ) : haveCart ? (
-                  <div className="space-y-2">
-                    <img src={cartDendyImg} alt="Картридж Dendy" className="mx-auto h-16 object-contain" style={{ imageRendering: 'pixelated' }} />
-                    <PxBtn big color="coral" className="w-full pulse-ring" onClick={() => { sfx.frendyStrong(); dispatch({ t: 'frendyBurn', id: me, what: 'cart' }); setFurnOpen(false); }}>
-                      📼 БРОСИТЬ КАРТРИДЖ В ОГОНЬ
-                    </PxBtn>
-                    <p className="text-[11px] text-dim leading-snug">Печь разгорится: 2 минуты СИЛЬНОГО огня — только в нём горят микросхемы Френди 🔩{haveChip ? ' (они у вас есть — успевайте!)' : ''}. Сколько осталось — не покажем: жгите, пока жарко!</p>
-                  </div>
-                ) : (
-                  <p className="text-[12px] text-dim leading-snug">В печи слабый огонь — микросхемы 🔩{haveChip ? ' (ваши ждут)' : ''} в нём НЕ загораются. Нужен КАРТРИДЖ DENDY 📼: ПОБЕЖДАЙТЕ задания ячеек — за победу дают картридж (ячейка при этом ломается; не сожжёте — Френди отберёт его при поимке и починит ячейку).</p>
-                )}
+                <p className="text-[12px] text-dim leading-snug">
+                  Сжигают ИЗ ИНВЕНТАРЯ, стоя у печи: откройте <b className="text-paper">ИНВЕНТАРЬ 🎒</b>, выберите {haveCart && haveChip ? <>КАРТРИДЖ Dendy 📼 или <b className="text-gold">микросхему 🔩</b></> : haveCart ? <>КАРТРИДЖ Dendy 📼</> : haveChip ? <b className="text-gold">микросхему 🔩</b> : <>подходящий предмет</>} и нажмите <b className="text-paper">«🔥 Сжечь»</b>.
+                  {!haveChip && !haveCart && ' У вас нет ничего для печи: микросхемы лежат на карте, картридж дают за победу над заданием ячейки.'}
+                </p>
                 <GhostBtn small className="w-full" onClick={() => setFurnOpen(false)}>{Ic.cross(12)} Закрыть</GhostBtn>
               </div>
             </div>
@@ -6023,6 +6031,17 @@ function InventoryModal({ onClose }: { onClose: () => void }) {
   /* RUBG: пояс/инвентарь и «Остановить воровство» */
   const rubgMap = map?.mode === 'rubg';
   const rubgInv = mePlayer?.items ?? [];
+  /* v0.140 FRENDY: СЖИГАНИЕ из инвентаря — живая кнопка только У ПЕЧИ (та же дистанция, что в движке)
+     и (для микросхемы) только в СИЛЬНОМ огне. Позиция/печь из сессии — пока рюкзак открыт, фишка стоит. */
+  const frendyInv = isFrendyMode(map?.mode) && map && s ? (() => {
+    const fi = map.cells.findIndex((c) => c.type === 'furnace');
+    if (fi < 0) return null;
+    const r = cellRectOf(map, fi);
+    const pp = s.journeyPos?.[me ?? ''];
+    if (!r || !pp) return null;
+    const d = Math.hypot(pp.x - (r.x + r.w / 2), pp.y - (r.y + r.h / 2));
+    return { near: d <= Math.max(140, Math.max(r.w, r.h) * 0.8 + 40), strong: (s.frendy?.strongUntil ?? 0) > Date.now() };
+  })() : null;
   const rubgBelted = rubgInv.filter((x) => x.belt);
   const stopCdLeft = rubgMap ? Math.max(0, RUBG_STOP_CD * 1000 - (Date.now() - (s.rubg?.stopCd?.[me!] ?? 0))) : 0;
   const invHpRes = map?.mode === 'rubg' || map?.resMode === 'hp';
@@ -6121,12 +6140,12 @@ function InventoryModal({ onClose }: { onClose: () => void }) {
           </div>
         )}
 
-        {/* ---------- v0.123 FRENDY: кошмарный рюкзак — чип только выбросить, аптечка лечит, кофе — иммунитет ---------- */}
+        {/* ---------- v0.123 FRENDY: кошмарный рюкзак — v0.140: микросхема и картридж СЖИГАЮТСЯ отсюда (у печи!), аптечка лечит, кофе — иммунитет ---------- */}
         {isFrendyMode(map?.mode) && rubgInv.length > 0 && (
           <div className="border-2 border-[#ff6b35]/60 px-3 py-2.5 mb-4 space-y-2">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <span className="tick-label text-[#ff6b35]">🎃 Кошмарный рюкзак · предметов {rubgInv.length}</span>
-              <span className="tick-label text-faint">аптечка лечит · кофе — 5 мин без поимки · картридж Dendy — в печь (сильный огонь) · чип горит только в сильном огне</span>
+              <span className="tick-label text-faint">жгут У ПЕЧИ отсюда: картридж Dendy разжигает (2 мин сильного огня) · чип горит только в сильном огне · аптечка лечит · кофе — 5 мин без поимки</span>
             </div>
             {rubgInv.map((it: RubgItem) => {
               const meta = RUBG_ITEMS[it.kind];
@@ -6135,11 +6154,29 @@ function InventoryModal({ onClose }: { onClose: () => void }) {
               const heal = it.kind === 'medkit' || it.kind === 'flask' || it.kind === 'bigmed';
               const coffee = it.kind === 'coffee';
               const hpFull = (mePlayer?.hp ?? 100) >= 100;
+              /* v0.140: СЖИГАНИЕ отсюда — кнопка живая только У ПЕЧИ (та же дистанция, что проверяет движок);
+                 микросхема — только в СИЛЬНОМ огне (иначе движок откажет) */
+              const burnOff = !frendyInv?.near || (chip && !frendyInv.strong);
+              const burnWhy = !frendyInv?.near
+                ? 'Подойди К ПЕЧИ 🔥 — сжигают только рядом с ней'
+                : chip && !frendyInv.strong
+                  ? 'Огонь СЛАБЫЙ — сначала сожги в печи КАРТРИДЖ Dendy 📼'
+                  : undefined;
               return (
                 <div key={it.id} className="flex items-center gap-2 px-2 py-1.5 border-2 border-edge">
                   {cart ? <img src={cartDendyImg} alt="Картридж Dendy" className="h-7 w-7 object-contain shrink-0" style={{ imageRendering: 'pixelated' }} /> : <span>{meta.icon}</span>}
                   <span className="font-display text-[11px] text-paper min-w-0 truncate">{meta.name}{chip ? ' (из кости Френди)' : ''}</span>
-                  <span className="ml-auto tick-label text-faint shrink-0" title={chip ? 'Горит ТОЛЬКО в сильном огне: сначала бросьте в печь картридж Dendy (дают за победу над заданием)' : cart ? 'Бросьте в ПЕЧЬ — 2 минуты сильного огня, тогда горят микросхемы. Не сожжёте — Френди отберёт при поимке и починит ячейку' : coffee ? '5 минут иммунитета к ПОИМКЕ Френди (бить всё равно может)' : `Восстанавливает ${meta.hp}% HP`}>{chip ? 'только в сильный огонь' : cart ? 'в печь — сильный огонь' : coffee ? 'иммунитет 5 мин' : `+${meta.hp}% HP`}</span>
+                  <span className="ml-auto tick-label text-faint shrink-0" title={chip ? 'Сжигается У ПЕЧИ из этого рюкзака — ТОЛЬКО в сильном огне: сначала сожги там картридж Dendy (дают за победу над заданием)' : cart ? 'Сжигается У ПЕЧИ из этого рюкзака — даёт 2 минуты сильного огня, тогда горят микросхемы. Не сожжёшь — Френди отберёт при поимке' : coffee ? '5 минут иммунитета к ПОИМКЕ Френди (бить всё равно может)' : `Восстанавливает ${meta.hp}% HP`}>{chip ? 'жечь у печи · сильный огонь' : cart ? 'жечь у печи · разжигает' : coffee ? 'иммунитет 5 мин' : `+${meta.hp}% HP`}</span>
+                  {(chip || cart) && (
+                    <PxBtn
+                      small
+                      color={chip ? 'gold' : 'coral'}
+                      disabled={burnOff}
+                      className={burnOff ? 'opacity-40' : ''}
+                      title={burnWhy}
+                      onClick={() => { if (chip) sfx.frendyBurn(); else sfx.frendyStrong(); dispatch({ t: 'frendyBurn', id: me!, what: chip ? 'chip' : 'cart' }); }}
+                    >🔥 Сжечь</PxBtn>
+                  )}
                   {(heal || coffee) && (
                     <PxBtn
                       small

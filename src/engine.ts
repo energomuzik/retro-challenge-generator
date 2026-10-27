@@ -1,5 +1,5 @@
 import type { CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
-import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
+import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
@@ -97,6 +97,7 @@ export type Action =
   | { t: 'frendyBurn'; id: string; what?: 'chip' | 'cart' } // v0.123 FRENDY: сжечь в ПЕЧИ (E у печи); v0.130: what 'cart' — картридж Dendy (разжечь сильный огонь), по умолчанию 'chip' — микросхему (только в сильном огне)
   | { t: 'frendyUse'; id: string; itemId: string } // v0.123 FRENDY: использовать предмет (аптечка — лечение, кофе — иммунитет к поимке 5 мин; микросхема — нельзя)
   | { t: 'frendyDrop'; id: string; itemId: string } // v0.123 FRENDY: выбросить предмет на землю (микросхема — тоже: другого применения в инвентаре нет)
+  | { t: 'frendyBusy'; id: string; on: boolean } // v0.140 FRENDY: «Я ЗАНЯТ» — пульс клиента, пока открыт ИНВЕНТАРЬ (каждые 2.5 с); хост считает занятость свежей FRENDY_UIBUSY_MS — Френди чует копающихся в рюкзаке (переключается на них и телепортируется с атакой)
   | { t: 'frendyEpilogue'; id: string } // v0.132 ЭПИЛОГ: запуск после титров-стингера ПОБЕДЫ — фишки убраны («спаслись из западни»), Альдер идёт к печи, хост ведёт Скаллер
   | { t: 'epiTick'; id: string } // v0.132: тик хоста в эпилоге — Альдер сам шагает к печи (BFS), у печи замирает в IDLE
   | { t: 'epiTalk'; id: string } // v0.132: хост (Скаллер) у Альдера нажал E — начать разговор в стиле визуальной новеллы (ВСЕ видят синхронно)
@@ -1597,6 +1598,10 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
        не ловит, не выбирает целью. Раньше он продолжал бить и откидывать на другие
        ячейки прямо во время выполнения задания (жалоба заказчика). */
     const busy = (pid: string): boolean => !!s.qJobs?.[pid] || (f.taskSafeUntil?.[pid] ?? 0) > now;
+    /* v0.140: герой ЗАНЯТ (открыт ИНВЕНТАРЬ — клиент шлёт frendyBusy-пульс): Френди это ЧУЕТ —
+       переключается на копающегося в рюкзаке и телепортируется к нему с атакой (заказчик:
+       «когда герой занят и лазит в инвентаре и стоит»). Щит задания (busy) сильнее — их не трогаем. */
+    const uiBusy = (pid: string): boolean => (f.uiBusyAt?.[pid] ?? 0) > 0 && now - (f.uiBusyAt?.[pid] ?? 0) < FRENDY_UIBUSY_MS;
     /* v0.139 ЯРОСТЬ/УЛЬТРА — ТРИ УРОВНЯ ФРЕНДИ (заказчик):
        • БАЗА (самый слабый) — как раньше: «по расписанию» (проснулся → охота → растворился → спит);
        • ЯРОСТЬ — 2 минуты после каждой сожжённой микросхемы (f.furyUntil) или режим карты
@@ -1672,7 +1677,10 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       }
       const cands = s.players.filter((p) => p.alive && !p.spect && !busy(p.id)); // v0.127: не просыпаться НА проходящем задание
       if (!cands.length) return;
-      const tgt = cands[Math.floor(Math.random() * cands.length)];
+      /* v0.140: если кто-то КОПАЕТСЯ В ИНВЕНТАРЕ — Френди просыпается ПРЯМО НА НЁМ */
+      const busyUi = cands.filter((p) => uiBusy(p.id));
+      const pool = busyUi.length ? busyUi : cands;
+      const tgt = pool[Math.floor(Math.random() * pool.length)];
       const pp = s.journeyPos?.[tgt.id];
       if (!pp) return;
       const n = Math.floor(Math.random() * FRENDY_PHRASES.length);
@@ -1726,6 +1734,20 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       f.boss = null;
       f.nextSpawnAt = now + 4000;
       return;
+    }
+    /* v0.140: герой КОПАЕТСЯ В ИНВЕНТАРЕ — Френди переключается на него (ближайший из занятых),
+       наказание за перебирание вещей на глазах у кошмара */
+    {
+      let bestD = Infinity;
+      let busyTgt: PlayerState | null = null;
+      for (const p of s.players) {
+        if (!p.alive || p.spect || busy(p.id) || !uiBusy(p.id)) continue;
+        const pp = s.journeyPos?.[p.id];
+        if (!pp) continue;
+        const d = Math.hypot(pp.x - b.x, pp.y - b.y);
+        if (d < bestD) { bestD = d; busyTgt = p; }
+      }
+      if (busyTgt) tgt = busyTgt;
     }
     if (tgt.id !== b.targetId) { b.targetId = tgt.id; b.holdMs = 0; b.sinceTs = now; }
     const tp = s.journeyPos?.[tgt.id];
@@ -1850,7 +1872,33 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         log('😈 ФРЕНДИ УЛЬТРА ТЕЛЕПОРТИРУЕТСЯ — он уже рядом!');
       }
     }
-    if (dist > 1) frendyWalk(b, tp.x, tp.y, spdMult);
+    /* v0.140: герой ЗАНЯТ (инвентарь открыт, стоит) — Френди телепортируется ПРЯМО К НЕМУ
+       (заказчик: «в этот момент хорошо бы Френди телепортировался к нему и атаковал героя,
+       или телепортировал в задание» — поимка ниже УЖЕ утащит жертву на задание).
+       Кулдаун — общий lastTpAt; приземляется ВПЛОТНУЮ, дальше удар/поимка как обычно. */
+    if (!ultra && uiBusy(tgt.id) && dist > CELL_PX * 1.7 && now - (b.lastTpAt ?? 0) > FRENDY_BUSY_TP_MS) {
+      let spot: { x: number; y: number } | null = null;
+      for (let tr = 0; tr < 24 && !spot; tr++) {
+        const ang = Math.random() * Math.PI * 2;
+        const rad = CELL_PX * (0.9 + Math.random() * 0.7); // 0.9–1.6 клетки — появляется рядом
+        const sx = tp.x + Math.cos(ang) * rad, sy = tp.y + Math.sin(ang) * rad;
+        if (!pointInWall(map, sx, sy)) spot = { x: Math.round(sx), y: Math.round(sy) };
+      }
+      if (spot) {
+        b.lastTpAt = now;
+        b.x = Math.max(8, Math.min(W - 8, spot.x));
+        b.y = Math.max(8, Math.min(H - 8, spot.y));
+        b.fx = 'spawn'; b.fxTs = now;
+        log(`😈 ФРЕНДИ ТЕЛЕПОРТИРУЕТСЯ К ${tgt.name} — не засиживайся в инвентаре!`);
+      }
+    }
+    /* v0.140 ПАССИВНАЯ БАЗА (заказчик: «пассивный Френди остается, но самый слабый вариант»):
+       базовый Френди подходит только к СТОЯЩЕЙ фишке — фишка цели бежит (свежие обновления
+       позиции с mv) — Френди СТОИТ и ждёт. Раньше это получалось «случайно» (тик голодал,
+       пока кто-то движется — GameScreen пересоздавал интервал на каждом journeyMove), теперь ЯВНО.
+       В ЯРОСТИ/УЛЬТРА — гонится НЕ ОСТАНАВЛИВАЯСЬ (починка тика — там же в GameScreen). */
+    const tgtMoving = tp.mv === true && now - (tp.ts ?? 0) < 3000; // «бежит» — позиция обновляется свежо
+    if (dist > 1 && (furious || ultra || !tgtMoving)) frendyWalk(b, tp.x, tp.y, spdMult);
     /* ОХОТА ЗАТЯНУЛАСЬ — растворился и уйдёт переваривать (вернётся злее).
        v0.139: в ярости/ультра НЕ растворяется — гонится непрерывно. */
     if (!furious && !ultra && now - b.sinceTs > prm.huntMs && b.holdMs < FRENDY_CATCH_HOLD) {
@@ -2604,7 +2652,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
             : soloMode && map.mode === 'journey1p'
               ? `🧭 JOURNEY SOLO! Играет только хост (${sm} мин / ${st} поп.) — остальные зрители. Победа: пройти ВСЕ задания карты (заданий: ${taskTotal}).`
               : map.mode === 'frendy'
-          ? `🎃 FRENDY! Микросхем из кости Френди на карте: ${s.frendy?.total ?? '?'} — ищите (подбираются проходом) и несите к ПЕЧИ. НО: печь на СЛАБОМ огне — микросхемы в нём НЕ горят! ПОБЕЖДАЙТЕ задания ячеек: за победу дают КАРТРИДЖ DENDY 📼 (ячейка ломается) — бросьте картридж в печь, и 2 МИНУТЫ будет СИЛЬНЫЙ ОГОНЬ: жгите микросхемы! Ресурс — полоска HP. Через ${Math.round(FRENDY_FIRST_WAKE_MS / 1000)} с проснётся ОН — появится прямо на ком-то из вас. Поймает — утащит на задание, заберёт микросхему, а КАРТРИДЖ отберёт и починит им разбитую ячейку (все ячейки сломаны — починит бесплатно). Кофе — 5 минут без поимки. Сожжёте ВСЕ — победа; погибнут все — кошмар победил!`
+          ? `🎃 FRENDY! Микросхем из кости Френди на карте: ${s.frendy?.total ?? '?'} — ищите (подбираются проходом) и несите к ПЕЧИ: жгут ИЗ ИНВЕНТАРЯ у печи (выбери микросхему — «🔥 Сжечь»). НО: печь на СЛАБОМ огне — микросхемы в нём НЕ горят! ПОБЕЖДАЙТЕ задания ячеек: за победу дают КАРТРИДЖ DENDY 📼 (ячейка ломается) — сожгите его у печи из инвентаря, и 2 МИНУТЫ будет СИЛЬНЫЙ ОГОНЬ: жгите микросхемы! Ресурс — полоска HP. Через ${Math.round(FRENDY_FIRST_WAKE_MS / 1000)} с проснётся ОН — появится прямо на ком-то из вас. Поймает — утащит на задание, заберёт микросхему, а КАРТРИДЖ отберёт и починит им разбитую ячейку (все ячейки сломаны — починит бесплатно). Кофе — 5 минут без поимки. Сожжёте ВСЕ — победа; погибнут все — кошмар победил!`
           : isJourneyLike(map.mode)
                 ? `🧭 JOURNEY! У каждого: ${sm} мин и ${st} поп. Все фишки стартуют ОДНОВРЕМЕННО — кто первый пересечёт ячейку задания, тот и играет.`
                 : `Игра начинается! У каждого: ${sm} мин и ${st} поп. Бросок за первый ход…`);
@@ -3449,7 +3497,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const pp = playerPx(s, map, p.id);
       if (!fr || !pp) break;
       const dFurn = Math.hypot(pp.x - (fr.x + fr.w / 2), pp.y - (fr.y + fr.h / 2));
-      if (dFurn > Math.max(140, Math.max(fr.w, fr.h) * 0.8 + 40)) { log(`🔥 ${p.name}: печь далеко — подойди и нажми E`); break; }
+      if (dFurn > Math.max(140, Math.max(fr.w, fr.h) * 0.8 + 40)) { log(`🔥 ${p.name}: печь далеко — подойди К ПЕЧИ и жги из ИНВЕНТАРЯ`); break; }
       /* v0.130: КАРТРИДЖ DENDY в слабый огонь — разжечь печь: 2 минуты СИЛЬНОГО огня
          (скрытый таймер), только в нём горят микросхемы Френди */
       if (a.what === 'cart') {
@@ -3457,6 +3505,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         if (ci < 0) { log(`🔥 ${p.name}: нет картриджа Dendy 📼 — они дают за ПОБЕДУ над заданием ячейки`); break; }
         inv.splice(ci, 1);
         f.strongUntil = nowB + FRENDY_STRONG_MS;
+        /* v0.140: разжёг печь — Френди НЕ СПИТ (жар привлекает кошмар): просыпается через 1.5 с,
+           а если кто-то ещё копается в инвентаре — проснется прямо на нём (см. frendyTickDo) */
+        if (!f.boss) f.nextSpawnAt = Math.min(f.nextSpawnAt, nowB + 1500);
         log(`📼 ${p.name} бросает КАРТРИДЖ DENDY В ОГОНЬ! Печь гудит — СИЛЬНЫЙ ОГОНЬ! Скорее жгите МИКРОСХЕМЫ Френди 🔩, пока пламя огромное — потом печь снова станет слабой!`);
         break;
       }
@@ -3515,6 +3566,16 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const spot = pp ? { x: pp.x + (Math.random() * 44 - 22), y: pp.y + (Math.random() * 44 - 22) } : (frendyFreeSpot([]) ?? { x: 100, y: 100 });
       s.frendy.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round(Math.max(12, spot.x)), y: Math.round(Math.max(12, spot.y)), kind: it.kind });
       log(`✋ ${p.name} выбросил «${RUBG_ITEMS[it.kind].name}» ${RUBG_ITEMS[it.kind].icon} — лежит на земле, подберёт любой`);
+      break;
+    }
+    /* ---------- v0.140: «Я ЗАНЯТ» — пульс от клиента, пока у него открыт ИНВЕНТАРЬ.
+       Занятость «протухает» сама (FRENDY_UIBUSY_MS без пульса), закрытие окна — пульс on:false. ---------- */
+    case 'frendyBusy': {
+      if (!isFrendyMode(map.mode) || !s.frendy || s.phase !== 'playing') break;
+      const p = actor();
+      if (!p || !p.alive || p.spect) break;
+      s.frendy.uiBusyAt = s.frendy.uiBusyAt ?? {};
+      s.frendy.uiBusyAt[p.id] = a.on ? Date.now() : 0;
       break;
     }
     /* ---------- QUEST / QUEST SOLO: задания на доверии, карточки, диалоги и квесты NPC ---------- */
