@@ -143,7 +143,7 @@ export function AgentsVn({ idx, isHost, onNext }: { idx: number; isHost: boolean
           <span className="inline-block w-2 h-4 ml-0.5 align-[-2px] bg-gold blink-hard" />
         </div>
         <div className="flex items-center justify-between mt-2">
-          <span className="font-pixel text-[9px] text-faint uppercase tracking-wider">Секретные материалы · реплика {safeIdx + 1} из {EPI_SCRIPT.length}</span>
+          <span className="font-pixel text-[9px] text-faint uppercase tracking-wider">Тайные материалы · реплика {safeIdx + 1} из {EPI_SCRIPT.length}</span>
           {isHost ? (
             <span className="flex items-center gap-3">
               <button

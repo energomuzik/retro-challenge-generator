@@ -1260,12 +1260,9 @@ export default function GameScreen() {
   const frendyBossWalkingRef = useRef(false);
   const frendyBossFlipRef = useRef(false);
   /* v0.132 ЭПИЛОГ: сглаживание Альдера между тиками хоста + последние направления взгляда агентов.
-     v0.138: для Молдера — та же склярная экстраполяция, что у Френди (шаг не рвётся). */
+     v0.139: ОТКАТ v0.138 (заказчик: «что-то не так с анимациями Салли и Молдера — верни как было») —
+     прежняя экспонента вместо склярной экстраполяции. */
   const epiAlderSmoothRef = useRef<{ x: number; y: number } | null>(null);
-  const epiAlderSegRef = useRef<HostSeg | null>(null);
-  const epiAlderSmTsRef = useRef(0);
-  const epiAlderStillTsRef = useRef(0);
-  const epiAlderPrevRef = useRef<{ x: number; y: number } | null>(null);
   const alderFlipRef = useRef(false);   // true — смотрит влево (спрайты по умолчанию вправо)
   const skallerFlipRef = useRef(false); // v0.134: у Скаллер спрайты смотрят ВЛЕВО — true = флип (смотрит вправо)
   const epiSpawnTsRef = useRef(0);      // v0.134: startedAt эпилога, для которого снап Скаллер уже сделан
@@ -2309,58 +2306,19 @@ export default function GameScreen() {
             }
           }
           epiAlderSmoothRef.current = null; // Альдер — сразу со стартовой ячейки (без «подлёта»)
-          epiAlderSegRef.current = null;    // v0.138: отрезок экстраполяции тоже с нуля
-          epiAlderPrevRef.current = null;
         }
         let agentsDraw: BoardDrawAgents | null = null;
         if (epiS) {
-          /* v0.138 ХОДЬБА МОЛДЕРА БЕЗ ОСТАНОВОК (как у Френди): склярная экстраполяция
-             между тиками хоста (0.4 с) — скорость постоянная, шаг не прерывается
-             «проверками»; флаг «идёт» — по скорости сглаженной позиции с гистерезисом. */
-          const nowA = performance.now();
-          let aseg = epiAlderSegRef.current;
-          if (!aseg) {
-            aseg = { x0: epiS.alder.x, y0: epiS.alder.y, x1: epiS.alder.x, y1: epiS.alder.y, t0: nowA, t1: nowA, dt: 400 };
-            epiAlderSegRef.current = aseg;
-            epiAlderSmoothRef.current = { x: epiS.alder.x, y: epiS.alder.y };
-            epiAlderPrevRef.current = { x: epiS.alder.x, y: epiS.alder.y };
-          } else if (aseg.x1 !== epiS.alder.x || aseg.y1 !== epiS.alder.y) {
-            const adt = Math.max(150, Math.min(1200, nowA - aseg.t1));
-            if (Math.hypot(epiS.alder.x - aseg.x1, epiS.alder.y - aseg.y1) > CELL * 6) {
-              // телепорт — снап без «подлёта»
-              aseg.x0 = epiS.alder.x; aseg.y0 = epiS.alder.y; aseg.x1 = epiS.alder.x; aseg.y1 = epiS.alder.y;
-              aseg.t0 = nowA; aseg.t1 = nowA; aseg.dt = 400;
-              epiAlderSmoothRef.current = { x: epiS.alder.x, y: epiS.alder.y };
-              epiAlderPrevRef.current = { x: epiS.alder.x, y: epiS.alder.y };
-              epiAlderStillTsRef.current = 0;
-            } else {
-              aseg.x0 = aseg.x1; aseg.y0 = aseg.y1; aseg.x1 = epiS.alder.x; aseg.y1 = epiS.alder.y;
-              aseg.t0 = aseg.t1; aseg.t1 = nowA; aseg.dt = adt;
-            }
-          }
-          const ak = epiS.stage === 'walk' ? Math.max(0, Math.min(1.15, (nowA - aseg.t1) / aseg.dt)) : 0;
-          const atx = aseg.x1 + (aseg.x1 - aseg.x0) * ak;
-          const aty = aseg.y1 + (aseg.y1 - aseg.y0) * ak;
-          const as = epiAlderSmoothRef.current ?? { x: atx, y: aty };
-          const aDts = Math.max(0, Math.min(64, nowA - (epiAlderSmTsRef.current || nowA)));
-          epiAlderSmTsRef.current = nowA;
-          const aAf = 1 - Math.exp(-aDts / 80);
-          as.x += (atx - as.x) * aAf;
-          as.y += (aty - as.y) * aAf;
+          /* v0.139: ОТКАТ v0.138 — прежняя экспонента (как было до этого): Альдер плавно
+             догоняет позицию хоста, «идёт» — пока дистанция до цели больше 2.5 px. */
+          const as = epiAlderSmoothRef.current ?? { x: epiS.alder.x, y: epiS.alder.y };
+          as.x += (epiS.alder.x - as.x) * 0.22;
+          as.y += (epiS.alder.y - as.y) * 0.22;
           epiAlderSmoothRef.current = as;
-          const apv = epiAlderPrevRef.current ?? as;
-          const avdx = as.x - apv.x, avdy = as.y - apv.y;
-          const aSpdF = Math.hypot(avdx, avdy);
-          let alderMoving = epiS.stage === 'walk';
-          if (aSpdF > 0.35) { epiAlderStillTsRef.current = 0; }
-          else if (aSpdF < 0.15) {
-            if (!epiAlderStillTsRef.current) epiAlderStillTsRef.current = nowA;
-            else if (nowA - epiAlderStillTsRef.current > 260) alderMoving = false;
-          }
+          const alderMoving = epiS.stage === 'walk' && Math.hypot(epiS.alder.x - as.x, epiS.alder.y - as.y) > 2.5;
           const alderImg = alderMoving ? agentFrame('alder', true, t) : agentFrame('alder', false, t, 0);
-          if (alderMoving && avdx < -0.4) alderFlipRef.current = true;
-          if (alderMoving && avdx > 0.4) alderFlipRef.current = false;
-          epiAlderPrevRef.current = { x: as.x, y: as.y };
+          if (alderMoving && epiS.alder.x < as.x - 2) alderFlipRef.current = true;
+          if (alderMoving && epiS.alder.x > as.x + 2) alderFlipRef.current = false;
           const skPos = sess.journeyPos?.[sess.players.find((p) => p.isHost)?.id ?? ''] ?? null;
           const skDisp = skPos ? (dispRef.current[sess.players.find((p) => p.isHost)?.id ?? ''] ?? skPos) : null;
           const skMoving = skDisp && skPos ? Math.hypot(skPos.x - skDisp.x, skPos.y - skDisp.y) > 2.5 : false;
@@ -2915,12 +2873,15 @@ export default function GameScreen() {
   /* ---------- v0.107: БЫСТРАЯ ЗАГРУЗКА (глобальная клавиша, по умолчанию F6) ----------
      Во время задания = ПЕРЕЗАПУСК задания: та же логика, что у кнопки «Перезапуск»
      открытого окна (VERSUS — с платой 1 бронза; классика — через reloadSave; RUBG —
-     перезагрузка рома с сохранения). Где окна нет — клавиша молчит. */
+     перезагрузка рома с сохранения). Где окна нет — клавиша молчит.
+     v0.139: во FRENDY перезапуска задания НЕТ — клавиша молчит (перепройти задание
+     можно, снова зайдя на ячейку сразу после поражения). */
   const quickLoadFire = () => {
     if (myQJob && myQTask) { // QUEST / БОГАЧ (VERSUS) / FRENDY — личное окно задания
+      if (isFrendy) return; // v0.139: перезапуска задания во FRENDY нет
       ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null);
-      // v0.106: перезапуск — 1 бронза (БОГАЧ); v0.136: во FRENDY перезапуск = ПОРАЖЕНИЕ (−HP)
-      if (isBogach || isFrendy) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx });
+      // v0.106: перезапуск — 1 бронза (БОГАЧ); v0.139: во FRENDY перезапуска нет (кнопка и F6 убраны)
+      if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx });
       sfx.alarm();
       setTimerRestartTick((x) => x + 1); // v0.108: перезапуск задания — таймер заново
       return;
@@ -2991,7 +2952,10 @@ export default function GameScreen() {
       return;
     }
     if (timerSpec.kind === 'sprinter' && myQJob) {
-      if (qCodeOnly) { ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null); if (isBogach || isFrendy) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); sfx.alarm(); setTimerRestartTick((x) => x + 1); }
+      /* v0.139 FRENDY: перезапуска задания нет — таймер истёк = ПОРАЖЕНИЕ (задание
+         закрывается; перепройти — снова зайди на ячейку). force — поражение даже у codeOnly. */
+      if (isFrendy) { sfx.fail(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, force: true }); return; }
+      if (qCodeOnly) { ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null); if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); sfx.alarm(); setTimerRestartTick((x) => x + 1); }
       else { sfx.fail(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false }); }
     }
   };
@@ -3393,6 +3357,7 @@ export default function GameScreen() {
               <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-[#ff8b3f]" title="Микросхемы Френди: сожжено/всего · ещё лежит на карте">🔩 {frendy.burned}/{frendy.total}{frendy.chips.length ? ` · на карте ${frendy.chips.length}` : ''}</span>
               {/* v0.130: сильный огонь печи — таймер СКРЫТ, только факт «пора жечь» */}
               {(frendy.strongUntil ?? 0) > Date.now() && <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-coral blink-hard" title="Сильный огонь: микросхемы Френди ГОРЯТ! Таймер скрыт — жгите, пока печь не погасла">🔥 СИЛЬНЫЙ ОГОНЬ — ЖГИТЕ ЧИПЫ!</span>}
+              {(() => { const ms = (frendy.furyUntil ?? 0) - Date.now(); return ms > 0 ? <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-coral blink-hard" title="Френди В ЯРОСТИ (2 мин после сожжённой микросхемы): не спит и гонится за целью НЕ ОСТАНАВЛИВАЯСЬ">⚡ ЯРОСТЬ ФРЕНДИ {Math.ceil(ms / 1000)}с</span> : null; })()}
               {(() => { const ms = (frendy.coffeeUntil[me] ?? 0) - Date.now(); return ms > 0 ? <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-teal" title="Кофе: иммунитет к ПОИМКЕ Френди (удары — нет)">☕ {Math.ceil(ms / 1000)}с</span> : null; })()}
               {(() => { const ms = (frendy.taskSafeUntil?.[me] ?? 0) - Date.now(); return ms > 0 ? <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-gold" title="Щит задания: Френди НЕ ТРОГАЕТ — ни бить, ни ловить (даётся за личное задание)">🛡 {Math.ceil(ms / 1000)}с</span> : null; })()}
               {frendy.boss && frendy.boss.targetId === me && s?.phase === 'playing' && <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-coral blink-hard" title="Френди охотится на тебя — БЕГИ!">😈 ФРЕНДИ ЗА ТОБОЙ!</span>}
@@ -4114,7 +4079,7 @@ export default function GameScreen() {
           /* ЗАДАНИЕ хоста — в ЛЕВОМ УГЛУ, появляется (pop-in). Остальные тоже видят. */
           <div className="absolute top-14 left-3 z-40 pop-in pointer-events-none max-w-[280px]">
             <div className="border-[3px] border-gold/70 bg-[rgba(7,9,18,0.92)] pixel-corners px-3 py-2">
-              <div className="font-display uppercase text-[10px] text-gold tracking-wider">📁 Секретные материалы — задание</div>
+              <div className="font-display uppercase text-[10px] text-gold tracking-wider">📁 Тайные материалы — задание</div>
               <div className="text-[12px] text-paper leading-snug mt-1">
                 {epi.stage === 'walk' ? (
                   <>Агенты на месте. <b className="text-gold">Молдер</b> направляется к печи…</>
@@ -5103,26 +5068,28 @@ export default function GameScreen() {
                               </PxBtn>
                             </div>
                           )}
-                          <div className="grid grid-cols-3 gap-2 mt-2">
+                          {/* v0.139: во FRENDY перезапуска задания БОЛЬШЕ НЕТ (кнопка убрана) —
+                             перепройти задание можно, снова зайдя на ячейку сразу после поражения */}
+                          <div className={`grid ${isFrendy ? 'grid-cols-2' : 'grid-cols-3'} gap-2 mt-2`}>
                             <GhostBtn onClick={() => setQPaused((x) => !x)} title="Пауза эмулятора без сброса прогресса">
                               {qPaused ? Ic.play(13) : Ic.pause(13)} {qPaused ? 'Продолжить' : 'Пауза'}
                             </GhostBtn>
+                            {!isFrendy && (
                             <GhostBtn
                               title={isBogach
                                 ? `Перезапустить игру с сохранения (или с начала) — стоит 1 бронзу (траты идут в зачёт пропуска)${myQSpent ? ` · уже потрачено: ${myQSpent}` : ''}${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`
-                                : isFrendy
-                                  ? `Перезапуск = ПОРАЖЕНИЕ: списывается HP (как у кнопки «Поражение»), провал в счёт. Игра перезагружается с сохранения (или с начала)${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`
-                                  : `Перезапустить игру с сохранения (или с начала)${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`}
+                                : `Перезапустить игру с сохранения (или с начала)${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`}
                               onClick={() => {
                                 ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null);
-                                // v0.106: перезапуск — 1 бронза (БОГАЧ); v0.136: во FRENDY перезапуск = ПОРАЖЕНИЕ (−HP)
-                                if (isBogach || isFrendy) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx });
+                                // v0.106: перезапуск — 1 бронза (БОГАЧ); v0.139: во FRENDY перезапуска нет (кнопка и F6 убраны)
+                                if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx });
                                 sfx.alarm();
                                 setTimerRestartTick((x) => x + 1); // v0.108: таймер заново
                               }}
                             >
-                              {Ic.rotate(13)} Перезапуск{isBogach ? ' · 1🪙' : isFrendy ? ' · −HP' : ''}{quickKeyLbl ? ` · ⚡${quickKeyLbl}` : ''}
+                              {Ic.rotate(13)} Перезапуск{isBogach ? ' · 1🪙' : ''}{quickKeyLbl ? ` · ⚡${quickKeyLbl}` : ''}
                             </GhostBtn>
+                            )}
                             <GhostBtn
                               title={isBogach
                                 ? (bogachFree

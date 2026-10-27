@@ -72,7 +72,7 @@ const COURSES: TCourse[] = [
   {
     id: 'player', title: 'Курс игрока', color: '#5aa9ff',
     desc: 'знакомство · старт · режимы · соло — как играть',
-    secs: ['intro', 'play', 'retropolia', 'skill', 'quest', 'rubg', 'solo'],
+    secs: ['intro', 'play', 'retropolia', 'skill', 'quest', 'rubg', 'frendy', 'solo'], // v0.139: + frendy
   },
   {
     id: 'creator', title: 'Курс создателя карт', color: '#ff9d5c',

@@ -1,5 +1,5 @@
 import type { CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
-import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_TASK_GRACE_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
+import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
@@ -77,7 +77,7 @@ export type Action =
   | { t: 'rubgStopThief'; id: string } // RUBG: жертва нажала «Остановить вора» (кулаул 15 с)
   | { t: 'rubgStealth'; id: string } // RUBG: активировать стелс (сгорает карта стелса)
   | { t: 'rubgBelt'; id: string; itemId: string; on: boolean } // RUBG: надеть/снять предмет с ПОЯСА (на поясе макс. 3 — только они имеют кнопки действий; пояс не воруется)
-  | { t: 'qJobDone'; id: string; cellIdx: number; win: boolean; byCode?: boolean } // QUEST: игрок закрыл ЛИЧНОЕ задание (доверие): победа — награда и прогресс, поражение — плата и счётчик провалов; v0.68 byCode — зачтено по памяти (условие CodeSearch). v0.104: и в БОГАЧЕ
+  | { t: 'qJobDone'; id: string; cellIdx: number; win: boolean; byCode?: boolean; force?: boolean } // QUEST: игрок закрыл ЛИЧНОЕ задание (доверие): победа — награда и прогресс, поражение — плата и счётчик провалов; v0.68 byCode — зачтено по памяти (условие CodeSearch); v0.139 force — поражение по ТАЙМЕРУ даже у codeOnly (FRENDY: перезапуска нет)
   | { t: 'qJobLeave'; id: string; cellIdx: number } // QUEST: игрок ушёл из личного задания — v0.101: УЙТИ = ПОРАЖЕНИЕ (те же последствия, что win:false). v0.104: и в БОГАЧЕ (= пропуск)
   | { t: 'qPick'; id: string; cellIdx: number; v: number } // v0.104 БОГАЧ: ПЕРВЫЙ вошедший выбрал вариант задания ячейки — задание становится ЕДИНЫМ для всех
   | { t: 'qRestart'; id: string; cellIdx: number } // v0.106 VERSUS: платный ПЕРЕЗАПУСК задания — 1 бронза (траты идут в зачёт пропуска)
@@ -1597,6 +1597,15 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
        не ловит, не выбирает целью. Раньше он продолжал бить и откидывать на другие
        ячейки прямо во время выполнения задания (жалоба заказчика). */
     const busy = (pid: string): boolean => !!s.qJobs?.[pid] || (f.taskSafeUntil?.[pid] ?? 0) > now;
+    /* v0.139 ЯРОСТЬ/УЛЬТРА — ТРИ УРОВНЯ ФРЕНДИ (заказчик):
+       • БАЗА (самый слабый) — как раньше: «по расписанию» (проснулся → охота → растворился → спит);
+       • ЯРОСТЬ — 2 минуты после каждой сожжённой микросхемы (f.furyUntil) или режим карты
+         «всегда яростный» ('rage'): НЕ спит и НЕ растворяется, непрерывно гонится за целью;
+       • УЛЬТРА — на карте осталась ОДНА микросхема: очень быстр, телепортируется к фишке
+         каждые FRENDY_ULTRA_TP_MS и бьёт ВСЕХ фишек рядом. */
+    const chipsLeft = f.chips.filter((x) => !x.kind || x.kind === 'frendyChip').length;
+    const furious = (f.furyUntil ?? 0) > now || map.frendyAggr === 'rage';
+    const ultra = chipsLeft === 1;
     /* v0.130: ячейки задания — живые и разбитые (разбитые победителями заданий не работают,
        пока Френди не починит их картриджем; все разбиты — чинит бесплатно) */
     const taskCells = map.cells.map((c, i) => ({ c, i })).filter(({ c, i }) => c.type === 'task' && !!cellTaskOf(s, map, i));
@@ -1645,7 +1654,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
        (или когда разбиты ВСЕ ячейки — бесплатный ремонт) он идёт чинить ячейку, и только
        потом охотится; иначе партия рискует остаться без рабочих заданий. — */
     if (!f.boss) {
-      if (now < f.nextSpawnAt) return;
+      if (now < f.nextSpawnAt && !furious && !ultra) return; // v0.139: в ярости/ультра НЕ спит — просыпается сразу
       if ((f.cart && brokenCells.length > 0) || allBroken) {
         const pick = brokenCells[Math.floor(Math.random() * brokenCells.length)].i;
         const r = cellRectOf(map, pick);
@@ -1794,19 +1803,57 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!tookCart) f.nextSpawnAt = now + frendyRespawnMs(f);
       return;
     }
-    /* УДАР лапой (по всем в радиусе — кофе от ударов не спасает); v0.127: проходящего задание не бьёт */
-    if (!busy(tgt.id) && dist < FRENDY_HIT_RANGE && now - b.lastHitAt >= prm.hitCd) {
-      b.lastHitAt = now;
-      b.fx = 'attack'; b.fxTs = now;
-      const dmg = prm.dmg;
-      tgt.hp = Math.max(0, (tgt.hp ?? RUBG_HP_MAX) - dmg);
-      log(`😈 ФРЕНДИ бьёт ${tgt.name} когтями: −${dmg}% HP — HP ${Math.round(tgt.hp)}%${immune ? ' (кофе не спасает от УДАРОВ!)' : ''}`);
-      checkElim();
+    /* УДАР лапой (по всем в радиусе — кофе от ударов не спасает); v0.127: проходящего задание не бьёт.
+       v0.139 УЛЬТРА: кулдаун короче, урон не ниже ярости, и бьёт ВСЕХ фишек рядом (не только цель). */
+    {
+      const hitCdEff = ultra ? Math.min(prm.hitCd, FRENDY_ULTRA_HIT_CD) : prm.hitCd;
+      const dmgEff = ultra ? Math.max(prm.dmg, FRENDY_HIT_DMG + FRENDY_HIT_DMG_RAGE) : prm.dmg;
+      if (!busy(tgt.id) && dist < FRENDY_HIT_RANGE && now - b.lastHitAt >= hitCdEff) {
+        b.lastHitAt = now;
+        b.fx = 'attack'; b.fxTs = now;
+        if (ultra) {
+          let hits = 0;
+          for (const p of s.players) {
+            if (!p.alive || p.spect || busy(p.id)) continue;
+            const pp = s.journeyPos?.[p.id];
+            if (!pp || Math.hypot(pp.x - b.x, pp.y - b.y) > FRENDY_HIT_RANGE) continue;
+            p.hp = Math.max(0, (p.hp ?? RUBG_HP_MAX) - dmgEff);
+            hits++;
+          }
+          if (hits > 0) log(`😈 ФРЕНДИ УЛЬТРА бьёт лапами ВСЕХ рядом: −${dmgEff}% HP${hits > 1 ? ` — зацепил ${hits} фишек!` : ''}`);
+          checkElim();
+        } else {
+          tgt.hp = Math.max(0, (tgt.hp ?? RUBG_HP_MAX) - dmgEff);
+          log(`😈 ФРЕНДИ бьёт ${tgt.name} когтями: −${dmgEff}% HP — HP ${Math.round(tgt.hp)}%${immune ? ' (кофе не спасает от УДАРОВ!)' : ''}`);
+          checkElim();
+        }
+      }
     }
-    /* ДВИЖЕНИЕ к цели (v0.131: скорость — множитель из frendyParams) */
-    if (dist > 1) frendyWalk(b, tp.x, tp.y, prm.speed);
-    /* ОХОТА ЗАТЯНУЛАСЬ — растворился и уйдёт переваривать (вернётся злее) */
-    if (now - b.sinceTs > prm.huntMs && b.holdMs < FRENDY_CATCH_HOLD) {
+    /* ДВИЖЕНИЕ к цели (v0.131: скорость — множитель из frendyParams).
+       v0.139: в ярости — не ниже FRENDY_FURY_SPEED, в УЛЬТРА — не ниже FRENDY_ULTRA_SPEED
+       (режим карты не может ОСЛАБИТЬ ярость — только усилить). */
+    const spdMult = ultra ? Math.max(prm.speed, FRENDY_ULTRA_SPEED) : furious ? Math.max(prm.speed, FRENDY_FURY_SPEED) : prm.speed;
+    /* v0.139 УЛЬТРА телепортируется: раз в FRENDY_ULTRA_TP_MS — прямо к фишке (если ещё далеко). */
+    if (ultra && b.trip !== 'repair' && dist > CELL_PX * 2.2 && now - (b.lastTpAt ?? 0) > FRENDY_ULTRA_TP_MS) {
+      let spot: { x: number; y: number } | null = null;
+      for (let tr = 0; tr < 24 && !spot; tr++) {
+        const ang = Math.random() * Math.PI * 2;
+        const rad = CELL_PX * (1.2 + Math.random() * 1.6);
+        const sx = tp.x + Math.cos(ang) * rad, sy = tp.y + Math.sin(ang) * rad;
+        if (!pointInWall(map, sx, sy)) spot = { x: Math.round(sx), y: Math.round(sy) };
+      }
+      if (spot) {
+        b.lastTpAt = now;
+        b.x = Math.max(8, Math.min(W - 8, spot.x));
+        b.y = Math.max(8, Math.min(H - 8, spot.y));
+        b.fx = 'spawn'; b.fxTs = now;
+        log('😈 ФРЕНДИ УЛЬТРА ТЕЛЕПОРТИРУЕТСЯ — он уже рядом!');
+      }
+    }
+    if (dist > 1) frendyWalk(b, tp.x, tp.y, spdMult);
+    /* ОХОТА ЗАТЯНУЛАСЬ — растворился и уйдёт переваривать (вернётся злее).
+       v0.139: в ярости/ультра НЕ растворяется — гонится непрерывно. */
+    if (!furious && !ultra && now - b.sinceTs > prm.huntMs && b.holdMs < FRENDY_CATCH_HOLD) {
       log('🌫 ФРЕНДИ растворился в темноте… но он вернётся.');
       f.boss = null;
       f.nextSpawnAt = now + Math.round(frendyRespawnMs(f) * 0.75);
@@ -3324,7 +3371,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       s.moving = null;
       s.phase = 'epilogue';
       log('🚪 ВСЕ ИГРОКИ ВЫБРАЛИСЬ ИЗ ЗАПАДНИ — фишки покинули проклятую карту…');
-      log('🕵️ На место происшествия прибыли АГЕНТЫ АЛЬДЕР и СКАЛЛЕР (ФБР, неофициально). «Секретные материалы» продолжаются…');
+      log('🕵️ На место происшествия прибыли АГЕНТЫ МОЛДЕР и САЛЛИ (ФБР, неофициально). «Тайные материалы» продолжаются…');
       break;
     }
     case 'epiTick': {
@@ -3426,8 +3473,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         s.winner = p.id;
         log('🎉 ПОСЛЕДНЯЯ МИКРОСХЕМА СОЖЖЕНА — ФРЕНДИ ПОВЕРЖЕН! Кошмар рассеялся — ПОБЕДА!');
       } else {
-        log(`😈 Френди В ЯРОСТИ — осталось сожжечь ${f.total - f.burned}. Он становится быстрее и злее!`);
-        if (!f.boss) f.nextSpawnAt = Math.min(f.nextSpawnAt, Date.now() + 6000); // не спит долго, когда всё горит
+        /* v0.139 ЯРОСТЬ: на FRENDY_FURY_MS Френди не спит и не растворяется — непрерывно
+           гонится за выбранной фишкой. Пока печь горит сильным — жгите следующую. */
+        f.furyUntil = nowB + FRENDY_FURY_MS;
+        log(`😈 ФРЕНДИ В ЯРОСТИ на ${Math.round(FRENDY_FURY_MS / 60000)} минуты — гонится за целью НЕ ОСТАНАВЛИВАЯСЬ! Осталось сожжечь: ${f.total - f.burned}.`);
+        if (!f.boss) f.nextSpawnAt = Math.min(f.nextSpawnAt, nowB + 1500); // разбудить сразу — «не спит, когда всё горит»
       }
       break;
     }
@@ -3474,8 +3524,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!p || !p.alive || p.spect) break;
       const job = s.qJobs?.[p.id];
       if (!job || job.cellIdx !== a.cellIdx) break;
-      /* v0.70 ТОЛЬКО ПО КОДУ: ручной зачёт/провал запрещён — только срабатывание условия из CodeSearch */
-      if (cellTaskOf(s, map, a.cellIdx)?.codeOnly && !a.byCode) break;
+      /* v0.70 ТОЛЬКО ПО КОДУ: ручной зачёт/провал запрещён — только срабатывание условия из CodeSearch.
+         v0.139: ИСКЛЮЧЕНИЕ — force (поражение по ТАЙМЕРУ, только для FRENDY: перезапуска задания больше нет). */
+      if (cellTaskOf(s, map, a.cellIdx)?.codeOnly && !a.byCode && !a.force) break;
       delete s.qJobs![p.id];
       /* ресурс партии: время списывается по факту (минуты за задание); монеты/HP — платёж по итогам; попытка — 1 за вход (v0.101: общий код с qJobLeave) */
       questSpendResources(p, job.startedAt);
@@ -3710,21 +3761,15 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     }
     /* ---------- v0.106→107 VERSUS: платный перезапуск ---------- */
     case 'qRestart': {
-      /* ПЕРЕЗАПУСК ЗАДАНИЯ:
-         • БОГАЧ (VERSUS) — 1 БРОНЗА: игра перезагружается с сохранения, монета — плата;
-           траты идут в зачёт пропуска («сразу 5 ИЛИ потраченное»);
-         • v0.136 FRENDY — ПЕРЕЗАПУСК = ПОРАЖЕНИЕ (заказчик): списывается HP как у кнопки
-           «Поражение», провал в счёт; ЗАДАНИЕ ОСТАЁТСЯ открытым (игрок продолжает), эмулятор
-           перезагружается у клиента (GameScreen сам делает loadSaveReliable). */
-      if (s.phase !== 'playing' || (map.mode !== 'bogach' && !isFrendyMode(map.mode))) break;
+      /* ПЕРЕЗАПУСК ЗАДАНИЯ — ТОЛЬКО БОГАЧ (VERSUS): 1 БРОНЗА — игра перезагружается
+         с сохранения, монета — плата; траты идут в зачёт пропуска («сразу 5 ИЛИ потраченное»).
+         v0.139: во FRENDY перезапуска задания БОЛЬШЕ НЕТ (кнопка и быстрая загрузка убраны) —
+         захотел перепройти задание: сразу после поражения снова зайди на ячейку. */
+      if (s.phase !== 'playing' || map.mode !== 'bogach') break;
       const p = actor();
       if (!p || !p.alive || p.spect) break;
       const job = s.qJobs?.[p.id];
       if (!job || job.cellIdx !== a.cellIdx) break;
-      if (isFrendyMode(map.mode)) {
-        questDefeatApply(p, a.cellIdx, false, ' — ПЕРЕЗАПУСК = ПОРАЖЕНИЕ 🔄');
-        break;
-      }
       if ((p.coinsLeft ?? 0) > 0) {
         bogachPay(p, Math.min(1, p.coinsLeft ?? 0), 'перезапуск задания');
         s.qSpent = s.qSpent ?? {};

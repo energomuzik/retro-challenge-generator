@@ -122,7 +122,7 @@ function FrendyVnScene({ text }: { text: string }) {
         <div className="text-[14px] md:text-[15px] text-paper leading-snug min-h-[3.4em]">
           <VnText text={text} speed={30} />
         </div>
-        <div className="mt-2 font-pixel text-[9px] text-faint uppercase tracking-wider">Френди · Секретные материалы</div>
+        <div className="mt-2 font-pixel text-[9px] text-faint uppercase tracking-wider">Френди · Тайные материалы</div>
       </div>
     </div>
   );
