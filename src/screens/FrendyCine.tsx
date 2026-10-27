@@ -3,7 +3,8 @@ import type { GameMap, GameSession } from '../types';
 import { FRENDY_CINE, MAP_MODES, PLAYER_COLORS } from '../types';
 import { VERSION } from '../version';
 import { frendyCineVoice, makeFrendyAudio } from '../frendyVoice';
-import { frendyFrame } from '../frendyAssets'; // v0.135: спрайт Френди в стиле агентов
+import { frendyFrame, frendyPortrait } from '../frendyAssets'; // v0.135: спрайт; v0.137: портрет для новеллы
+import { VnText } from './AgentsVn'; // v0.137: печатная машинка — как у агентов
 import { useApp } from '../store';
 import { sfx } from '../sound';
 
@@ -62,19 +63,16 @@ function playSeq(urls: (string | null)[], onDone: () => void, capMs = 16000): ()
 /* v0.131: СМЕХ УДАЛЁН — заказчик перезаписал все фразы, смех ВШИТ В КАЖДУЮ ФРАЗУ
    (отдельные треки laugh-0/1 удалены из ассетов и кода). */
 
-/* ---------- ФИГУРА ФРЕНДИ (рисованная заглушка на CSS) ---------- */
-/* v0.135: ФРЕНДИ — СПРАЙТ (src/frendyAssets) вместо CSS-заглушки: федора, полосатый
-   свитер и лапа-коготь Крюгера убраны — это был ЧУЖОЙ персонаж. Канонический облик:
+/* ---------- ФИГУРА ФРЕНДИ (стоящий спрайт — осталась только в badend) ---------- */
+/* v0.135: ФРЕНДИ — СПРАЙТ (src/frendyAssets) вместо CSS-заглушки. Канонический облик:
    сутулый мужчина в оливковой рабочей куртке с жетоном-слоном и POWER GLOVE с шипами.
-   Кадры idle ×2 (лёгкое «дыхание», смена каждые 460 мс); при burning кадр затемняется
-   и обгорает (CSS .frendy-fig.burning сверху добавляет огонь 🔥 как раньше). */
+   v0.137: «дыхание» (смена кадров 460 мс) УДАЛЕНО совсем — Френди стоит статично
+   (заказ: «дыхания у Френди не должно быть, даже когда стоит в игре»); при burning
+   кадр затемняется и обгорает (CSS .frendy-fig.burning сверху добавляет огонь 🔥).
+   Крупные сцены (интро/печь/стингеры) больше НЕ используют фигуру — они в формате
+   новеллы: FrendyVnScene (портрет слева + диалог), как у Салли и Молдера. */
 function FrendyFigure({ size = 190, burning = false }: { size?: number; burning?: boolean }) {
-  const [f, setF] = useState(0);
-  useEffect(() => {
-    const iv = window.setInterval(() => setF((x) => x + 1), 460);
-    return () => window.clearInterval(iv);
-  }, []);
-  const im = frendyFrame(false, 0, f); // в кат-сценах Френди стоит — дышит
+  const im = frendyFrame(false, 0); // v0.137: статичная стойка — дыхания больше нет
   return (
     <div className={`frendy-fig relative ${burning ? 'burning' : ''}`} style={{ width: size, height: size * 1.3 }}>
       {im && (
@@ -94,6 +92,38 @@ function FrendyFigure({ size = 190, burning = false }: { size?: number; burning?
           <span className="ff-flame" style={{ left: '24%', bottom: '22%', fontSize: size * 0.22, animationDelay: '0.45s' }}>🔥</span>
         </>
       )}
+    </div>
+  );
+}
+
+/* ---------- v0.137 ФРЕНДИ В ФОРМАТЕ НОВЕЛЛЫ (как у Салли и Молдера) ----------
+   Портрет СЛЕВА экрана + реплика «машинкой» в том же текстовом боксе, что у агентов,
+   плашка «ФРЕНДИ» (красная). Никакой фигуры и «дыхания» — заказ: крупные фразы
+   (фраза в начале, сожгли в печи, стингеры) — в том же формате диалога, что у агентов.
+   Фразочки ВНУТРИ игры (крик-плашки охоты) не тронуты — как и было. */
+function FrendyVnScene({ text }: { text: string }) {
+  return (
+    <div className="absolute inset-0 overflow-hidden pointer-events-none">
+      {/* ПОРТРЕТ: слева, как Салли у агентов (портрет анфас — зеркало не нужно) */}
+      <div className="absolute bottom-[27%] left-[2%] md:left-[6%]">
+        <img
+          src={frendyPortrait()}
+          alt="Френди"
+          className="h-[58vh] md:h-[64vh] max-w-none drop-shadow-[0_12px_28px_rgba(0,0,0,0.8)]"
+          draggable={false}
+        />
+      </div>
+      {/* Плашка имени над текстовым боксом */}
+      <div className="absolute bottom-[24.5%] left-[7%]">
+        <span className="font-display uppercase tracking-wider text-[13px] px-3 py-1 border-2 pixel-corners text-[#ff5d73] border-[#ff5d73] bg-[rgba(20,4,8,0.85)]">ФРЕНДИ</span>
+      </div>
+      {/* ТЕКСТОВЫЙ БОКС — тот же, что у агентов (печатная машинка) */}
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-[94%] max-w-3xl border-[3px] border-edge bg-[rgba(6,8,18,0.93)] pixel-corners px-5 py-4">
+        <div className="text-[14px] md:text-[15px] text-paper leading-snug min-h-[3.4em]">
+          <VnText text={text} speed={30} />
+        </div>
+        <div className="mt-2 font-pixel text-[9px] text-faint uppercase tracking-wider">Френди · Секретные материалы</div>
+      </div>
     </div>
   );
 }
@@ -129,14 +159,10 @@ export function FrendyIntroCine({ onDone }: { onDone: () => void }) {
   }, [stage]);
   return (
     <div className={`fixed inset-0 z-[80] flex items-center justify-center bg-black ${stage >= 2 ? 'cine-fadeout' : 'cine-fadein'}`}>
-      <button onClick={() => { stopRef.current?.(); onDone(); }} className="absolute bottom-4 right-4 z-10 px-3 py-1.5 border-2 border-[#5b2430] text-[#b98490] font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-[#ff5d73] cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить ✕</button>
-      {stage >= 1 && (
-        <div className="flex flex-col items-center gap-5">
-          <FrendyFigure size={200} />
-          <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{phrase.t}»</div>
-          <div className="font-pixel text-[9px] text-[#6c5a60] uppercase">Френди проснулся…</div>
-        </div>
-      )}
+      {/* v0.137: кнопка переехала наверх — внизу теперь текстовый бокс новеллы */}
+      <button onClick={() => { stopRef.current?.(); onDone(); }} className="absolute top-4 right-4 z-10 px-3 py-1.5 border-2 border-[#5b2430] text-[#b98490] font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-[#ff5d73] cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить ✕</button>
+      {/* v0.137: портрет слева + диалог в формате агентов — фигуры и «дыхания» больше нет */}
+      {stage >= 1 && <FrendyVnScene text={phrase.t} />}
     </div>
   );
 }
@@ -320,12 +346,8 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
             <div className="font-display uppercase text-center text-base md:text-xl text-[#ffb257] px-6">{winner ? `${winner.name} кладёт ПОСЛЕДНЮЮ микросхему в печь…` : 'Последняя микросхема летит в печь…'}</div>
           </div>
         )}
-        {phase === 'win2' && (
-          <div className="flex flex-col items-center gap-5">
-            <FrendyFigure size={210} burning />
-            <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{winPhrase.t}»</div>
-          </div>
-        )}
+        {/* v0.137: прощальная фраза сгоревшего Френди — портрет + диалог, как у агентов */}
+        {phase === 'win2' && <FrendyVnScene text={winPhrase.t} />}
         {phase === 'win3' && <div className="w-full h-full bg-black" />}
         {phase === 'lose1' && (
           <div className="flex flex-col items-center gap-5">
@@ -342,15 +364,11 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
     return (
       <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center">
         {/* v0.135: кнопки «Пропустить» на стингере больше НЕТ (и v0.133-хвост убран) */}
-        <div className="cine-shake flex flex-col items-center gap-5">
-          <FrendyFigure size={220} burning={phase === 'sting'} />
-          {phase === 'sting' && (
-            <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{stingPhrase.t}»</div>
-          )}
-          {phase === 'stingEnd' && (
-            <div className="font-pixel uppercase tracking-[0.4em] text-teal text-xl md:text-3xl" style={{ textShadow: '0 0 22px rgba(46,230,168,0.7)' }}>ВЫ ПРОШЛИ ИГРУ</div>
-          )}
-        </div>
+        {/* v0.137: стингер — портрет слева + диалог в формате агентов */}
+        {phase === 'sting' && <FrendyVnScene text={stingPhrase.t} />}
+        {phase === 'stingEnd' && (
+          <div className="font-pixel uppercase tracking-[0.4em] text-teal text-xl md:text-3xl" style={{ textShadow: '0 0 22px rgba(46,230,168,0.7)' }}>ВЫ ПРОШЛИ ИГРУ</div>
+        )}
       </div>
     );
   }
@@ -521,15 +539,11 @@ export function XFinale({ map, sess, onDone }: { map: GameMap; sess: GameSession
   return (
     <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center">
       {/* v0.135: без кнопки «Пропустить» */}
-      <div className="cine-shake flex flex-col items-center gap-5">
-        <FrendyFigure size={220} burning={phase === 'sting'} />
-        {phase === 'sting' && (
-          <div className="font-display uppercase text-center text-lg md:text-2xl text-[#ff5d73] px-6" style={{ textShadow: '0 0 18px rgba(255,45,45,0.8)' }}>«{stingPhrase.t}»</div>
-        )}
-        {phase === 'stingEnd' && (
-          <div className="font-pixel uppercase tracking-[0.4em] text-teal text-xl md:text-3xl" style={{ textShadow: '0 0 22px rgba(46,230,168,0.7)' }}>ВЫ ПРОШЛИ ИГРУ</div>
-        )}
-      </div>
+      {/* v0.137: стингер — портрет слева + диалог в формате агентов */}
+      {phase === 'sting' && <FrendyVnScene text={stingPhrase.t} />}
+      {phase === 'stingEnd' && (
+        <div className="font-pixel uppercase tracking-[0.4em] text-teal text-xl md:text-3xl" style={{ textShadow: '0 0 22px rgba(46,230,168,0.7)' }}>ВЫ ПРОШЛИ ИГРУ</div>
+      )}
     </div>
   );
 }

@@ -4,9 +4,10 @@ import { build } from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = '/home/z/my-project/rcg-work';
-const TMP = '/home/z/my-project/rcg-work/scripts/v132-tmp';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const TMP = path.join(ROOT, 'scripts', 'v132-tmp');
 fs.mkdirSync(TMP, { recursive: true });
 
 /* Заглушка agentsAssets (в движке нужен только EPI_SCRIPT) */

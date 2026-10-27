@@ -1235,7 +1235,8 @@ export default function GameScreen() {
      frendyFlash — красная вспышка удара/поимки, если цель — я. */
   const frendyBossSmoothRef = useRef<{ x: number; y: number } | null>(null);
   /* v0.136 СПРАЙТ ФРЕНДИ НА ПОЛЕ: прошлая позиция босса (скорость → идёт/стоит) и последний
-     разворот (рисунок смотрит ВЛЕВО: движется вправо — флип; стоит — держим как было) */
+     разворот. v0.137: кадры заказчика СЫРЫЕ — рисунок смотрит ВПРАВО: движется влево — флип;
+     стоит — держим как было (в v0.136 было наоборот — «анимация влево, а Френди идёт вправо») */
   const frendyBossPrevRef = useRef<{ x: number; y: number } | null>(null);
   const frendyBossWalkingRef = useRef(false);
   const frendyBossFlipRef = useRef(false);
@@ -2197,8 +2198,9 @@ export default function GameScreen() {
           }
         }
         /* v0.123: сглаживание позиции Френди — тики хоста идут 0.4 с, клиент плавно доводит.
-           v0.136: заодно считаем СКОРОСТЬ (идёт/стоит — цикл ходьбы vs стойка) и НАПРАВЛЕНИЕ
-           (спрайт смотрит влево — при движении вправо флипаем; стоит — последний разворот). */
+           v0.136: заодно считаем СКОРОСТЬ (идёт/стоит — цикл ходьбы vs стойка) и НАПРАВЛЕНИЕ.
+           v0.137: СВАП ВЛЕВО/ВПРАВО ПО ЗАКАЗУ — рисунок смотрит ВПРАВО: при движении ВЛЕВО
+           флипаем (стоя — держим последний разворот); в v0.136 было наоборот. */
         const fb0 = sess.frendy?.boss ?? null;
         if (fb0) {
           const sm = frendyBossSmoothRef.current ?? { x: fb0.x, y: fb0.y };
@@ -2208,8 +2210,8 @@ export default function GameScreen() {
           const pv = frendyBossPrevRef.current ?? sm;
           const fvdx = sm.x - pv.x, fvdy = sm.y - pv.y;
           frendyBossWalkingRef.current = Math.hypot(fvdx, fvdy) > 0.9; // стоит на месте → стойка
-          if (fvdx > 0.9) frendyBossFlipRef.current = true;  // вправо — разворот (рисунок смотрит влево)
-          else if (fvdx < -0.9) frendyBossFlipRef.current = false;
+          if (fvdx > 0.9) frendyBossFlipRef.current = false; // v0.137: вправо — как есть (рисунок смотрит вправо)
+          else if (fvdx < -0.9) frendyBossFlipRef.current = true; // влево — разворот
           frendyBossPrevRef.current = { x: sm.x, y: sm.y };
         } else {
           frendyBossSmoothRef.current = null;
