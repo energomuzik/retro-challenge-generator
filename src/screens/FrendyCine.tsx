@@ -83,7 +83,7 @@ function FrendyFigure({ size = 190, burning = false }: { size?: number; burning?
           alt="Френди"
           draggable={false}
           className="absolute left-1/2 bottom-0 -translate-x-1/2 h-full w-auto max-w-none"
-          style={{ imageRendering: 'pixelated', filter: burning ? 'brightness(0.55) saturate(1.35) sepia(0.3) hue-rotate(-20deg)' : undefined }}
+          style={{ filter: burning ? 'brightness(0.55) saturate(1.35) sepia(0.3) hue-rotate(-20deg)' : undefined }}
         />
       )}
       {burning && (

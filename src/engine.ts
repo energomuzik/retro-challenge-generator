@@ -3710,13 +3710,21 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     }
     /* ---------- v0.106→107 СПРИНТЕР: платный перезапуск ---------- */
     case 'qRestart': {
-      /* ПЕРЕЗАПУСК ЗАДАНИЯ — 1 БРОНЗА (Спринтер): игра перезагружается с сохранения,
-         монета — плата; траты идут в зачёт пропуска («сразу 5 ИЛИ потраченное») */
-      if (s.phase !== 'playing' || map.mode !== 'bogach') break;
+      /* ПЕРЕЗАПУСК ЗАДАНИЯ:
+         • БОГАЧ (Спринтер) — 1 БРОНЗА: игра перезагружается с сохранения, монета — плата;
+           траты идут в зачёт пропуска («сразу 5 ИЛИ потраченное»);
+         • v0.136 FRENDY — ПЕРЕЗАПУСК = ПОРАЖЕНИЕ (заказчик): списывается HP как у кнопки
+           «Поражение», провал в счёт; ЗАДАНИЕ ОСТАЁТСЯ открытым (игрок продолжает), эмулятор
+           перезагружается у клиента (GameScreen сам делает loadSaveReliable). */
+      if (s.phase !== 'playing' || (map.mode !== 'bogach' && !isFrendyMode(map.mode))) break;
       const p = actor();
       if (!p || !p.alive || p.spect) break;
       const job = s.qJobs?.[p.id];
       if (!job || job.cellIdx !== a.cellIdx) break;
+      if (isFrendyMode(map.mode)) {
+        questDefeatApply(p, a.cellIdx, false, ' — ПЕРЕЗАПУСК = ПОРАЖЕНИЕ 🔄');
+        break;
+      }
       if ((p.coinsLeft ?? 0) > 0) {
         bogachPay(p, Math.min(1, p.coinsLeft ?? 0), 'перезапуск задания');
         s.qSpent = s.qSpent ?? {};

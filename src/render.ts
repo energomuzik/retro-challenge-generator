@@ -2,6 +2,7 @@ import type { AnimClip, CellDef, CutsceneDef, GameMap, NpcLibEntry, PlacedAnim, 
 import { doorKeyHex } from './types';
 import { getImage } from './assets';
 import { patrolPos } from './patrol';
+import { frendyFrame } from './frendyAssets'; // v0.136: фирменный арт Френди на поле (ходьба/стойка)
 
 export const CELL = 64;
 
@@ -447,7 +448,9 @@ export interface BoardDrawOpts {
   cutViz?: { pts: { x: number; y: number }[]; zone: { x: number; y: number; w: number; h: number } | null; color: string; active: boolean }[];
   /* v0.123 FRENDY: предметы НА ПОЛЕ (микросхемы/выброшенное) и супер-босс Френди (позиция сглажена клиентом) */
   frendyChips?: { x: number; y: number; kind?: string }[] | null;
-  frendyBoss?: { x: number; y: number; fx?: string | null; fxTs?: number; targetId?: string | null } | null;
+  /* v0.136: + walking/flip — идёт ли Френди сейчас (цикл ходьбы vs стойка) и разворот спрайта
+     (рисунок смотрит ВЛЕВО — при движении вправо флипаем; считает GameScreen по скорости) */
+  frendyBoss?: { x: number; y: number; fx?: string | null; fxTs?: number; targetId?: string | null; walking?: boolean; flip?: boolean } | null;
   /* v0.132 ЭПИЛОГ: спрайты агентов АЛЬДЕР/СКАЛЛЕР (кадр уже выбран в GameScreen: ходьба/IDLE) */
   agents?: { who: 'alder' | 'skaller'; x: number; y: number; img: HTMLImageElement | null; flip?: boolean }[] | null;
   /* v0.134 ЭПИЛОГ «Секретные материалы»: место преступления очищено — ВСЕ ячейки СКРЫТЫ,
@@ -588,17 +591,69 @@ const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, t
   ctx.restore();
 };
 
-/* v0.123 FRENDY: СУПЕР-БОСС — рисованная заглушка до фирменной анимации автора:
-   шляпа-федора, светящиеся глаза, свитер в полоску, рука с когтями.
-   fx: 'attack' — красные росчерки лапы; 'catch' — фиолетовое кольцо захвата. */
-const drawFrendyBoss = (ctx: CanvasRenderingContext2D, cx: number, cy: number, time: number, fx?: string | null, fxTs?: number) => {
+/* v0.136 ФРЕНДИ НА ПОЛЕ — СПРАЙТ (фирменный арт заказчика, src/frendyAssets) вместо
+   пиксельной заглушки-«Крюгера» (федора/свитер/коготь вынесены в фолбэк ниже — они
+   рисуются только пока картинки ещё грузятся). Спрайт рисуется с якорем «ноги» в
+   точке (cx, cy+22) — как у прежней заглушки (позиция босса на поле не сдвинулась),
+   рост CELL*1.55 — как у агентов. walking=true — цикл ходьбы (6 кадров по 130 мс),
+   иначе стойка (idle ×2). flip=true — спрайт разворачивается вправо (рисунок смотрит
+   влево). Разовые эффекты fx: 'attack' — красные росчерки лапы; 'catch' — фиолетовое
+   кольцо захвата — поверх спрайта, как раньше. */
+const drawFrendyBoss = (ctx: CanvasRenderingContext2D, cx: number, cy: number, time: number, fx?: string | null, fxTs?: number, walking?: boolean, flip?: boolean) => {
   ctx.save();
   ctx.translate(cx, cy);
-  const bob = Math.sin(time / 160) * 2; // дыхание
+  /* тень под ногами */
   ctx.fillStyle = 'rgba(0,0,0,0.45)';
   ctx.beginPath();
   ctx.ellipse(0, 22, 17, 6, 0, 0, Math.PI * 2);
   ctx.fill();
+  const im = frendyFrame(!!walking, time);
+  if (im) {
+    const h = CELL * 1.55; // рост на поле — как у агентов
+    const w = h * (im.naturalWidth / Math.max(1, im.naturalHeight));
+    ctx.save();
+    if (flip) ctx.scale(-1, 1);
+    ctx.drawImage(im, -w / 2, 22 - h, w, h);
+    ctx.restore();
+  } else {
+    drawFrendyBossFallback(ctx, time); // картинки ещё грузятся — прежняя заглушка
+  }
+  /* разовые анимации-заглушки */
+  if (fx && fxTs) {
+    const k = Math.max(0, Math.min(1, (time - fxTs) / 600)); // 0..1 за 0.6 с
+    if (fx === 'attack' && k < 1) {
+      ctx.save();
+      ctx.globalAlpha = 1 - k;
+      ctx.strokeStyle = '#ff4646';
+      ctx.lineWidth = 3;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(10 + i * 7, 0, 14 + i * 3, -0.9 + k * 0.8, 0.5 + k * 0.8);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (fx === 'catch' && k < 1) {
+      ctx.save();
+      ctx.globalAlpha = 1 - k;
+      ctx.strokeStyle = '#c07aff';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(0, 0, 10 + k * 30, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = '#ff5d73';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 6 + k * 20, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+};
+
+/* ПИКСЕЛЬНАЯ ЗАГУЛУШКА ФРЕНДИ (v0.123–v0.135) — фолбэк на время загрузки спрайтов */
+const drawFrendyBossFallback = (ctx: CanvasRenderingContext2D, time: number) => {
+  const bob = Math.sin(time / 160) * 2; // дыхание
   ctx.translate(0, -14 + bob);
   /* свитер в полоску (тело) */
   for (let i = 0; i < 5; i++) {
@@ -652,37 +707,6 @@ const drawFrendyBoss = (ctx: CanvasRenderingContext2D, cx: number, cy: number, t
     ctx.moveTo(1 + i * 1.6, 9);
     ctx.lineTo(3 + i * 2.2, 17 + Math.sin(time / 90 + i) * 1.2);
     ctx.stroke();
-  }
-  ctx.restore();
-  /* разовые анимации-заглушки */
-  if (fx && fxTs) {
-    const k = Math.max(0, Math.min(1, (time - fxTs) / 600)); // 0..1 за 0.6 с
-    if (fx === 'attack' && k < 1) {
-      ctx.save();
-      ctx.globalAlpha = 1 - k;
-      ctx.strokeStyle = '#ff4646';
-      ctx.lineWidth = 3;
-      for (let i = 0; i < 3; i++) {
-        ctx.beginPath();
-        ctx.arc(10 + i * 7, 0, 14 + i * 3, -0.9 + k * 0.8, 0.5 + k * 0.8);
-        ctx.stroke();
-      }
-      ctx.restore();
-    } else if (fx === 'catch' && k < 1) {
-      ctx.save();
-      ctx.globalAlpha = 1 - k;
-      ctx.strokeStyle = '#c07aff';
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.arc(0, 0, 10 + k * 30, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.strokeStyle = '#ff5d73';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(0, 0, 6 + k * 20, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-    }
   }
   ctx.restore();
 };
@@ -1808,7 +1832,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     for (const c of o.frendyChips) drawFrendyChip(ctx, c.x, c.y, o.time, c.kind);
   }
   if (o.frendyBoss) {
-    drawFrendyBoss(ctx, o.frendyBoss.x, o.frendyBoss.y, o.time, o.frendyBoss.fx, o.frendyBoss.fxTs);
+    drawFrendyBoss(ctx, o.frendyBoss.x, o.frendyBoss.y, o.time, o.frendyBoss.fx, o.frendyBoss.fxTs, o.frendyBoss.walking, o.frendyBoss.flip);
   }
   /* v0.132 ЭПИЛОГ: агенты АЛЬДЕР и СКАЛЛЕР — живые спрайты поверх мира.
      Кадры выровнены по низу — рисуем с якорем «ноги» в точке (x,y). */

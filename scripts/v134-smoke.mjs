@@ -105,6 +105,7 @@ console.log('SMOKE OK');
       b.onLoad({ filter: /src\/frendyVoice\.ts$/ }, () => ({ contents: 'export const frendyPhraseVoice = () => null; export const frendyCineVoice = () => null; export const frendyVoiceCount = 0; export const frendyVol = () => 1; export const makeFrendyAudio = () => null;', loader: 'ts' }));
     },
   }],
+  banner: { js: 'var GLOBAL_GLOB_STUB = function () { return {}; };' }, // v0.136: render.ts тянет frendyAssets (import.meta.glob) в бандл — глобальная заглушка обязана существовать
   define: { 'import.meta.glob': 'GLOBAL_GLOB_STUB' },
 }).then(async (r) => {
   const out = path.join(TMP, 'engine.cjs');

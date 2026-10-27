@@ -119,10 +119,10 @@ export function AgentsVn({ idx, isHost, onNext }: { idx: number; isHost: boolean
           v0.134: АЛЬДЕР ОТЗЕРКАЛЕН — смотрит ВЛЕВО, на Скаллер (раньше смотрел вправо, от собеседника) */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className={`${sideCls('skaller')} left-[2%] md:left-[6%]`} style={{ transform: active === 'skaller' ? 'translateY(0) scale(1)' : 'translateY(8px) scale(0.97)' }}>
-          <img src={port('skaller')} alt="Скаллер" className="h-[58vh] md:h-[64vh] max-w-none drop-shadow-[0_12px_28px_rgba(0,0,0,0.8)]" draggable={false} />
+          <img src={port('skaller')} alt="Салли" className="h-[58vh] md:h-[64vh] max-w-none drop-shadow-[0_12px_28px_rgba(0,0,0,0.8)]" draggable={false} />
         </div>
         <div className={`${sideCls('alder')} right-[2%] md:right-[6%]`} style={{ transform: active === 'alder' ? 'translateY(0) scale(1)' : 'translateY(8px) scale(0.97)' }}>
-          <img src={port('alder')} alt="Альдер" className="h-[58vh] md:h-[64vh] max-w-none drop-shadow-[0_12px_28px_rgba(0,0,0,0.8)]" style={{ transform: 'scaleX(-1)' }} draggable={false} />
+          <img src={port('alder')} alt="Молдер" className="h-[58vh] md:h-[64vh] max-w-none drop-shadow-[0_12px_28px_rgba(0,0,0,0.8)]" style={{ transform: 'scaleX(-1)' }} draggable={false} />
         </div>
       </div>
 

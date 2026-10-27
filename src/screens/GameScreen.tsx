@@ -1234,6 +1234,11 @@ export default function GameScreen() {
      frendyShout — большой крик фразочки (слышат ВСЕ независимо от расстояния);
      frendyFlash — красная вспышка удара/поимки, если цель — я. */
   const frendyBossSmoothRef = useRef<{ x: number; y: number } | null>(null);
+  /* v0.136 СПРАЙТ ФРЕНДИ НА ПОЛЕ: прошлая позиция босса (скорость → идёт/стоит) и последний
+     разворот (рисунок смотрит ВЛЕВО: движется вправо — флип; стоит — держим как было) */
+  const frendyBossPrevRef = useRef<{ x: number; y: number } | null>(null);
+  const frendyBossWalkingRef = useRef(false);
+  const frendyBossFlipRef = useRef(false);
   /* v0.132 ЭПИЛОГ: сглаживание Альдера между тиками хоста + последние направления взгляда агентов */
   const epiAlderSmoothRef = useRef<{ x: number; y: number } | null>(null);
   const alderFlipRef = useRef(false);   // true — смотрит влево (спрайты по умолчанию вправо)
@@ -2191,14 +2196,26 @@ export default function GameScreen() {
             npcDrawList.push({ npc: n, def: defN, done });
           }
         }
-        /* v0.123: сглаживание позиции Френди — тики хоста идут 0.4 с, клиент плавно доводит */
+        /* v0.123: сглаживание позиции Френди — тики хоста идут 0.4 с, клиент плавно доводит.
+           v0.136: заодно считаем СКОРОСТЬ (идёт/стоит — цикл ходьбы vs стойка) и НАПРАВЛЕНИЕ
+           (спрайт смотрит влево — при движении вправо флипаем; стоит — последний разворот). */
         const fb0 = sess.frendy?.boss ?? null;
         if (fb0) {
           const sm = frendyBossSmoothRef.current ?? { x: fb0.x, y: fb0.y };
           sm.x += (fb0.x - sm.x) * 0.22;
           sm.y += (fb0.y - sm.y) * 0.22;
           frendyBossSmoothRef.current = sm;
-        } else frendyBossSmoothRef.current = null;
+          const pv = frendyBossPrevRef.current ?? sm;
+          const fvdx = sm.x - pv.x, fvdy = sm.y - pv.y;
+          frendyBossWalkingRef.current = Math.hypot(fvdx, fvdy) > 0.9; // стоит на месте → стойка
+          if (fvdx > 0.9) frendyBossFlipRef.current = true;  // вправо — разворот (рисунок смотрит влево)
+          else if (fvdx < -0.9) frendyBossFlipRef.current = false;
+          frendyBossPrevRef.current = { x: sm.x, y: sm.y };
+        } else {
+          frendyBossSmoothRef.current = null;
+          frendyBossPrevRef.current = null;
+          frendyBossWalkingRef.current = false;
+        }
         /* v0.132 ЭПИЛОГ: сглаживание позиции АЛЬДЕРА между тиками хоста + кадры агентов.
            Направление: спрайты смотрят ВПРАВО — при движении влево флипаем. */
         const epiS = sess.frendy?.epi ?? null;
@@ -2321,6 +2338,8 @@ export default function GameScreen() {
                 fx: sess.frendy.boss.fx,
                 fxTs: sess.frendy.boss.fxTs ? t - (Date.now() - sess.frendy.boss.fxTs) : undefined,
                 targetId: sess.frendy.boss.targetId,
+                walking: frendyBossWalkingRef.current, // v0.136: спрайт ходьбы/стойки
+                flip: frendyBossFlipRef.current,       // v0.136: разворот по направлению движения
               }
             : null,
         });
@@ -2791,9 +2810,10 @@ export default function GameScreen() {
      открытого окна (Спринтер — с платой 1 бронза; классика — через reloadSave; RUBG —
      перезагрузка рома с сохранения). Где окна нет — клавиша молчит. */
   const quickLoadFire = () => {
-    if (myQJob && myQTask) { // QUEST / БОГАЧ (СПРИНТЕР) — личное окно задания
+    if (myQJob && myQTask) { // QUEST / БОГАЧ (СПРИНТЕР) / FRENDY — личное окно задания
       ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null);
-      if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); // перезапуск — 1 бронза
+      // v0.106: перезапуск — 1 бронза (БОГАЧ); v0.136: во FRENDY перезапуск = ПОРАЖЕНИЕ (−HP)
+      if (isBogach || isFrendy) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx });
       sfx.alarm();
       setTimerRestartTick((x) => x + 1); // v0.108: перезапуск задания — таймер заново
       return;
@@ -2864,7 +2884,7 @@ export default function GameScreen() {
       return;
     }
     if (timerSpec.kind === 'sprinter' && myQJob) {
-      if (qCodeOnly) { ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null); if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); sfx.alarm(); setTimerRestartTick((x) => x + 1); }
+      if (qCodeOnly) { ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null); if (isBogach || isFrendy) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); sfx.alarm(); setTimerRestartTick((x) => x + 1); }
       else { sfx.fail(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false }); }
     }
   };
@@ -3988,18 +4008,18 @@ export default function GameScreen() {
               <div className="font-display uppercase text-[10px] text-gold tracking-wider">📁 Секретные материалы — задание</div>
               <div className="text-[12px] text-paper leading-snug mt-1">
                 {epi.stage === 'walk' ? (
-                  <>Агенты на месте. <b className="text-gold">Альдер</b> направляется к печи…</>
+                  <>Агенты на месте. <b className="text-gold">Молдер</b> направляется к печи…</>
                 ) : (
-                  <>Подойти к <b className="text-gold">АЛЬДЕРУ</b> у печи и поговорить {isHost ? <>(<b className="text-paper">E</b> · джойстик · клик по Альдеру)</> : <>— ведёт <b className="text-paper">хост</b> (Скаллер)</>}</>
+                  <>Подойти к <b className="text-gold">МОЛДЕРУ</b> у печи и поговорить {isHost ? <>(<b className="text-paper">E</b> · джойстик · клик по Молдеру)</> : <>— ведёт <b className="text-paper">хост</b> (Салли)</>}</>
                 )}
               </div>
-              {isHost && epi.stage === 'idle' && <div className="font-pixel text-[9px] text-faint mt-1">Ты ведёшь СКАЛЛЕР как свою фишку — подойди и жми E (или A на джойстике, или клик по Альдеру)</div>}
+              {isHost && epi.stage === 'idle' && <div className="font-pixel text-[9px] text-faint mt-1">Ты ведёшь САЛЛИ как свою фишку — подойди и жми E (или A на джойстике, или клик по Молдеру)</div>}
             </div>
           </div>
         )}
         {epiMode && epiNearAlder && epi?.stage !== 'talk' && (
           <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
-            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-teal bg-[rgba(7,9,18,0.9)] border-2 border-teal/50">🕵️ АЛЬДЕР — поговорить: <b className="text-paper">E</b> · джойстик · клик</span>
+            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-teal bg-[rgba(7,9,18,0.9)] border-2 border-teal/50">🕵️ МОЛДЕР — поговорить: <b className="text-paper">E</b> · джойстик · клик</span>
           </div>
         )}
         {epiTalk && (
@@ -4981,15 +5001,18 @@ export default function GameScreen() {
                             <GhostBtn
                               title={isBogach
                                 ? `Перезапустить игру с сохранения (или с начала) — стоит 1 бронзу (траты идут в зачёт пропуска)${myQSpent ? ` · уже потрачено: ${myQSpent}` : ''}${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`
-                                : `Перезапустить игру с сохранения (или с начала)${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`}
+                                : isFrendy
+                                  ? `Перезапуск = ПОРАЖЕНИЕ: списывается HP (как у кнопки «Поражение»), провал в счёт. Игра перезагружается с сохранения (или с начала)${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`
+                                  : `Перезапустить игру с сохранения (или с начала)${quickKeyLbl ? ` · быстрая загрузка: ${quickKeyLbl}` : ''}`}
                               onClick={() => {
                                 ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null);
-                                if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); // v0.106: перезапуск — 1 бронза
+                                // v0.106: перезапуск — 1 бронза (БОГАЧ); v0.136: во FRENDY перезапуск = ПОРАЖЕНИЕ (−HP)
+                                if (isBogach || isFrendy) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx });
                                 sfx.alarm();
                                 setTimerRestartTick((x) => x + 1); // v0.108: таймер заново
                               }}
                             >
-                              {Ic.rotate(13)} Перезапуск{isBogach ? ' · 1🪙' : ''}{quickKeyLbl ? ` · ⚡${quickKeyLbl}` : ''}
+                              {Ic.rotate(13)} Перезапуск{isBogach ? ' · 1🪙' : isFrendy ? ' · −HP' : ''}{quickKeyLbl ? ` · ⚡${quickKeyLbl}` : ''}
                             </GhostBtn>
                             <GhostBtn
                               title={isBogach
