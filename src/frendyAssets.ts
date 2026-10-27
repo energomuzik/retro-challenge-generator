@@ -44,6 +44,19 @@ const getImage = (url: string): HTMLImageElement | null => {
   return im.complete && im.naturalWidth > 0 ? im : null;
 };
 
+/* v0.138: ПРЕДЗАГРУЗКА ВСЕХ КАДРОВ СРАЗУ при загрузке модуля. Раньше кадры ходьбы
+   начинали качаться ТОЛЬКО когда цикл ходьбы впервые просил именно этот кадр —
+   пока картинка не догрузилась, frendyFrame возвращал null и drawFrendyBoss рисовал
+   старую пиксельную заглушку «Крюгера» (свитер+федора): при начале ходьбы старый
+   кадр «проскакивал» на каждом ещё не качанном кадре цикла. Теперь ВСЕ картинки
+   (стойка + 15 кадров ходьбы + портрет) качаются заранее, к началу партии всё готово. */
+for (const u of [...idleUrls, ...walkUrls, img('frendy-portrait.png')]) {
+  if (!u) continue;
+  const im = new Image();
+  im.src = u;
+  cache.set(u, im); // сразу в кэш — getImage дождётся im.complete
+}
+
 /** Кадр Френди: walk=true — полный цикл ходьбы (15 кадров по FRENDY_WALK_MS),
     иначе СТАТИЧНАЯ стойка (idx игнорируется — дыхания больше нет). */
 export const frendyFrame = (walking: boolean, time: number, idx = 0): HTMLImageElement | null => {

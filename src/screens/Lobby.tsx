@@ -182,7 +182,7 @@ export function CreateScreen() {
     classic1p: { label: 'RETROPOLIA SOLO', cls: 'border-sky/60 text-sky' },
     quest: { label: 'QUEST', cls: 'border-teal/60 text-teal' },
     quest1p: { label: 'QUEST SOLO', cls: 'border-sky/60 text-sky' },
-    bogach: { label: 'СПРИНТЕР', cls: 'border-gold/70 text-gold' },
+    bogach: { label: 'VERSUS', cls: 'border-gold/70 text-gold' },
     frendy: { label: 'FRENDY', cls: 'border-[#ff6b35]/70 text-[#ff6b35]' }, // v0.123: хеллоуинский хоррор
   };
 
@@ -318,7 +318,7 @@ export function CreateScreen() {
               <span className="tick-label text-faint mr-1 shrink-0">Режим:</span>
               {chip(fMode === 'all', 'Все', () => setFMode('all'))}
               {chip(fMode === 'classic', 'Retropolia', () => setFMode('classic'))}
-              {chip(fMode === 'bogach', 'Спринтер', () => setFMode('bogach'), 'magma')}
+              {chip(fMode === 'bogach', 'VERSUS', () => setFMode('bogach'), 'magma')}
               {chip(fMode === 'journey', 'Journey', () => setFMode('journey'), 'teal')}
               {chip(fMode === 'journey1p', 'Journey Solo', () => setFMode('journey1p'), 'sky')}
               {chip(fMode === 'quest', 'Quest', () => setFMode('quest'), 'teal')}

@@ -617,9 +617,11 @@ const drawFrendyBoss = (ctx: CanvasRenderingContext2D, cx: number, cy: number, t
     if (flip) ctx.scale(-1, 1);
     ctx.drawImage(im, -w / 2, 22 - h, w, h);
     ctx.restore();
-  } else {
-    drawFrendyBossFallback(ctx, time); // картинки ещё грузятся — прежняя заглушка
   }
+  /* v0.138: фолбэк-«Крюгер» (свитер+федора) УДАЛЁН — из-за него при начале ходьбы
+     проскакивал кадр старой анимации, пока очередной кадр цикла ещё догружался.
+     Теперь все кадры предзагружены заранее (frendyAssets), а если картинка всё же
+     не готова — НЕ рисуем ничего (остаётся только тень): старый облик невозможен. */
   /* разовые анимации-заглушки */
   if (fx && fxTs) {
     const k = Math.max(0, Math.min(1, (time - fxTs) / 600)); // 0..1 за 0.6 с
@@ -653,65 +655,9 @@ const drawFrendyBoss = (ctx: CanvasRenderingContext2D, cx: number, cy: number, t
   ctx.restore();
 };
 
-/* ПИКСЕЛЬНАЯ ЗАГУЛУШКА ФРЕНДИ (v0.123–v0.135) — фолбэк на время загрузки спрайтов */
-const drawFrendyBossFallback = (ctx: CanvasRenderingContext2D, time: number) => {
-  const bob = Math.sin(time / 160) * 2; // дыхание
-  ctx.translate(0, -14 + bob);
-  /* свитер в полоску (тело) */
-  for (let i = 0; i < 5; i++) {
-    ctx.fillStyle = i % 2 ? '#3a1220' : '#5c1f2e';
-    ctx.fillRect(-13, -2 + i * 7, 26, 7);
-  }
-  /* голова — мертвенно-бледная */
-  ctx.fillStyle = '#b7b6a1';
-  ctx.beginPath();
-  ctx.arc(0, -12, 11, 0, Math.PI * 2);
-  ctx.fill();
-  /* шрамы */
-  ctx.strokeStyle = 'rgba(90,30,30,0.8)';
-  ctx.lineWidth = 1.2;
-  ctx.beginPath(); ctx.moveTo(-6, -18); ctx.lineTo(-3, -10); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(-2, -19); ctx.lineTo(1, -11); ctx.stroke();
-  /* ГЛАЗА — красное свечение */
-  const gl = 0.6 + 0.4 * Math.sin(time / 200);
-  ctx.save();
-  ctx.shadowColor = '#ff2e2e';
-  ctx.shadowBlur = 8 * gl;
-  ctx.fillStyle = `rgba(255,40,40,${0.75 + 0.25 * gl})`;
-  ctx.fillRect(-6, -15, 4, 3);
-  ctx.fillRect(2, -15, 4, 3);
-  ctx.restore();
-  /* зубчатая ухмылка */
-  ctx.fillStyle = '#1a0b08';
-  ctx.fillRect(-5, -8, 10, 3);
-  ctx.fillStyle = '#e9ecff';
-  for (let i = 0; i < 4; i++) ctx.fillRect(-5 + i * 2.6, -8, 1.6, 3);
-  /* ФЕДОРА */
-  ctx.fillStyle = '#2b1c10';
-  ctx.beginPath();
-  ctx.ellipse(0, -21, 16, 4.5, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#3a2818';
-  ctx.fillRect(-9, -30, 18, 9);
-  ctx.fillStyle = '#1c1208';
-  ctx.fillRect(-9, -24, 18, 2.5);
-  /* РУКА С КОГТЯМИ (справа, покачивается) */
-  const clawA = Math.sin(time / 130) * 0.25 - 0.15;
-  ctx.save();
-  ctx.translate(14, 4);
-  ctx.rotate(clawA);
-  ctx.fillStyle = '#5c1f2e';
-  ctx.fillRect(-3, -3, 7, 12);
-  ctx.strokeStyle = '#cfd6e6';
-  ctx.lineWidth = 1.6;
-  for (let i = 0; i < 4; i++) {
-    ctx.beginPath();
-    ctx.moveTo(1 + i * 1.6, 9);
-    ctx.lineTo(3 + i * 2.2, 17 + Math.sin(time / 90 + i) * 1.2);
-    ctx.stroke();
-  }
-  ctx.restore();
-};
+/* v0.138: пиксельная заглушка «Крюгера» (v0.123–v0.135, свитер+федора) УДАЛЕНА —
+   из-за ленивой загрузки кадров она «проскакивала» кадром старой анимации Френди.
+   Все кадры теперь предзагружаются в frendyAssets.ts, фолбэк больше не нужен. */
 
 /* v0.55 ЦЕЛЫЙ ЯЩИК RUBG — ПЕРЕНАРИСОВАН (п.8): раньше был простой пиксельный силуэт
    с «перекрестием» (5×5 спрайт BOX) — сломанные ящики выглядели красивее целого.

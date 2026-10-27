@@ -248,11 +248,11 @@ interface DonatMsg {
   win?: number; lose?: number;
 }
 
-/* выбита ли ячейка сейчас (Ретрополия — ходы, Джёрни — минута, Спринтер — до конца катки) */
+/* выбита ли ячейка сейчас (Ретрополия — ходы, Джёрни — минута, VERSUS — до конца катки) */
 const brokenActive = (br: { left?: number; at?: number; ms?: number; perm?: boolean; task?: TaskDef } | undefined): boolean => {
   if (!br) return false;
   if (br.task) return true; // ждёт задание хозяина — донат конфликтует
-  if (br.perm) return true; // Спринтер: до конца катки
+  if (br.perm) return true; // VERSUS: до конца катки
   if ((br.left ?? 0) > 0) return true; // Ретрополия/Скилл: до N ходов
   if (br.ms && Date.now() - (br.at ?? 0) < br.ms) return true; // Джёрни: минута починки
   return false;

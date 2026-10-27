@@ -257,10 +257,10 @@ export default function GameScreen() {
   const journeySelf = useRef<{ x: number; y: number; dir?: TokenDir; moving: boolean; dirty: boolean; lastSent: number; tp?: boolean; pinside: Set<string> } | null>(null);
   const snapCamRef = useRef(false);
   const rubgLastPhaseRef = useRef<GameSession['phase'] | null>(null); // смена фазы RUBG (для снапа камеры после высадки)
-  /* экранный D-pad: пока открыт мини-экран (карман/взлом) — направления игнорируются,
-     фишка на фоне стоит (ref объявлен ниже, читается в рантайме после монтирования) */
+  /* экранный D-pad: пока открыт мини-экран (карман/взлом) или ИНВЕНТАРЬ — направления
+     игнорируются, фишка на фоне стоит (ref объявлен ниже, читается в рантайме после монтирования) */
   const journeyPress = (d: TokenDir, on: boolean) => {
-    if (on && pocketBlockRef.current) return;
+    if (on && (pocketBlockRef.current || invBlockRef.current)) return;
     if (on) journeyKeys.current.add(d); else journeyKeys.current.delete(d);
   };
   /* ---------- FX: разовые анимации-спектакль (5-я/6-я фишки, реакции боссов) ----------
@@ -338,7 +338,7 @@ export default function GameScreen() {
   const myPick = isBogach && s && map ? (Object.entries(s.qPicks ?? {}).find(([, pk]) => pk.by === me)?.[0] ?? null) : null;
   const myPickIdx = myPick !== null ? Number(myPick) : -1;
   const myPickList = myPickIdx >= 0 ? bogachCellList(s!, map!, myPickIdx) : [];
-  /* v0.106 СПРИНТЕР: ожидание после пропуска/поражения, потраченное на задание */
+  /* v0.106 VERSUS: ожидание после пропуска/поражения, потраченное на задание */
   const myQWait = isBogach && s ? s.qWait?.[me] : undefined;
   const myQSpent = isBogach && s ? (s.qSpent?.[me] ?? 0) : 0;
   /* v0.104 БОГАЧ: мои иммунитеты торговцев (ждут активации / тикают) — v0.107: живут в ИНВЕНТАРЕ */
@@ -596,7 +596,7 @@ export default function GameScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCode?.a, activeCode?.t, activeCode?.op, activeCode?.v, activeFail?.a, activeFail?.t, activeFail?.op, activeFail?.v, ch?.cellIdx, ch?.status, ch?.started, ch?.paused, ch?.reloadId, myQJob?.cellIdx, myQJob?.startedAt, qArmed, qPaused, myJob?.cellIdx, myJob?.startedAt, rubgJobArmed, rubgPaused, me]);
 
-  /* ---------- v0.117 СПРИНТЕР: ПОРАЖЕНИЕ В ГОНКЕ — чужая победа остановила МОЮ игру ----------
+  /* ---------- v0.117 VERSUS: ПОРАЖЕНИЕ В ГОНКЕ — чужая победа остановила МОЮ игру ----------
      Движок пишет qStops[мне] при остановке задания победителем (окно закрывается
      само — состояние без моего qJobs). Здесь — громкое уведомление со звуком провала:
      раньше остановка была немой, игрок не понимал, что его признали проигравшим.
@@ -664,6 +664,14 @@ export default function GameScreen() {
     taskWinRef.current = open;
     if (open) journeyKeys.current.clear(); // залипшие до окна клавиши сбрасываем
   }, [myQJob, !!myQTask, myJob]);
+  /* v0.138: ИНВЕНТАРЬ ОТКРЫТ — фишка НЕ ХОДИТ (FRENDY, RUBG, VERSUS, QUEST, JOURNEY):
+     WASD/стрелки/крестовина не ведут фишку по карте, пока окно инвентаря на экране
+     (раньше персонаж уходил из-под рук, пока игрок возился с предметами). */
+  const invBlockRef = useRef(false);
+  useEffect(() => {
+    invBlockRef.current = invOpen;
+    if (invOpen) journeyKeys.current.clear(); // залипшие до окна клавиши сбрасываем
+  }, [invOpen]);
   /* v0.59: челлендж открылся (JOURNEY/SKILL/classic) — зажатые до него клавиши тоже сбрасываем,
      чтобы после задания фишка не убегала на старых зажатиях */
   useEffect(() => {
@@ -1234,14 +1242,30 @@ export default function GameScreen() {
      frendyShout — большой крик фразочки (слышат ВСЕ независимо от расстояния);
      frendyFlash — красная вспышка удара/поимки, если цель — я. */
   const frendyBossSmoothRef = useRef<{ x: number; y: number } | null>(null);
+  /* v0.138 ПЛАВНАЯ ПОГОНЯ ФРЕНДИ: раньше позиция между тиками хоста (0.4 с) дотягивалась
+     экспонентой (x0.22 за кадр) — скорость падала до нуля у каждой промежуточной точки,
+     флаг «идёт» отрубался на пороге 0.9 px/кадр, и Френди ВИЗИЧЕСКИ дёргался: шаг —
+     стоп «проверяет, где цель» — снова шаг (а цикл ходьбы обрывался — «ходьба короткая»).
+     Теперь СКЛЯРНАЯ ЭКСТРАПОЛЯЦИЯ (dead reckoning): скорость берётся из последних двух
+     позиций хоста и держится ПОСТОЯННОЙ весь тик — Френди идёт без остановок, ровно к цели;
+     мягкий доворот ~80 мс гасит только рывки при смене направления пути (BFS). */
+  interface HostSeg { x0: number; y0: number; x1: number; y1: number; t0: number; t1: number; dt: number }
+  const frendyHostSegRef = useRef<HostSeg | null>(null);
+  const frendySmTsRef = useRef(0);
+  const frendyStillTsRef = useRef(0); // с какого момента скорость ниже порога (гистерезис «идёт/стоит»)
   /* v0.136 СПРАЙТ ФРЕНДИ НА ПОЛЕ: прошлая позиция босса (скорость → идёт/стоит) и последний
      разворот. v0.137: кадры заказчика СЫРЫЕ — рисунок смотрит ВПРАВО: движется влево — флип;
      стоит — держим как было (в v0.136 было наоборот — «анимация влево, а Френди идёт вправо») */
   const frendyBossPrevRef = useRef<{ x: number; y: number } | null>(null);
   const frendyBossWalkingRef = useRef(false);
   const frendyBossFlipRef = useRef(false);
-  /* v0.132 ЭПИЛОГ: сглаживание Альдера между тиками хоста + последние направления взгляда агентов */
+  /* v0.132 ЭПИЛОГ: сглаживание Альдера между тиками хоста + последние направления взгляда агентов.
+     v0.138: для Молдера — та же склярная экстраполяция, что у Френди (шаг не рвётся). */
   const epiAlderSmoothRef = useRef<{ x: number; y: number } | null>(null);
+  const epiAlderSegRef = useRef<HostSeg | null>(null);
+  const epiAlderSmTsRef = useRef(0);
+  const epiAlderStillTsRef = useRef(0);
+  const epiAlderPrevRef = useRef<{ x: number; y: number } | null>(null);
   const alderFlipRef = useRef(false);   // true — смотрит влево (спрайты по умолчанию вправо)
   const skallerFlipRef = useRef(false); // v0.134: у Скаллер спрайты смотрят ВЛЕВО — true = флип (смотрит вправо)
   const epiSpawnTsRef = useRef(0);      // v0.134: startedAt эпилога, для которого снап Скаллер уже сделан
@@ -2200,20 +2224,60 @@ export default function GameScreen() {
         /* v0.123: сглаживание позиции Френди — тики хоста идут 0.4 с, клиент плавно доводит.
            v0.136: заодно считаем СКОРОСТЬ (идёт/стоит — цикл ходьбы vs стойка) и НАПРАВЛЕНИЕ.
            v0.137: СВАП ВЛЕВО/ВПРАВО ПО ЗАКАЗУ — рисунок смотрит ВПРАВО: при движении ВЛЕВО
-           флипаем (стоя — держим последний разворот); в v0.136 было наоборот. */
+           флипаем (стоя — держим последний разворот); в v0.136 было наоборот.
+           v0.138 ПЛАВНАЯ ПОГОНЯ: склярная экстраполяция вместо экспоненты — скорость между
+           тиками хоста ПОСТОЯННАЯ (из двух последних позиций хоста), ходьба не прерывается
+           «проверками», цель сопровождается и в движении; флаг «идёт» с гистерезисом. */
         const fb0 = sess.frendy?.boss ?? null;
         if (fb0) {
-          const sm = frendyBossSmoothRef.current ?? { x: fb0.x, y: fb0.y };
-          sm.x += (fb0.x - sm.x) * 0.22;
-          sm.y += (fb0.y - sm.y) * 0.22;
+          const nowMs = performance.now();
+          let seg = frendyHostSegRef.current;
+          if (!seg) {
+            seg = { x0: fb0.x, y0: fb0.y, x1: fb0.x, y1: fb0.y, t0: nowMs, t1: nowMs, dt: 400 };
+            frendyHostSegRef.current = seg;
+            frendyBossSmoothRef.current = { x: fb0.x, y: fb0.y };
+            frendyBossPrevRef.current = { x: fb0.x, y: fb0.y };
+          } else if (seg.x1 !== fb0.x || seg.y1 !== fb0.y) {
+            const dt = Math.max(150, Math.min(1200, nowMs - seg.t1));
+            if (Math.hypot(fb0.x - seg.x1, fb0.y - seg.y1) > CELL * 6) {
+              // телепорт/новый выход на охоту (спавн у жертвы) — снап без «подлёта» через карту
+              seg.x0 = fb0.x; seg.y0 = fb0.y; seg.x1 = fb0.x; seg.y1 = fb0.y;
+              seg.t0 = nowMs; seg.t1 = nowMs; seg.dt = 400;
+              frendyBossSmoothRef.current = { x: fb0.x, y: fb0.y };
+              frendyBossPrevRef.current = { x: fb0.x, y: fb0.y };
+              frendyStillTsRef.current = 0;
+            } else {
+              // хост прислал новую позицию — начинается новый отрезок движения
+              seg.x0 = seg.x1; seg.y0 = seg.y1; seg.x1 = fb0.x; seg.y1 = fb0.y;
+              seg.t0 = seg.t1; seg.t1 = nowMs; seg.dt = dt;
+            }
+          }
+          // экстраполяция: едем от новой позиции хоста с ПОСЛЕДНЕЙ скоростью (без торможения)
+          const k = Math.max(0, Math.min(1.15, (nowMs - seg.t1) / seg.dt));
+          const tx2 = seg.x1 + (seg.x1 - seg.x0) * k;
+          const ty2 = seg.y1 + (seg.y1 - seg.y0) * k;
+          const sm = frendyBossSmoothRef.current ?? { x: tx2, y: ty2 };
+          const dts = Math.max(0, Math.min(64, nowMs - (frendySmTsRef.current || nowMs)));
+          frendySmTsRef.current = nowMs;
+          const af = 1 - Math.exp(-dts / 80); // мягкий доворот ~80 мс — гасит рывки смены направления
+          sm.x += (tx2 - sm.x) * af;
+          sm.y += (ty2 - sm.y) * af;
           frendyBossSmoothRef.current = sm;
           const pv = frendyBossPrevRef.current ?? sm;
           const fvdx = sm.x - pv.x, fvdy = sm.y - pv.y;
-          frendyBossWalkingRef.current = Math.hypot(fvdx, fvdy) > 0.9; // стоит на месте → стойка
-          if (fvdx > 0.9) frendyBossFlipRef.current = false; // v0.137: вправо — как есть (рисунок смотрит вправо)
-          else if (fvdx < -0.9) frendyBossFlipRef.current = true; // влево — разворот
+          const spdF = Math.hypot(fvdx, fvdy); // px за кадр
+          /* флаг «идёт» с гистерезисом: включается быстро, выключается после ~0.26 с тишины —
+             цикл ходьбы больше не обрывается на замедлениях между тиками хоста */
+          if (spdF > 0.35) { frendyBossWalkingRef.current = true; frendyStillTsRef.current = 0; }
+          else if (spdF < 0.15) {
+            if (!frendyStillTsRef.current) frendyStillTsRef.current = nowMs;
+            else if (nowMs - frendyStillTsRef.current > 260) frendyBossWalkingRef.current = false;
+          }
+          if (fvdx > 0.4) frendyBossFlipRef.current = false; // v0.137: вправо — как есть (рисунок смотрит вправо)
+          else if (fvdx < -0.4) frendyBossFlipRef.current = true; // влево — разворот
           frendyBossPrevRef.current = { x: sm.x, y: sm.y };
         } else {
+          frendyHostSegRef.current = null;
           frendyBossSmoothRef.current = null;
           frendyBossPrevRef.current = null;
           frendyBossWalkingRef.current = false;
@@ -2245,17 +2309,58 @@ export default function GameScreen() {
             }
           }
           epiAlderSmoothRef.current = null; // Альдер — сразу со стартовой ячейки (без «подлёта»)
+          epiAlderSegRef.current = null;    // v0.138: отрезок экстраполяции тоже с нуля
+          epiAlderPrevRef.current = null;
         }
         let agentsDraw: BoardDrawAgents | null = null;
         if (epiS) {
-          const as = epiAlderSmoothRef.current ?? { x: epiS.alder.x, y: epiS.alder.y };
-          as.x += (epiS.alder.x - as.x) * 0.22;
-          as.y += (epiS.alder.y - as.y) * 0.22;
+          /* v0.138 ХОДЬБА МОЛДЕРА БЕЗ ОСТАНОВОК (как у Френди): склярная экстраполяция
+             между тиками хоста (0.4 с) — скорость постоянная, шаг не прерывается
+             «проверками»; флаг «идёт» — по скорости сглаженной позиции с гистерезисом. */
+          const nowA = performance.now();
+          let aseg = epiAlderSegRef.current;
+          if (!aseg) {
+            aseg = { x0: epiS.alder.x, y0: epiS.alder.y, x1: epiS.alder.x, y1: epiS.alder.y, t0: nowA, t1: nowA, dt: 400 };
+            epiAlderSegRef.current = aseg;
+            epiAlderSmoothRef.current = { x: epiS.alder.x, y: epiS.alder.y };
+            epiAlderPrevRef.current = { x: epiS.alder.x, y: epiS.alder.y };
+          } else if (aseg.x1 !== epiS.alder.x || aseg.y1 !== epiS.alder.y) {
+            const adt = Math.max(150, Math.min(1200, nowA - aseg.t1));
+            if (Math.hypot(epiS.alder.x - aseg.x1, epiS.alder.y - aseg.y1) > CELL * 6) {
+              // телепорт — снап без «подлёта»
+              aseg.x0 = epiS.alder.x; aseg.y0 = epiS.alder.y; aseg.x1 = epiS.alder.x; aseg.y1 = epiS.alder.y;
+              aseg.t0 = nowA; aseg.t1 = nowA; aseg.dt = 400;
+              epiAlderSmoothRef.current = { x: epiS.alder.x, y: epiS.alder.y };
+              epiAlderPrevRef.current = { x: epiS.alder.x, y: epiS.alder.y };
+              epiAlderStillTsRef.current = 0;
+            } else {
+              aseg.x0 = aseg.x1; aseg.y0 = aseg.y1; aseg.x1 = epiS.alder.x; aseg.y1 = epiS.alder.y;
+              aseg.t0 = aseg.t1; aseg.t1 = nowA; aseg.dt = adt;
+            }
+          }
+          const ak = epiS.stage === 'walk' ? Math.max(0, Math.min(1.15, (nowA - aseg.t1) / aseg.dt)) : 0;
+          const atx = aseg.x1 + (aseg.x1 - aseg.x0) * ak;
+          const aty = aseg.y1 + (aseg.y1 - aseg.y0) * ak;
+          const as = epiAlderSmoothRef.current ?? { x: atx, y: aty };
+          const aDts = Math.max(0, Math.min(64, nowA - (epiAlderSmTsRef.current || nowA)));
+          epiAlderSmTsRef.current = nowA;
+          const aAf = 1 - Math.exp(-aDts / 80);
+          as.x += (atx - as.x) * aAf;
+          as.y += (aty - as.y) * aAf;
           epiAlderSmoothRef.current = as;
-          const alderMoving = epiS.stage === 'walk' && Math.hypot(epiS.alder.x - as.x, epiS.alder.y - as.y) > 2.5;
+          const apv = epiAlderPrevRef.current ?? as;
+          const avdx = as.x - apv.x, avdy = as.y - apv.y;
+          const aSpdF = Math.hypot(avdx, avdy);
+          let alderMoving = epiS.stage === 'walk';
+          if (aSpdF > 0.35) { epiAlderStillTsRef.current = 0; }
+          else if (aSpdF < 0.15) {
+            if (!epiAlderStillTsRef.current) epiAlderStillTsRef.current = nowA;
+            else if (nowA - epiAlderStillTsRef.current > 260) alderMoving = false;
+          }
           const alderImg = alderMoving ? agentFrame('alder', true, t) : agentFrame('alder', false, t, 0);
-          if (alderMoving && epiS.alder.x < as.x - 2) alderFlipRef.current = true;
-          if (alderMoving && epiS.alder.x > as.x + 2) alderFlipRef.current = false;
+          if (alderMoving && avdx < -0.4) alderFlipRef.current = true;
+          if (alderMoving && avdx > 0.4) alderFlipRef.current = false;
+          epiAlderPrevRef.current = { x: as.x, y: as.y };
           const skPos = sess.journeyPos?.[sess.players.find((p) => p.isHost)?.id ?? ''] ?? null;
           const skDisp = skPos ? (dispRef.current[sess.players.find((p) => p.isHost)?.id ?? ''] ?? skPos) : null;
           const skMoving = skDisp && skPos ? Math.hypot(skPos.x - skDisp.x, skPos.y - skDisp.y) > 2.5 : false;
@@ -2809,10 +2914,10 @@ export default function GameScreen() {
 
   /* ---------- v0.107: БЫСТРАЯ ЗАГРУЗКА (глобальная клавиша, по умолчанию F6) ----------
      Во время задания = ПЕРЕЗАПУСК задания: та же логика, что у кнопки «Перезапуск»
-     открытого окна (Спринтер — с платой 1 бронза; классика — через reloadSave; RUBG —
+     открытого окна (VERSUS — с платой 1 бронза; классика — через reloadSave; RUBG —
      перезагрузка рома с сохранения). Где окна нет — клавиша молчит. */
   const quickLoadFire = () => {
-    if (myQJob && myQTask) { // QUEST / БОГАЧ (СПРИНТЕР) / FRENDY — личное окно задания
+    if (myQJob && myQTask) { // QUEST / БОГАЧ (VERSUS) / FRENDY — личное окно задания
       ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null);
       // v0.106: перезапуск — 1 бронза (БОГАЧ); v0.136: во FRENDY перезапуск = ПОРАЖЕНИЕ (−HP)
       if (isBogach || isFrendy) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx });
@@ -3047,7 +3152,8 @@ export default function GameScreen() {
       /* мини-экран КАРМАНА открыт (воровство) — WASD/стрелки ведут РУКУ, а не фишку:
          ходьба заблокирована, персонаж на фоне стоит на месте */
       /* v0.59: окно МОЕГО задания открыто — WASD/стрелки ведут игру в окне, не фишку */
-      if (pocketBlockRef.current || taskWinRef.current) return;
+      /* v0.138: окно ИНВЕНТАРЯ открыто — фишка на месте (FRENDY/RUBG/VERSUS/QUEST/JOURNEY) */
+      if (pocketBlockRef.current || taskWinRef.current || invBlockRef.current) return;
       e.preventDefault(); // стрелки не крутят страницу — они ведут фишку
       journeyKeys.current.add(d);
     };
@@ -3076,7 +3182,8 @@ export default function GameScreen() {
       /* мини-экран КАРМАНА открыт — крестовина джойстика ведёт РУКУ (обрабатывается
          отдельным эффектом), фишка на фоне НЕ двигается */
       /* v0.59: окно МОЕГО задания открыто — крестовина/стик ведут игру в окне, не фишку */
-      if (!pocketBlockRef.current && !taskWinRef.current && prefs.gamepad !== false) {
+      /* v0.138: окно ИНВЕНТАРЯ открыто — крестовина/стик фишку не ведут */
+      if (!pocketBlockRef.current && !taskWinRef.current && !invBlockRef.current && prefs.gamepad !== false) {
         const pads = listGamepads();
         const addBtn = (gp: Gamepad, idx: number | undefined, d: TokenDir) => {
           if (idx === undefined || idx < 0 || idx > 17) return;
@@ -3173,8 +3280,8 @@ export default function GameScreen() {
         {map?.mode === 'classic1p' && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky" title="RETROPOLIA на одного: победа — пройти ВСЕ задания карты">RETROPOLIA SOLO</span>}
         {map?.mode === 'quest' && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-teal">QUEST</span>}
         {isQuestSolo && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky">QUEST SOLO</span>}
-        {/* v0.105 СПРИНТЕР: чип режима у игрока */}
-        {isBogach && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="СПРИНТЕР: гонка на опережение — кончились монеты, вылетел. Победит последний на ногах">СПРИНТЕР</span>}
+        {/* v0.105 VERSUS: чип режима у игрока */}
+        {isBogach && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="VERSUS: гонка на опережение — кончились монеты, вылетел. Победит последний на ногах">VERSUS</span>}
         {isQuest && s?.phase === 'playing' && map && (() => {
           const total = map.cells.filter((c) => c.type === 'task').length;
           const done = (s.qDone?.[me] ?? []).length;
@@ -3209,7 +3316,7 @@ export default function GameScreen() {
             ХОД {Math.min(s.turnNo ?? 1, SKILL_TURNS)}/{SKILL_TURNS}
           </span>
         )}
-        {/* v0.106 СПРИНТЕР: пропустил/проиграл — ждёшь исхода задания (фишка замерла) */}
+        {/* v0.106 VERSUS: пропустил/проиграл — ждёшь исхода задания (фишка замерла) */}
         {isBogach && myQWait !== undefined && (
           <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky blink-hard" title="Вы пропустили/проиграли задание: фишка замрёт на ячейке, пока кто-то не победит или все не пропустят — потом можно зайти на ячейку и выбрать задание заново">
             ⏳ ЖДЁМ ИСХОДА
@@ -4181,7 +4288,7 @@ export default function GameScreen() {
                   </>
                 );
               })() : isBogach && !winner ? (() => {
-                /* v0.118 СПРИНТЕР: задания кончились — честная НИЧЬЯ (не «ПОБЕДА»);
+                /* v0.118 VERSUS: задания кончились — честная НИЧЬЯ (не «ПОБЕДА»);
                    движок пишет s.winner = null в bogachFallback, когда непройденных
                    вариантов не осталось ни у одной ячейки, а живых больше одного */
                 const liv = s.players.filter((p) => p.alive);
@@ -4954,7 +5061,7 @@ export default function GameScreen() {
                       ext={(qRomDef?.fileName.split('.').pop() ?? 'md').toLowerCase()}
                       core={qRomDef?.ext === 'nes' ? 'nes' : undefined}
                       remapSpec={remapSpec}
-                      chaos={myQTask?.chaos ? [myQTask.chaos] : []} /* v0.108: пакость задания действует и в личных окнах (Денди в Спринтере/Квесте) */
+                      chaos={myQTask?.chaos ? [myQTask.chaos] : []} /* v0.108: пакость задания действует и в личных окнах (Денди в VERSUS/Квесте) */
                       initialState={(qSaveState as string | null) ?? null}
                       paused={!qArmed || peekMap || qPaused}
                       pausedHint={!qArmed ? 'Нажмите «Старт игры»' : qPaused && !peekMap ? 'ПАУЗА — нажмите «Продолжить»' : undefined}
@@ -5058,7 +5165,7 @@ export default function GameScreen() {
             </div>
           )}
 
-          {/* ============ v0.105 СПРИНТЕР: ВЫБОР ЗАДАНИЯ — кто опередил всех, тот решает, что играют ВСЕ ============ */}
+          {/* ============ v0.105 VERSUS: ВЫБОР ЗАДАНИЯ — кто опередил всех, тот решает, что играют ВСЕ ============ */}
           {isBogach && myPickIdx >= 0 && myPickList.length > 1 && (
             <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.82)] p-3">
               <div className="pixel-panel pixel-corners p-4 w-full max-w-[560px] max-h-[92vh] overflow-y-auto">
@@ -5560,7 +5667,7 @@ export default function GameScreen() {
       )}
 
       {/* v0.107: окно победителя «поставить своё задание / оставить прежнее» УБРАНО —
-          в Спринтере ячейка после победы ломается ДО КОНЦА КАТКИ (решать больше нечего) */}
+          в VERSUS ячейка после победы ломается ДО КОНЦА КАТКИ (решать больше нечего) */}
 
       {tplOpen && <TemplateModal cellIdx={active?.pos ?? 0} onClose={() => setTplOpen(false)} />}
       {/* v0.109 БОГАЧ: панель донатов (статус слушателя, минималка, пул, ручная форма, шпаргалка) */}
@@ -5717,7 +5824,7 @@ function TemplateModal({ cellIdx, onClose }: { cellIdx: number; onClose: () => v
       desc: desc.trim() || 'Задание, придуманное игроком на этой сессии.',
       joy: (joyId || undefined) as TaskDef['joy'],
     };
-    /* v0.107: окно победителя Спринтера удалено — TemplateModal живёт только как «своё задание»
+    /* v0.107: окно победителя VERSUS удалено — TemplateModal живёт только как «своё задание»
        на свою ячейку в Ретрополии/Джёрни/Квесте (setCellTask, как раньше) */
     dispatch({ t: 'setCellTask', id: useApp.getState().selfId, cellIdx, task, cardId: chaosCardId || undefined });
     sfx.success();

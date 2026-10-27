@@ -189,7 +189,7 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
       {/* v0.107: ГЛОБАЛЬНАЯ кнопка «Быстрая загрузка» — одна на все консоли, вне раскладок */}
       <div className="border-2 border-gold/50 bg-[rgba(255,207,63,0.06)] px-2.5 py-2">
         <div className="tick-label text-gold mb-1">⚡ Быстрая загрузка · одна на все консоли</div>
-        <p className="text-[10px] text-dim leading-snug mb-2">В «Запуске эмулятора» — мгновенно грузит ВЫДЕЛЕННОЕ кликом сохранение; во время задания — перезапускает задание (в Спринтере — за 1 бронзу, как кнопка «Перезапуск»). Работает и когда фокус у эмулятора.</p>
+        <p className="text-[10px] text-dim leading-snug mb-2">В «Запуске эмулятора» — мгновенно грузит ВЫДЕЛЕННОЕ кликом сохранение; во время задания — перезапускает задание (в VERSUS — за 1 бронзу, как кнопка «Перезапуск»). Работает и когда фокус у эмулятора.</p>
         <div className="grid grid-cols-2 gap-2 max-w-[320px]">
           <button
             onClick={() => { setCapture({ kind: 'key', action: 'quickLoad' }); sfx.hover(); }}
