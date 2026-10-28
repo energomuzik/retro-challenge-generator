@@ -1,5 +1,5 @@
 import type { CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
-import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, playerPx, doorKeyName, frameWallsOf } from './types';
+import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, rubgItemSize, rubgGridFits, rubgGridFirstFit, FRENDY_INV_COLS, FRENDY_INV_ROWS, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
@@ -94,10 +94,12 @@ export type Action =
   | { t: 'cutsceneSeen'; id: string; key: string } // v0.56 КАТ-СЦЕНА показана (старт карты/пересечение зоны): хост помечает «виденное» (s.cutsceneDone) — за сессию не повторяется
   | { t: 'donatLog'; text: string } // v0.109 БОГАЧ: строка в общий лог о применённом донате (хост применяет задание карты сам и рассылает карту; действием — только лог, чтобы состояние уехало гостям)
   | { t: 'frendyTick'; id: string } // v0.123 FRENDY: тик хоста (~0.4 с) — ИИ Френди (пробуждение/охота/удары/поимка), подбор предметов с поля
-  | { t: 'frendyBurn'; id: string; what?: 'chip' | 'cart' } // v0.123 FRENDY: сжечь в ПЕЧИ (E у печи); v0.130: what 'cart' — картридж Dendy (разжечь сильный огонь), по умолчанию 'chip' — микросхему (только в сильном огне)
+  | { t: 'frendyBurn'; id: string; what?: 'chip' | 'cart'; itemId?: string } // v0.123 FRENDY: сжечь в ПЕЧИ (E у печи); v0.130: what 'cart' — картридж Dendy (разжечь сильный огонь), по умолчанию 'chip' — микросхему (только в сильном огне); v0.141: itemId — сжечь КОНКРЕТНЫЙ предмет из рюкзака (перетащили на печь / «Сжечь» из меню)
   | { t: 'frendyUse'; id: string; itemId: string } // v0.123 FRENDY: использовать предмет (аптечка — лечение, кофе — иммунитет к поимке 5 мин; микросхема — нельзя)
   | { t: 'frendyDrop'; id: string; itemId: string } // v0.123 FRENDY: выбросить предмет на землю (микросхема — тоже: другого применения в инвентаре нет)
-  | { t: 'frendyBusy'; id: string; on: boolean } // v0.140 FRENDY: «Я ЗАНЯТ» — пульс клиента, пока открыт ИНВЕНТАРЬ (каждые 2.5 с); хост считает занятость свежей FRENDY_UIBUSY_MS — Френди чует копающихся в рюкзаке (переключается на них и телепортируется с атакой)
+  | { t: 'frendyPickup'; id: string } // v0.141 FRENDY: ПОДНЯТЬ предмет с земли (E / кнопка джойстика / клик по предмету рядом): ближайший предмет в радиусе шага; в рюкзаке нет места — предмет ОСТАЁТСЯ на земле
+  | { t: 'frendyInvMove'; id: string; itemId: string; gx: number; gy: number } // v0.141 FRENDY: переложить предмет в сетке рюкзака (drag&drop внутри окна); хост проверяет, что место свободно
+  | { t: 'frendyBusy'; id: string; on: boolean } // v0.140 FRENDY: «Я ЗАНЯТ» — пульс клиента, пока открыт ИНВЕНТАРЬ или окно ПЕЧИ (каждые 2.5 с); хост считает занятость свежей FRENDY_UIBUSY_MS — Френди чует копающихся в рюкзаке (переключается на них и телепортируется с атакой)
   | { t: 'frendyEpilogue'; id: string } // v0.132 ЭПИЛОГ: запуск после титров-стингера ПОБЕДЫ — фишки убраны («спаслись из западни»), Альдер идёт к печи, хост ведёт Скаллер
   | { t: 'epiTick'; id: string } // v0.132: тик хоста в эпилоге — Альдер сам шагает к печи (BFS), у печи замирает в IDLE
   | { t: 'epiTalk'; id: string } // v0.132: хост (Скаллер) у Альдера нажал E — начать разговор в стиле визуальной новеллы (ВСЕ видят синхронно)
@@ -1189,6 +1191,17 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const it = rubgMkItem(kind);
     const inv = p.items ?? (p.items = []);
     if (inv.filter((x) => x.belt).length < RUBG_BELT_SLOTS) it.belt = true;
+    /* v0.141 FRENDY: DIABLO-рюкзак — полученный предмет занимает место в сетке; места нет —
+       предмет ПАДАЕТ НА ЗЕМЛЮ у ног (то же правило, что у подъёма: «нет места — не влезло») */
+    if (isFrendyMode(map.mode) && s.frendy) {
+      const spot = rubgGridFirstFit(inv, kind);
+      if (spot) { it.gx = spot.gx; it.gy = spot.gy; inv.push(it); return it; }
+      const pp = s.journeyPos?.[p.id];
+      const gp = pp ? { x: pp.x + (Math.random() * 44 - 22), y: pp.y + (Math.random() * 44 - 22) } : (frendyFreeSpot([]) ?? { x: 100, y: 100 });
+      s.frendy.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round(Math.max(12, gp.x)), y: Math.round(Math.max(12, gp.y)), kind });
+      log(`🎒 Рюкзак ${p.name} ПОЛОН — «${RUBG_ITEMS[kind].name}» ${RUBG_ITEMS[kind].icon} падает на землю рядом (освободите место и поднимите)`);
+      return it;
+    }
     inv.push(it);
     return it;
   };
@@ -1635,26 +1648,10 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       b.x = Math.max(8, Math.min(W - 8, Math.round(nx)));
       b.y = Math.max(8, Math.min(H - 8, Math.round(ny)));
     };
-    /* — ПОДБОР предметов с поля: живой игрок прошёл по предмету — в инвентарь — */
-    for (const p of s.players) {
-      if (!p.alive || p.spect) continue;
-      const pp = s.journeyPos?.[p.id];
-      if (!pp) continue;
-      for (let ci = f.chips.length - 1; ci >= 0; ci--) {
-        const ch = f.chips[ci];
-        if (Math.hypot(pp.x - ch.x, pp.y - ch.y) > CELL_PX) continue;
-        f.chips.splice(ci, 1);
-        const kind: RubgItemKind = ch.kind ?? 'frendyChip';
-        rubgGiveItem(p, kind);
-        if (kind === 'frendyChip') {
-          const left = f.chips.filter((x) => !x.kind || x.kind === 'frendyChip').length;
-          log(`🔩 ${p.name} нашёл МИКРОСХЕМУ Френди — несите к ПЕЧИ! Сами они горят только в СИЛЬНОМ огне: сожгите в печи КАРТРИДЖ Dendy 📼 (дают за победу над заданием). На карте ещё: ${left}`);
-        } else {
-          log(`${RUBG_ITEMS[kind].icon} ${p.name} подобрал «${RUBG_ITEMS[kind].name}»${kind === 'dendyCart' ? ' — бросьте в ПЕЧЬ, чтобы разжечь сильный огонь' : ''}`);
-        }
-        break;
-      }
-    }
+    /* — v0.141: ПОДБОР С ПОЛЯ ТЕПЕРЬ ВРУЧНУЮ (Diablo-рюкзак): предметов на карте касается фишка —
+       но поднимаются они ТОЛЬКО кнопкой (E / кнопка джойстика / клик по предмету) — диспатч
+       frendyPickup. Автоподбор удалён: в рюкзаке-сетке может не быть места — тогда предмет
+       НЕ ПОДНЯТЬ (остаётся лежать, клиент показывает «отскок» и подсказку). — */
     /* — ФРЕНДИ СПИТ: время просыпаться. v0.130: сначала РЕМОНТ — с картриджем в кармане
        (или когда разбиты ВСЕ ячейки — бесплатный ремонт) он идёт чинить ячейку, и только
        потом охотится; иначе партия рискует остаться без рабочих заданий. — */
@@ -2652,7 +2649,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
             : soloMode && map.mode === 'journey1p'
               ? `🧭 JOURNEY SOLO! Играет только хост (${sm} мин / ${st} поп.) — остальные зрители. Победа: пройти ВСЕ задания карты (заданий: ${taskTotal}).`
               : map.mode === 'frendy'
-          ? `🎃 FRENDY! Микросхем из кости Френди на карте: ${s.frendy?.total ?? '?'} — ищите (подбираются проходом) и несите к ПЕЧИ: жгут ИЗ ИНВЕНТАРЯ у печи (выбери микросхему — «🔥 Сжечь»). НО: печь на СЛАБОМ огне — микросхемы в нём НЕ горят! ПОБЕЖДАЙТЕ задания ячеек: за победу дают КАРТРИДЖ DENDY 📼 (ячейка ломается) — сожгите его у печи из инвентаря, и 2 МИНУТЫ будет СИЛЬНЫЙ ОГОНЬ: жгите микросхемы! Ресурс — полоска HP. Через ${Math.round(FRENDY_FIRST_WAKE_MS / 1000)} с проснётся ОН — появится прямо на ком-то из вас. Поймает — утащит на задание, заберёт микросхему, а КАРТРИДЖ отберёт и починит им разбитую ячейку (все ячейки сломаны — починит бесплатно). Кофе — 5 минут без поимки. Сожжёте ВСЕ — победа; погибнут все — кошмар победил!`
+          ? `🎃 FRENDY! Микросхем из кости Френди на карте: ${s.frendy?.total ?? '?'} — ищите и ПОДНИМАЙТЕ (подойдите и нажмите E / кнопку подъёма) и несите к ПЕЧИ: жгут ИЗ ИНВЕНТАРЯ у печи (перетащите микросхему НА ПЕЧЬ в открывшемся окне). НО: печь на СЛАБОМ огне — микросхемы в нём НЕ горят! ПОБЕЖДАЙТЕ задания ячеек: за победу дают КАРТРИДЖ DENDY 📼 (ячейка ломается) — перетащите его на печь у неё из инвентаря, и 2 МИНУТЫ будет СИЛЬНЫЙ ОГОНЬ: жгите микросхемы! Ресурс — полоска HP. Через ${Math.round(FRENDY_FIRST_WAKE_MS / 1000)} с проснётся ОН — появится прямо на ком-то из вас. Поймает — утащит на задание, заберёт микросхему, а КАРТРИДЖ отберёт и починит им разбитую ячейку (все ячейки сломаны — починит бесплатно). Кофе — 5 минут без поимки. Сожжёте ВСЕ — победа; погибнут все — кошмар победил!`
           : isJourneyLike(map.mode)
                 ? `🧭 JOURNEY! У каждого: ${sm} мин и ${st} поп. Все фишки стартуют ОДНОВРЕМЕННО — кто первый пересечёт ячейку задания, тот и играет.`
                 : `Игра начинается! У каждого: ${sm} мин и ${st} поп. Бросок за первый ход…`);
@@ -3499,11 +3496,24 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const dFurn = Math.hypot(pp.x - (fr.x + fr.w / 2), pp.y - (fr.y + fr.h / 2));
       if (dFurn > Math.max(140, Math.max(fr.w, fr.h) * 0.8 + 40)) { log(`🔥 ${p.name}: печь далеко — подойди К ПЕЧИ и жги из ИНВЕНТАРЯ`); break; }
       /* v0.130: КАРТРИДЖ DENDY в слабый огонь — разжечь печь: 2 минуты СИЛЬНОГО огня
-         (скрытый таймер), только в нём горят микросхемы Френди */
-      if (a.what === 'cart') {
-        const ci = inv.findIndex((x) => x.kind === 'dendyCart');
-        if (ci < 0) { log(`🔥 ${p.name}: нет картриджа Dendy 📼 — они дают за ПОБЕДУ над заданием ячейки`); break; }
-        inv.splice(ci, 1);
+         (скрытый таймер), только в нём горят микросхемы Френди.
+         v0.141: сжигают КОНКРЕТНЫЙ предмет (itemId — перетащили на печь из рюкзака или
+         «Сжечь» из контекстного меню); старый вызов what:'chip'/'cart' — как было. */
+      let burnIdx = -1;
+      let burnKind: RubgItemKind;
+      if (a.itemId) {
+        burnIdx = inv.findIndex((x) => x.id === a.itemId);
+        if (burnIdx < 0) break;
+        const k = inv[burnIdx].kind;
+        if (k !== 'frendyChip' && k !== 'dendyCart') { log(`🔥 «${RUBG_ITEMS[k].name}» ${RUBG_ITEMS[k].icon} в печи НЕ ГОРЯТ — печь берёт только картриджи Dendy и микросхемы`); break; }
+        burnKind = k;
+      } else {
+        burnKind = a.what === 'cart' ? 'dendyCart' : 'frendyChip';
+        burnIdx = inv.findIndex((x) => x.kind === burnKind);
+        if (burnIdx < 0) { log(burnKind === 'dendyCart' ? `🔥 ${p.name}: нет картриджа Dendy 📼 — они дают за ПОБЕДУ над заданием ячейки` : `🔥 ${p.name}: сжигать нечего — сначала найди микросхему Френди 🔩`); break; }
+      }
+      if (burnKind === 'dendyCart') {
+        inv.splice(burnIdx, 1);
         f.strongUntil = nowB + FRENDY_STRONG_MS;
         /* v0.140: разжёг печь — Френди НЕ СПИТ (жар привлекает кошмар): просыпается через 1.5 с,
            а если кто-то ещё копается в инвентаре — проснется прямо на нём (см. frendyTickDo) */
@@ -3511,11 +3521,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         log(`📼 ${p.name} бросает КАРТРИДЖ DENDY В ОГОНЬ! Печь гудит — СИЛЬНЫЙ ОГОНЬ! Скорее жгите МИКРОСХЕМЫ Френди 🔩, пока пламя огромное — потом печь снова станет слабой!`);
         break;
       }
-      const ii = inv.findIndex((x) => x.kind === 'frendyChip');
-      if (ii < 0) { log(`🔥 ${p.name}: сжигать нечего — сначала найди микросхему Френди 🔩`); break; }
-      /* v0.130: микросхемы горят ТОЛЬКО в сильном огне (слабый их не берёт) */
+      /* v0.130: микросхемы горят ТОЛЬКО в сильном огне (слабый их не берёт); предмет ОСТАЁТСЯ в рюкзаке */
       if (!((f.strongUntil ?? 0) > nowB)) { log(`🔥 Огонь СЛАБЫЙ — микросхема не загорается! Сначала бросьте в печь КАРТРИДЖ Dendy 📼 (дают за победу над заданием ячейки)`); break; }
-      inv.splice(ii, 1);
+      inv.splice(burnIdx, 1);
       f.burned++;
       log(`🔥 ${p.name} СЖИГАЕТ микросхему Френди! (${f.burned}/${f.total})`);
       if (f.burned >= f.total) {
@@ -3566,6 +3574,57 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const spot = pp ? { x: pp.x + (Math.random() * 44 - 22), y: pp.y + (Math.random() * 44 - 22) } : (frendyFreeSpot([]) ?? { x: 100, y: 100 });
       s.frendy.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round(Math.max(12, spot.x)), y: Math.round(Math.max(12, spot.y)), kind: it.kind });
       log(`✋ ${p.name} выбросил «${RUBG_ITEMS[it.kind].name}» ${RUBG_ITEMS[it.kind].icon} — лежит на земле, подберёт любой`);
+      break;
+    }
+    /* ---------- v0.141: ПОДНЯТЬ ПРЕДМЕТ С ЗЕМЛИ (E / кнопка джойстика / клик по предмету).
+       Diablo-правило: в рюкзаке-сетке нет места — предмет НЕ ПОДНЯТЬ (остаётся лежать;
+       клиент показывает «отскок» и подсказку). Радиус — как у старого автоподбора (1 клетка). ---------- */
+    case 'frendyPickup': {
+      if (!isFrendyMode(map.mode) || !s.frendy || s.phase !== 'playing') break;
+      const p = actor();
+      if (!p || !p.alive || p.spect) break;
+      const pp = s.journeyPos?.[p.id];
+      if (!pp) break;
+      const f = s.frendy;
+      let bi = -1, bd = Infinity;
+      for (let ci = f.chips.length - 1; ci >= 0; ci--) {
+        const d = Math.hypot(pp.x - f.chips[ci].x, pp.y - f.chips[ci].y);
+        if (d <= CELL_PX && d < bd) { bd = d; bi = ci; }
+      }
+      if (bi < 0) break; // рядом с фишкой ничего не лежит — кнопка/клик мимо
+      const kind: RubgItemKind = f.chips[bi].kind ?? 'frendyChip';
+      const inv = p.items ?? (p.items = []);
+      const spot = rubgGridFirstFit(inv, kind);
+      if (!spot) {
+        log(`🎒 Рюкзак ${p.name} ПОЛОН — «${RUBG_ITEMS[kind].name}» ${RUBG_ITEMS[kind].icon} НЕ ПОДНЯТЬ: освободите место в сетке (выбросьте лишнее или сожгите картридж)`);
+        break; // предмет ОСТАЁТСЯ на земле
+      }
+      f.chips.splice(bi, 1);
+      const it = rubgMkItem(kind);
+      it.gx = spot.gx; it.gy = spot.gy;
+      inv.push(it);
+      if (kind === 'frendyChip') {
+        const left = f.chips.filter((x) => !x.kind || x.kind === 'frendyChip').length;
+        log(`🔩 ${p.name} поднял МИКРОСХЕМУ Френди — несите к ПЕЧИ! Сами они горят только в СИЛЬНОМ огне: сожгите в печи КАРТРИДЖ Dendy 📼 (дают за победу над заданием). На карте ещё: ${left}`);
+      } else {
+        log(`${RUBG_ITEMS[kind].icon} ${p.name} поднял «${RUBG_ITEMS[kind].name}»${kind === 'dendyCart' ? ' — бросьте в ПЕЧЬ, чтобы разжечь сильный огонь' : ''}`);
+      }
+      break;
+    }
+    /* ---------- v0.141: ПЕРЕЛОЖИТЬ предмет в сетке рюкзака (drag&drop внутри окна).
+       Хост проверяет, что прямоугольник предмета влезает и не накладывается на другие ---------- */
+    case 'frendyInvMove': {
+      if (!isFrendyMode(map.mode) || s.phase !== 'playing') break;
+      const p = actor();
+      if (!p || !p.alive || p.spect) break;
+      const inv = p.items ?? [];
+      const it = inv.find((x) => x.id === a.itemId);
+      if (!it) break;
+      const sz = rubgItemSize(it.kind);
+      if (!Number.isFinite(a.gx) || !Number.isFinite(a.gy)) break;
+      if (!rubgGridFits(inv, sz.w, sz.h, Math.round(a.gx), Math.round(a.gy), it.id)) break; // не влезает — предмет остаётся на месте
+      it.gx = Math.max(0, Math.min(FRENDY_INV_COLS - sz.w, Math.round(a.gx)));
+      it.gy = Math.max(0, Math.min(FRENDY_INV_ROWS - sz.h, Math.round(a.gy)));
       break;
     }
     /* ---------- v0.140: «Я ЗАНЯТ» — пульс от клиента, пока у него открыт ИНВЕНТАРЬ.

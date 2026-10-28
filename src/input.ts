@@ -41,6 +41,13 @@ export interface EmuPrefs {
      «Запуск эмулятора» — грузит выделенное сохранение; во время задания — перезапускает задание. */
   quickKey?: string;
   quickPad?: number;
+  /* v0.141: ГЛОБАЛЬНЫЕ кнопки игры на поле (вне раскладок консолей): клавиша (e.key в нижнем
+     регистре) + кнопка геймпада (индекс W3C). ОТКРЫТЬ/ЗАКРЫТЬ ИНВЕНТАРЬ — по умолчанию Tab /
+     кнопка 3 (Y/треугольник); ПОДНЯТЬ ПРЕДМЕТ (FRENDY) — по умолчанию E / кнопка 4 (L1/LB). */
+  invKey?: string;
+  invPad?: number;
+  pickupKey?: string;
+  pickupPad?: number;
 }
 
 /* ---------- SEGA Genesis (Megadrive): 6 кнопок + Start, без Select ---------- */
@@ -368,6 +375,11 @@ const PREFS_KEY = 'retropolia-emu-prefs';
 export const PREFS_EVENT = 'retropolia-prefs-changed';
 /* v0.107: клавиша «Быстрой загрузки» по умолчанию — F6 (вне раскладок всех консолей) */
 export const QUICK_KEY_DEFAULT = 'f6';
+/* v0.141: глобальные кнопки на поле — инвентарь (Tab / Y-треугольник) и подъём предмета (E / L1-LB) */
+export const INV_KEY_DEFAULT = 'tab';
+export const INV_PAD_DEFAULT = 3;
+export const PICKUP_KEY_DEFAULT = 'e';
+export const PICKUP_PAD_DEFAULT = 4;
 
 /* Самовосстановление раскладки: ОДИН физический индекс = ОДНО действие.
    Если в сохранённых настройках несколько действий висят на одной кнопке
@@ -398,6 +410,10 @@ export function loadEmuPrefs(): EmuPrefs {
     gamepad: true, smoothing: false,
     quickKey: QUICK_KEY_DEFAULT, // v0.107: F6 — быстрая загрузка (перезаписывается из localStorage)
     quickPad: undefined,
+    invKey: INV_KEY_DEFAULT, // v0.141: Tab — открыть/закрыть инвентарь
+    invPad: INV_PAD_DEFAULT,
+    pickupKey: PICKUP_KEY_DEFAULT, // v0.141: E — поднять предмет (FRENDY)
+    pickupPad: PICKUP_PAD_DEFAULT,
   };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
@@ -420,6 +436,10 @@ export function loadEmuPrefs(): EmuPrefs {
       smoothing: !!p.smoothing,
       quickKey: typeof p.quickKey === 'string' && p.quickKey ? p.quickKey.toLowerCase() : QUICK_KEY_DEFAULT,
       quickPad: typeof p.quickPad === 'number' && p.quickPad >= 0 ? p.quickPad : undefined,
+      invKey: typeof p.invKey === 'string' && p.invKey ? p.invKey.toLowerCase() : INV_KEY_DEFAULT,
+      invPad: typeof p.invPad === 'number' && p.invPad >= 0 ? p.invPad : INV_PAD_DEFAULT,
+      pickupKey: typeof p.pickupKey === 'string' && p.pickupKey ? p.pickupKey.toLowerCase() : PICKUP_KEY_DEFAULT,
+      pickupPad: typeof p.pickupPad === 'number' && p.pickupPad >= 0 ? p.pickupPad : PICKUP_PAD_DEFAULT,
     };
   } catch {
     return base;

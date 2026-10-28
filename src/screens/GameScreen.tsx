@@ -6,7 +6,6 @@ import { patrolPos } from '../patrol';
 import { cellHushed, cellRectOf, cellTaskOf, bogachCellList, fmtClock, spentInfo } from '../engine';
 import { effectLabel } from './TaskEditor';
 import { cardArt, cartridgeArt } from '../assets';
-import cartDendyImg from '../assets/carts/dendy.png'; // v0.130 FRENDY: пиратский картридж Dendy (картинка из базы ромов) — предмет «за победу над заданием»
 import SegaBox, { type SegaApi } from '../SegaBox';
 import { isFloatT, opOk, readAt } from '../memcode';
 import KeyBinder from '../KeyBinder';
@@ -21,7 +20,7 @@ import { saveSessionSnapshot } from './Lobby';
 import QuizOverlay from './QuizOverlay';
 import { AnimPreview, EmuVolumeChip, Field, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin, CoinRow } from '../ui';
 import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isBossCatchMode, isSoloMode, isFrendyMode, FRENDY_PHRASES, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf } from '../types';
-import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem } from '../types';
+import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem, RubgItemKind } from '../types';
 import Randomizer from './Randomizer';
 import TradeWindow from './TradeWindow';
 /* v0.135: карточка «Лор Френди» убрана из игры (и отсюда, и из обучения) — предысторию
@@ -37,6 +36,7 @@ import { FrendyIntroCine, EndCredits, XFinale } from './FrendyCine'; // v0.124: 
 import { agentFrame, agentPortrait, AGENT_NAMES, EPI_SCRIPT, type AgentWho } from '../agentsAssets'; // v0.132: агенты Альдер/Скаллер (эпилог FRENDY)
 import { AgentsVn, VnText } from './AgentsVn'; // v0.132: разговор агентов в стиле визуальной новеллы + печатная машинка
 import { BogachPanel } from './BogachPanel'; // v0.109 БОГАЧ: панель донатов хоста
+import { FrendyInvGrid, FrendyFurnaceModal } from './FrendyInv'; // v0.141 FRENDY: DIABLO-инвентарь (сетка 10×6, печь + рюкзак)
 import { hasDice } from '../bogach'; // v0.109: проверка пакостей/радостей «только для кубиков»
 import { DONATE_DICE_ONLY } from '../types';
 import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
@@ -175,6 +175,8 @@ export default function GameScreen() {
   const lastRollRef = useRef(0);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [invOpen, setInvOpen] = useState(false);
+  /* v0.141: окно ПЕЧИ (FRENDY) — объявлено РЯДОМ с инвентарём: блок хода и пульс «занят» используют его выше */
+  const [furnOpen, setFurnOpen] = useState(false);
   const [aimItemId, setAimItemId] = useState<string | null>(null); // RUBG: выбранное оружие для атаки
   // осмотр ячейки на карте (клик по ней) — доступен всем, включая зрителей
   const [inspectIdx, setInspectIdx] = useState<number | null>(null);
@@ -260,7 +262,7 @@ export default function GameScreen() {
   /* экранный D-pad: пока открыт мини-экран (карман/взлом) или ИНВЕНТАРЬ — направления
      игнорируются, фишка на фоне стоит (ref объявлен ниже, читается в рантайме после монтирования) */
   const journeyPress = (d: TokenDir, on: boolean) => {
-    if (on && (pocketBlockRef.current || invBlockRef.current)) return;
+    if (on && (pocketBlockRef.current || invBlockRef.current || furnBlockRef.current)) return;
     if (on) journeyKeys.current.add(d); else journeyKeys.current.delete(d);
   };
   /* ---------- FX: разовые анимации-спектакль (5-я/6-я фишки, реакции боссов) ----------
@@ -672,6 +674,12 @@ export default function GameScreen() {
     invBlockRef.current = invOpen;
     if (invOpen) journeyKeys.current.clear(); // залипшие до окна клавиши сбрасываем
   }, [invOpen]);
+  /* v0.141: ОКНО ПЕЧИ открыто — фишка тоже СТОИТ (та же логика, что у инвентаря) */
+  const furnBlockRef = useRef(false);
+  useEffect(() => {
+    furnBlockRef.current = furnOpen;
+    if (furnOpen) journeyKeys.current.clear();
+  }, [furnOpen]);
   /* v0.140: партия кончилась (например, сожгли ПОСЛЕДНЮЮ микросхему прямо из рюкзака) —
      инвентарь закрывается сам, чтобы не закрывать финал/титры */
   useEffect(() => {
@@ -737,13 +745,25 @@ export default function GameScreen() {
     }
     return null;
   }, [isFrendy, s, map, mePlayer, myJourneyPos?.x, myJourneyPos?.y]);
+  /* v0.141 FRENDY: ПРЕДМЕТ НА ЗЕМЛЕ рядом (E / кнопка подъёма / клик — ПОДНЯТЬ).
+     Diablo-рюкзак: автоподбора проходом больше нет — предметы поднимаются ТОЛЬКО кнопкой;
+     если в сетке рюкзака нет места, движок откажет — предмет останется лежать (клиент покажет отскок). */
+  const nearItem = useMemo(() => {
+    if (!isFrendy || !s || s.phase !== 'playing' || !mePlayer || !mePlayer.alive || mePlayer.spect || !myJourneyPos || !s.frendy) return null;
+    let best: { id: string; kind: RubgItemKind; x: number; y: number; d: number } | null = null;
+    for (const ch of s.frendy.chips) {
+      const d = Math.hypot(myJourneyPos.x - ch.x, myJourneyPos.y - ch.y);
+      if (d > CELL * 0.95) continue;
+      if (!best || d < best.d) best = { id: ch.id, kind: ch.kind ?? 'frendyChip', x: ch.x, y: ch.y, d };
+    }
+    return best;
+  }, [isFrendy, s, mePlayer, myJourneyPos?.x, myJourneyPos?.y]);
   /* v0.132 ЭПИЛОГ: АЛЬДЕР рядом со СКАЛЛЕР (E — «поговорить») */
   const epiNearAlder = useMemo(() => {
     if (!epiMode || !epi || epi.stage === 'talk' || epi.stage === 'done' || !map || !myJourneyPos) return false;
     if (!isHost) return false; // говорить подходит только хост (Скаллер)
     return Math.hypot(myJourneyPos.x - epi.alder.x, myJourneyPos.y - epi.alder.y) <= CELL * 2.2;
   }, [epiMode, epi, map, myJourneyPos?.x, myJourneyPos?.y, isHost]);
-  const [furnOpen, setFurnOpen] = useState(false);
   const [dlgNpcId, setDlgNpcId] = useState<string | null>(null);
   const [dlgNode, setDlgNode] = useState<string | null>(null);
   const [tradeNpcId, setTradeNpcId] = useState<string | null>(null); // v0.51: открыто окно торговли с NPC
@@ -966,6 +986,142 @@ export default function GameScreen() {
     }, 66);
     return () => window.clearInterval(iv);
   }, [epiMode, !!epiNearAlder, epi?.stage]);
+
+  /* ---------- v0.141 FRENDY: ПОДНЯТЬ ПРЕДМЕТ (Diablo-рюкзак) ----------
+     E (настраивается в «Управлении» — «Поднять предмет»), кнопка джойстика (по умолчанию L1/LB)
+     или клик по предмету на карте. В рюкзаке нет места — движок откажет: предмет ОСТАНЕТСЯ
+     на земле, клиент покажет «отскок» и подсказку (как в Diablo 1). */
+  const [pickupBounce, setPickupBounce] = useState<{ key: number; kind: RubgItemKind } | null>(null);
+  const pickTryRef = useRef<{ id: string; at: number } | null>(null);
+  const tryPickup = () => {
+    if (!isFrendy || !me || !nearItem || s?.phase !== 'playing') return;
+    if (dlgOpenIdRef.current || cutActiveRef.current || furnOpen || invOpen || taskWinRef.current) return;
+    pickTryRef.current = { id: nearItem.id, at: Date.now() };
+    sfx.click();
+    dispatch({ t: 'frendyPickup', id: me });
+  };
+  const tryPickupRef = useRef(tryPickup);
+  tryPickupRef.current = tryPickup;
+  /* следим за попыткой: предмет остался лежать рядом → движок отказал (нет места) — отскок + тост */
+  useEffect(() => {
+    const tr = pickTryRef.current;
+    if (!tr) return;
+    const still = s?.frendy?.chips.find((c) => c.id === tr.id);
+    if (!still) { pickTryRef.current = null; return; } // подобран (мной или кем-то)
+    if (Date.now() - tr.at > 650) {
+      pickTryRef.current = null;
+      setPickupBounce({ key: Date.now(), kind: still.kind ?? 'frendyChip' });
+      useApp.getState().toast('🎒 В рюкзаке НЕТ МЕСТА — предмет не влезает! Освободите сетку', 'err');
+    }
+  }, [s]);
+  useEffect(() => {
+    if (!pickupBounce) return;
+    const t = window.setTimeout(() => setPickupBounce(null), 950);
+    return () => window.clearTimeout(t);
+  }, [pickupBounce]);
+  /* клавиша подъёма (по умолчанию E; у диалога/печи/Альдера приоритет — как и было) */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!isFrendy || !nearItem || s?.phase !== 'playing') return;
+      if (nearNpc || nearFurnace || epiNearAlder) return; // у интерактива — его клавиша
+      const prefs = loadEmuPrefs();
+      if (e.key.toLowerCase() !== (prefs.pickupKey ?? 'e').toLowerCase()) return;
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+      e.preventDefault();
+      tryPickupRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isFrendy, !!nearItem, s?.phase, !!nearNpc, !!nearFurnace, epiNearAlder]);
+  /* кнопка джойстика подъёма (по умолчанию L1/LB = W3C 4) — край-триггер */
+  const pickPadPrevRef = useRef(false);
+  useEffect(() => {
+    if (!isFrendy || !nearItem || s?.phase !== 'playing') return;
+    if (nearNpc || nearFurnace || epiNearAlder) return;
+    const init = new Set<number>();
+    collectPadButtons(init);
+    pickPadPrevRef.current = init.has(loadEmuPrefs().pickupPad ?? 4);
+    const iv = window.setInterval(() => {
+      const cur = new Set<number>();
+      collectPadButtons(cur);
+      const now = cur.has(loadEmuPrefs().pickupPad ?? 4);
+      if (now && !pickPadPrevRef.current) tryPickupRef.current();
+      pickPadPrevRef.current = now;
+    }, 66);
+    return () => window.clearInterval(iv);
+  }, [isFrendy, !!nearItem, s?.phase, !!nearNpc, !!nearFurnace, epiNearAlder]);
+
+  /* ---------- v0.141: КЛАВИША «ИНВЕНТАРЬ» (по умолчанию Tab) и кнопка джойстика (Y/треугольник) ----------
+     Tab открывает/закрывает ИНВЕНТАРЬ; когда открыто ОКНО ПЕЧИ — Tab (и джойстик) закрывают его. */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const prefs = loadEmuPrefs();
+      if (e.key.toLowerCase() !== (prefs.invKey ?? 'tab').toLowerCase()) return;
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+      if (!s || s.phase !== 'playing') return;
+      if (cutActiveRef.current || taskWinRef.current || dlgOpenIdRef.current || pocketBlockRef.current) return;
+      e.preventDefault();
+      if (furnOpen) { setFurnOpen(false); sfx.click(); return; } // окно печи закрывается той же кнопкой
+      setInvOpen((o) => !o);
+      sfx.click();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [s?.phase, furnOpen]);
+  /* кнопка джойстика «инвентарь» — край-триггер (у печи лицевые кнопки открывают печь — не мешаем; когда инвентарь открыт — работает эффект ЗАКРЫТИЯ ниже) */
+  const invPadPrevRef = useRef(false);
+  useEffect(() => {
+    if (!s || s.phase !== 'playing' || invOpen || (isFrendy && !!nearFurnace)) return; // у печи — приоритет окна печи
+    const init = new Set<number>();
+    collectPadButtons(init);
+    invPadPrevRef.current = init.has(loadEmuPrefs().invPad ?? 3);
+    const iv = window.setInterval(() => {
+      const cur = new Set<number>();
+      collectPadButtons(cur);
+      const now = cur.has(loadEmuPrefs().invPad ?? 3);
+      if (now && !invPadPrevRef.current) { setInvOpen((o) => !o); sfx.click(); }
+      invPadPrevRef.current = now;
+    }, 66);
+    return () => window.clearInterval(iv);
+  }, [s?.phase, invOpen, isFrendy, !!nearFurnace]);
+  /* ОТКРЫТЫЕ ОКНА закрываются кнопкой джойстика: окно печи — любой лицевой, инвентарь — кнопка «инвентарь».
+     Базлайн снимается В МОМЕНТ открытия (кнопка открытия сама окно не закрывает). */
+  const furnClosePadRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!furnOpen) return;
+    const init = new Set<number>();
+    collectPadButtons(init);
+    furnClosePadRef.current = init;
+    const iv = window.setInterval(() => {
+      const cur = new Set<number>();
+      collectPadButtons(cur);
+      let fresh = false;
+      for (const b of cur) if (!furnClosePadRef.current.has(b)) { fresh = true; break; }
+      furnClosePadRef.current = cur;
+      if (fresh) { sfx.click(); setFurnOpen(false); }
+    }, 66);
+    return () => window.clearInterval(iv);
+  }, [furnOpen]);
+  const invClosePadRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!invOpen || !isFrendy) return; // в остальных режимах инвентарь закрывается как раньше (крестик/Esc)
+    const init = new Set<number>();
+    collectPadButtons(init);
+    invClosePadRef.current = init;
+    const iv = window.setInterval(() => {
+      const cur = new Set<number>();
+      collectPadButtons(cur);
+      const padIdx = loadEmuPrefs().invPad ?? 3;
+      const now = cur.has(padIdx);
+      const prev = invClosePadRef.current.has(padIdx);
+      invClosePadRef.current = cur;
+      if (now && !prev) { sfx.click(); setInvOpen(false); }
+    }, 66);
+    return () => window.clearInterval(iv);
+  }, [invOpen, isFrendy]);
+
   /* v0.62: отпустили ESC (или окно потеряло фокус) — отсчёт сбрасывается,
      подсказка плавно гаснет; при размонтировании таймер подчищается */
   useEffect(() => {
@@ -2507,15 +2663,15 @@ export default function GameScreen() {
     return () => clearInterval(t);
   }, [isFrendy, room?.isHost, me, s?.phase, frendyIntro]);
 
-  /* ---------- v0.140: «Я ЗАНЯТ» — пока открыт ИНВЕНТАРЬ, клиент шлёт пульс каждые 2.5 с.
+  /* ---------- v0.140/v0.141: «Я ЗАНЯТ» — пока открыт ИНВЕНТАРЬ или ОКНО ПЕЧИ, клиент шлёт пульс каждые 2.5 с.
      Хост считает занятость свежей (FRENDY_UIBUSY_MS), Френди наказывает копающихся в рюкзаке
      (переключается на них и телепортируется с атакой — логика в движке, в помощи НЕ описана). ---------- */
   useEffect(() => {
-    if (!isFrendy || !me || !invOpen || s?.phase !== 'playing') return;
+    if (!isFrendy || !me || (!invOpen && !furnOpen) || s?.phase !== 'playing') return;
     dispatch({ t: 'frendyBusy', id: me, on: true });
     const hb = setInterval(() => dispatch({ t: 'frendyBusy', id: me, on: true }), 2500);
     return () => { clearInterval(hb); dispatch({ t: 'frendyBusy', id: me, on: false }); };
-  }, [isFrendy, me, invOpen, s?.phase]);
+  }, [isFrendy, me, invOpen, furnOpen, s?.phase]);
 
   /* ---------- v0.132 ЭПИЛОГ: тик хоста (~0.4 с) — АЛЬДЕР сам шагает к печи ---------- */
   useEffect(() => {
@@ -3138,7 +3294,8 @@ export default function GameScreen() {
          ходьба заблокирована, персонаж на фоне стоит на месте */
       /* v0.59: окно МОЕГО задания открыто — WASD/стрелки ведут игру в окне, не фишку */
       /* v0.138: окно ИНВЕНТАРЯ открыто — фишка на месте (FRENDY/RUBG/VERSUS/QUEST/JOURNEY) */
-      if (pocketBlockRef.current || taskWinRef.current || invBlockRef.current) return;
+      /* v0.141: окно ПЕЧИ открыто — фишка тоже на месте */
+      if (pocketBlockRef.current || taskWinRef.current || invBlockRef.current || furnBlockRef.current) return;
       e.preventDefault(); // стрелки не крутят страницу — они ведут фишку
       journeyKeys.current.add(d);
     };
@@ -3168,7 +3325,8 @@ export default function GameScreen() {
          отдельным эффектом), фишка на фоне НЕ двигается */
       /* v0.59: окно МОЕГО задания открыто — крестовина/стик ведут игру в окне, не фишку */
       /* v0.138: окно ИНВЕНТАРЯ открыто — крестовина/стик фишку не ведут */
-      if (!pocketBlockRef.current && !taskWinRef.current && !invBlockRef.current && prefs.gamepad !== false) {
+      /* v0.141: окно ПЕЧИ открыто — тоже не ведут */
+      if (!pocketBlockRef.current && !taskWinRef.current && !invBlockRef.current && !furnBlockRef.current && prefs.gamepad !== false) {
         const pads = listGamepads();
         const addBtn = (gp: Gamepad, idx: number | undefined, d: TokenDir) => {
           if (idx === undefined || idx < 0 || idx > 17) return;
@@ -3471,6 +3629,11 @@ export default function GameScreen() {
               } else if (isFrendy && idx >= 0 && nearFurnace && nearFurnace.idx === idx && !dlgOpenIdRef.current && !cutActiveRef.current) {
                 sfx.click();
                 setFurnOpen(true);
+              } else if (isFrendy && nearItem && !dlgOpenIdRef.current && !cutActiveRef.current
+                  && Math.hypot(wx - nearItem.x, wy - nearItem.y) <= CELL * 0.75) {
+                /* v0.141: КЛИК ПО ПРЕДМЕТУ на карте (стоишь рядом) — поднять, как по E
+                   (на телефоне без джойстика это единственный способ подъёма) */
+                tryPickupRef.current();
               } else {
                 setInspectIdx(idx >= 0 ? idx : null);
                 if (idx >= 0) sfx.hover();
@@ -4095,6 +4258,22 @@ export default function GameScreen() {
             <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#ff8b3f] bg-[rgba(7,9,18,0.9)] border-2 border-[#ff8b3f]/50">🔥 ПЕЧЬ ФРЕНДИ — <b className="text-paper">E</b> · джойстик · клик</span>
           </div>
         )}
+        {/* ---------- v0.141 FRENDY: подсказка у ПРЕДМЕТА на земле (поднять) ---------- */}
+        {isFrendy && nearItem && !furnOpen && !invOpen && s?.phase === 'playing' && !dlgNpcId && (
+          <div className="absolute bottom-28 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#d8b95c] bg-[rgba(7,9,18,0.9)] border-2 border-[#a0843c]/50">
+              ✋ ПОДНЯТЬ {nearItem.kind === 'frendyChip' ? '🔩 МИКРОСХЕМУ' : nearItem.kind === 'dendyCart' ? '📼 КАРТРИДЖ' : `«${RUBG_ITEMS[nearItem.kind].name}»`} — <b className="text-paper">E</b> · джойстик · клик
+            </span>
+          </div>
+        )}
+        {/* ---------- v0.141: отскок предмета «НЕ ВЛЕЗ В РЮКЗАК» (как в Diablo 1 — падает обратно на землю) ---------- */}
+        {pickupBounce && (
+          <div key={pickupBounce.key} className="frendy-pickup-bounce absolute bottom-40 left-1/2 z-30">
+            <span className="block" style={{ fontSize: 42, filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.8))' }}>
+              {pickupBounce.kind === 'dendyCart' ? '📼' : pickupBounce.kind === 'coffee' ? '☕' : pickupBounce.kind === 'medkit' ? '🧰' : pickupBounce.kind === 'flask' ? '🥃' : '🔩'}
+            </span>
+          </div>
+        )}
         {/* ---------- v0.132 ЭПИЛОГ «СЕКРЕТНЫЕ МАТЕРИАЛЫ» ---------- */}
         {epiMode && epi && epi.stage !== 'talk' && epi.stage !== 'done' && (
           /* ЗАДАНИЕ хоста — в ЛЕВОМ УГЛУ, появляется (pop-in). Остальные тоже видят. */
@@ -4134,29 +4313,25 @@ export default function GameScreen() {
             onDone={() => setXfOpen(false)}
           />
         )}
+        {/* ---------- v0.141 FRENDY: ОКНО ПЕЧИ — ДВА ОКНА РЯДОМ: печь + DIABLO-рюкзак ---------- */}
         {isFrendy && furnOpen && (() => {
-          /* v0.130: печь ДВУХРЕЖИМНАЯ — слабый огонь (горят только КАРТРИДЖИ Dendy) и
-             сильный (2 минуты после картриджа, таймер СКРЫТ — горят микросхемы Френди).
-             v0.140: СЖИГАНИЕ ПЕРЕЕХАЛО В ИНВЕНТАРЬ (усложнение по заказу): окно печи —
-             только СТАТУС и инструкция; сами кнопки — в «Кошмарном рюкзаке» инвентаря. */
           const strong = (s?.frendy?.strongUntil ?? 0) > Date.now();
-          const haveChip = mePlayer?.items?.some((x) => x.kind === 'frendyChip') ?? false;
-          const haveCart = mePlayer?.items?.some((x) => x.kind === 'dendyCart') ?? false;
           return (
-            <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.8)] p-3">
-              <div className="pixel-panel pixel-corners p-5 w-full max-w-sm text-center space-y-3">
-                <div className="font-display uppercase text-lg text-[#ff8b3f]">🔥 Печь Френди</div>
-                <div className={`font-pixel text-[10px] leading-snug ${strong ? 'text-coral' : 'text-dim'}`}>
-                  {strong ? '🔥🔥🔥 СИЛЬНЫЙ ОГОНЬ! Микросхемы Френди ГОРЯТ — жгите, пока печь не погасла!' : 'Огонь СЛАБЫЙ: микросхемы в нём НЕ горят. Разожгите печь КАРТРИДЖЕМ Dendy'}
-                </div>
-                {frendy && <div className="font-pixel text-[10px] text-dim">Сожжено {frendy.burned} из {frendy.total} — сожгите ВСЕ, чтобы победить</div>}
-                <p className="text-[12px] text-dim leading-snug">
-                  Сжигают ИЗ ИНВЕНТАРЯ, стоя у печи: откройте <b className="text-paper">ИНВЕНТАРЬ 🎒</b>, выберите {haveCart && haveChip ? <>КАРТРИДЖ Dendy 📼 или <b className="text-gold">микросхему 🔩</b></> : haveCart ? <>КАРТРИДЖ Dendy 📼</> : haveChip ? <b className="text-gold">микросхему 🔩</b> : <>подходящий предмет</>} и нажмите <b className="text-paper">«🔥 Сжечь»</b>.
-                  {!haveChip && !haveCart && ' У вас нет ничего для печи: микросхемы лежат на карте, картридж дают за победу над заданием ячейки.'}
-                </p>
-                <GhostBtn small className="w-full" onClick={() => setFurnOpen(false)}>{Ic.cross(12)} Закрыть</GhostBtn>
-              </div>
-            </div>
+            <FrendyFurnaceModal
+              onClose={() => setFurnOpen(false)}
+              items={mePlayer?.items ?? []}
+              near={!!nearFurnace}
+              strong={strong}
+              burned={s?.frendy?.burned ?? 0}
+              total={s?.frendy?.total ?? 0}
+              hpFull={(mePlayer?.hp ?? 100) >= 100}
+              dispatches={{
+                burn: (itemId) => { if (me) dispatch({ t: 'frendyBurn', id: me, itemId }); },
+                use: (itemId) => { if (me) dispatch({ t: 'frendyUse', id: me, itemId }); },
+                drop: (itemId) => { if (me) dispatch({ t: 'frendyDrop', id: me, itemId }); },
+                move: (itemId, gx, gy) => { if (me) dispatch({ t: 'frendyInvMove', id: me, itemId, gx, gy }); },
+              }}
+            />
           );
         })()}
         {/* ---------- v0.124 FRENDY: интро-катсцена в начале раунда (появление + фраза + исчезновение) ---------- */}
@@ -6140,57 +6315,32 @@ function InventoryModal({ onClose }: { onClose: () => void }) {
           </div>
         )}
 
-        {/* ---------- v0.123 FRENDY: кошмарный рюкзак — v0.140: микросхема и картридж СЖИГАЮТСЯ отсюда (у печи!), аптечка лечит, кофе — иммунитет ---------- */}
-        {isFrendyMode(map?.mode) && rubgInv.length > 0 && (
+        {/* ---------- v0.141 FRENDY: DIABLO-РЮКЗАК-СЕТКА (микросхема/картридж — 2×2, кофе 1×1, аптечка 2×3);
+               сжигание — перетащить на печь (в окне печи) или ПКМ → «Сжечь в печи»; аптечка лечит, кофе — иммунитет ---------- */}
+        {isFrendyMode(map?.mode) && (
           <div className="border-2 border-[#ff6b35]/60 px-3 py-2.5 mb-4 space-y-2">
             <div className="flex items-center justify-between gap-2 flex-wrap">
-              <span className="tick-label text-[#ff6b35]">🎃 Кошмарный рюкзак · предметов {rubgInv.length}</span>
-              <span className="tick-label text-faint">жгут У ПЕЧИ отсюда: картридж Dendy разжигает (2 мин сильного огня) · чип горит только в сильном огне · аптечка лечит · кофе — 5 мин без поимки</span>
+              <span className="tick-label text-[#ff6b35]">🎒 Кошмарный рюкзак · предметов {rubgInv.length}</span>
+              <span className="tick-label text-faint">ПКМ по предмету — меню · тащи за окно — выбросить · сжигают У ПЕЧИ</span>
             </div>
-            {rubgInv.map((it: RubgItem) => {
-              const meta = RUBG_ITEMS[it.kind];
-              const chip = it.kind === 'frendyChip';
-              const cart = it.kind === 'dendyCart'; // v0.130: пиратский картридж Dendy — за победу над заданием
-              const heal = it.kind === 'medkit' || it.kind === 'flask' || it.kind === 'bigmed';
-              const coffee = it.kind === 'coffee';
-              const hpFull = (mePlayer?.hp ?? 100) >= 100;
-              /* v0.140: СЖИГАНИЕ отсюда — кнопка живая только У ПЕЧИ (та же дистанция, что проверяет движок);
-                 микросхема — только в СИЛЬНОМ огне (иначе движок откажет) */
-              const burnOff = !frendyInv?.near || (chip && !frendyInv.strong);
-              const burnWhy = !frendyInv?.near
-                ? 'Подойди К ПЕЧИ 🔥 — сжигают только рядом с ней'
-                : chip && !frendyInv.strong
-                  ? 'Огонь СЛАБЫЙ — сначала сожги в печи КАРТРИДЖ Dendy 📼'
-                  : undefined;
-              return (
-                <div key={it.id} className="flex items-center gap-2 px-2 py-1.5 border-2 border-edge">
-                  {cart ? <img src={cartDendyImg} alt="Картридж Dendy" className="h-7 w-7 object-contain shrink-0" style={{ imageRendering: 'pixelated' }} /> : <span>{meta.icon}</span>}
-                  <span className="font-display text-[11px] text-paper min-w-0 truncate">{meta.name}{chip ? ' (из кости Френди)' : ''}</span>
-                  <span className="ml-auto tick-label text-faint shrink-0" title={chip ? 'Сжигается У ПЕЧИ из этого рюкзака — ТОЛЬКО в сильном огне: сначала сожги там картридж Dendy (дают за победу над заданием)' : cart ? 'Сжигается У ПЕЧИ из этого рюкзака — даёт 2 минуты сильного огня, тогда горят микросхемы. Не сожжёшь — Френди отберёт при поимке' : coffee ? '5 минут иммунитета к ПОИМКЕ Френди (бить всё равно может)' : `Восстанавливает ${meta.hp}% HP`}>{chip ? 'жечь у печи · сильный огонь' : cart ? 'жечь у печи · разжигает' : coffee ? 'иммунитет 5 мин' : `+${meta.hp}% HP`}</span>
-                  {(chip || cart) && (
-                    <PxBtn
-                      small
-                      color={chip ? 'gold' : 'coral'}
-                      disabled={burnOff}
-                      className={burnOff ? 'opacity-40' : ''}
-                      title={burnWhy}
-                      onClick={() => { if (chip) sfx.frendyBurn(); else sfx.frendyStrong(); dispatch({ t: 'frendyBurn', id: me!, what: chip ? 'chip' : 'cart' }); }}
-                    >🔥 Сжечь</PxBtn>
-                  )}
-                  {(heal || coffee) && (
-                    <PxBtn
-                      small
-                      color={coffee ? 'gold' : 'teal'}
-                      disabled={heal && hpFull}
-                      className={heal && hpFull ? 'opacity-40' : ''}
-                      title={heal && hpFull ? 'Полоска HP полна' : undefined}
-                      onClick={() => dispatch({ t: 'frendyUse', id: me!, itemId: it.id })}
-                    >{coffee ? 'Выпить' : 'Лечить'}</PxBtn>
-                  )}
-                  <GhostBtn small onClick={() => dispatch({ t: 'frendyDrop', id: me!, itemId: it.id })}>Выбросить</GhostBtn>
-                </div>
-              );
-            })}
+            {rubgInv.length === 0 && <div className="text-[11px] text-dim">Пусто — поднимайте предметы с земли: подойди и нажми E (или кликни по предмету). Нет места в сетке — предмет не поднять!</div>}
+            <FrendyInvGrid
+              items={rubgInv}
+              near={!!frendyInv?.near}
+              strong={!!frendyInv?.strong}
+              hpFull={(mePlayer?.hp ?? 100) >= 100}
+              actions={{
+                onBurn: (itemId) => {
+                  const it = rubgInv.find((x) => x.id === itemId);
+                  if (!it) return;
+                  if (it.kind === 'frendyChip') sfx.frendyBurn(); else sfx.frendyStrong();
+                  dispatch({ t: 'frendyBurn', id: me!, itemId });
+                },
+                onUse: (itemId) => dispatch({ t: 'frendyUse', id: me!, itemId }),
+                onDrop: (itemId) => { dispatch({ t: 'frendyDrop', id: me!, itemId }); sfx.drop(); },
+                onMove: (itemId, gx, gy) => dispatch({ t: 'frendyInvMove', id: me!, itemId, gx, gy }),
+              }}
+            />
           </div>
         )}
 

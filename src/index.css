@@ -586,6 +586,29 @@ input[type="range"] { accent-color: var(--color-gold); }
   0%, 100% { transform: translateY(0) scale(1); opacity: 0.9; }
   50% { transform: translateY(-14px) scale(1.16); opacity: 1; }
 }
+/* v0.141 DIABLO-ИНВЕНТАРЬ: предмет «не влез в рюкзак» — отскок над землёй, как в Diablo 1
+   (взлетает и падает обратно), тряска предмета, который не удалось положить в клетку */
+.frendy-pickup-bounce {
+  animation: frendyPickupBounce 0.9s cubic-bezier(0.35, 0.6, 0.6, 1) forwards;
+  pointer-events: none;
+}
+@keyframes frendyPickupBounce {
+  0% { transform: translate(-50%, 0) scale(0.7); opacity: 0; }
+  18% { transform: translate(-50%, -52px) scale(1.15); opacity: 1; }
+  55% { transform: translate(-50%, -8px) scale(1); opacity: 1; }
+  78% { transform: translate(-50%, -22px) scale(0.96); opacity: 0.9; }
+  100% { transform: translate(-50%, 4px) scale(0.85); opacity: 0; }
+}
+.frendy-item-shake {
+  animation: frendyItemShake 0.4s ease-in-out;
+}
+@keyframes frendyItemShake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(3px); }
+}
 /* Тряска кадра на стингере */
 .cine-shake {
   animation: cineShake 0.45s ease-in-out 3;

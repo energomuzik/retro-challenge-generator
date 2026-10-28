@@ -336,10 +336,18 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
   }, [phase, stingAt]);
 
   /* ---------- ПОКАЗ ---------- */
+  /* v0.141: ПРОПУСК при ПРОИГРЫШЕ (только FRENDY-поражение): игроки проигрывают часто —
+     глумление Френди и титры поражения можно проскочить кнопкой (победный финал не тронут:
+     печь → фраза → агенты → «Секретные материалы» смотрятся целиком, как решено в v0.135) */
+  const canSkipLoss = isFrendy && !won && (phase === 'lose1' || phase === 'roll');
   if (phase === 'win1' || phase === 'win2' || phase === 'win3' || phase === 'lose1') {
     return (
       <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center cine-fadein">
-        {/* v0.135: кнопки «Пропустить» здесь НЕТ — финал смотрим целиком */}
+        {/* v0.135: в ПОБЕДНОЙ катсцене кнопок «Пропустить» нет — финал смотрим целиком;
+            v0.141: при ПРОИГРЫШЕ — «Пропустить» есть (игроки проигрывают часто) */}
+        {canSkipLoss && (
+          <button onClick={() => { sfx.click(); finish(); }} className="absolute top-4 right-4 z-10 px-3 py-1.5 border-2 border-[#5b2430] text-[#b98490] font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-[#ff5d73] cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить ✕</button>
+        )}
         {phase === 'win1' && (
           <div className="flex flex-col items-center gap-6">
             <div className="relative text-7xl md:text-8xl" style={{ filter: 'drop-shadow(0 0 30px rgba(255,122,26,0.8))' }}>🔥🧱🔥</div>
@@ -375,7 +383,10 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
 
   return (
     <div className="fixed inset-0 z-[80] bg-black flex items-center justify-center cine-fadein">
-      {/* v0.135: кнопку «Пропустить титры» убрали — титры крутятся сами */}
+      {/* v0.135: в победных титрах кнопку убрали — титры крутятся сами; v0.141: при проигрыше — «Пропустить» */}
+      {canSkipLoss && (
+        <button onClick={() => { sfx.click(); finish(); }} className="absolute top-4 right-4 z-10 px-3 py-1.5 border-2 border-[#5b2430] text-[#b98490] font-display text-[10px] uppercase tracking-wider hover:text-paper hover:border-[#ff5d73] cursor-pointer bg-[rgba(10,8,12,0.7)]">Пропустить титры ✕</button>
+      )}
       <div className="text-center px-6 max-w-2xl">
         {idx < lines.length ? (
           <div key={idx} className={`cine-line ${lines[idx].c ?? 'text-[12px] text-dim'}`} style={lines[idx].style}>{lines[idx].t}</div>
