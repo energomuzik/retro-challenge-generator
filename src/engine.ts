@@ -1,5 +1,5 @@
 import type { CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
-import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, rubgItemSize, rubgGridFits, rubgGridFirstFit, FRENDY_INV_COLS, FRENDY_INV_ROWS, playerPx, doorKeyName, frameWallsOf } from './types';
+import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_BURN_SHIELD_MS, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, rubgItemSize, rubgGridFits, rubgGridFirstFit, FRENDY_INV_COLS, FRENDY_INV_ROWS, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
@@ -1689,6 +1689,16 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     }
     /* — ОХОТА (или ПОЕЗДКА ЗА РЕМОНТОМ) — */
     const b = f.boss;
+    /* v0.143: ВОССТАНОВЛЕНА ПЕРВОНАЧАЛЬНАЯ ЛОГИКА (заказчик): Френди ЧИНИТ ячейку, если
+       ВСЕ сломаны, ДАЖЕ ЕСЛИ ОН В ЯРОСТИ/УЛЬТРА. Раньше починка выбиралась только при
+       ПРОБУЖДЕНИИ (f.boss == null), а в ярости Френди не растворяется — гонится без конца,
+       и до ветки пробуждения дело не доходило: все ячейки оставались разбитыми до случайной
+       поимки. Теперь он МЕШАЕТ охоту и идёт чинить (бесплатно — разбиты ВСЕ). */
+    if (b.trip !== 'repair' && allBroken) {
+      const pick = brokenCells[Math.floor(Math.random() * brokenCells.length)].i;
+      b.trip = 'repair'; b.tripCell = pick; b.targetId = null; b.holdMs = 0;
+      log(`😈 ФРЕНДИ: «Все ячейки сломали? Починю одну БЕСПЛАТНО — какая же охота без плохих игр!»${furious || ultra ? ' Даже в ярости!' : ''} — идёт чинить ячейку №${pick + 1}.`);
+    }
     /* v0.130 ПОЕЗДКА ЗА РЕМОНТОМ: Френди несёт картридж (или идёт бесплатно) к разбитой
        ячейке — НЕ охотится, никого не бьёт. Добрался — вставил картридж, ячейка ПОЧИНЕНА
        (та же игра), Френди растворяется и скоро вернётся к охоте. */
@@ -1786,7 +1796,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         const pick = tasks[Math.floor(Math.random() * tasks.length)].i;
         const r = cellRectOf(map, pick);
         s.journeyPos = s.journeyPos ?? {};
-        if (r) s.journeyPos[tgt.id] = { x: Math.round(r.x + r.w / 2), y: Math.round(r.y + r.h / 2), ts: now, mv: false };
+        /* v0.143: tp:true — ПРИНУДИТЕЛЬНЫЙ телепорт: клиент обязан снапнуться к ячейке,
+           а хост отбрасывает устаревшие точки жертвы (иначе «иногда не телепортирует») */
+        if (r) s.journeyPos[tgt.id] = { x: Math.round(r.x + r.w / 2), y: Math.round(r.y + r.h / 2), ts: now, mv: false, tp: true };
         s.qJobs = s.qJobs ?? {};
         s.qJobs[tgt.id] = { cellIdx: pick, startedAt: now };
         log(`😈 ФРЕНДИ ПОЙМАЛ ${tgt.name}! Оттащил к заданию №${pick + 1} — пройди его, чтобы продолжить охоту за микросхемами!`);
@@ -1803,7 +1815,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           f.cart = null;
           const r = cellRectOf(map, pick);
           s.journeyPos = s.journeyPos ?? {};
-          if (r) s.journeyPos[tgt.id] = { x: Math.round(r.x + r.w / 2), y: Math.round(r.y + r.h / 2), ts: now, mv: false };
+          if (r) s.journeyPos[tgt.id] = { x: Math.round(r.x + r.w / 2), y: Math.round(r.y + r.h / 2), ts: now, mv: false, tp: true }; // v0.143: принудительный телепорт
           s.qJobs = s.qJobs ?? {};
           s.qJobs[tgt.id] = { cellIdx: pick, startedAt: now };
           f.fx = { kind: 'repair', ts: now }; // v0.130: мгновенный ремонт при жертве — звук всем
@@ -1816,7 +1828,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         }
         const spot = frendyFreeSpot([]) ?? { x: W / 2, y: H / 2 };
         s.journeyPos = s.journeyPos ?? {};
-        s.journeyPos[tgt.id] = { x: Math.round(spot.x), y: Math.round(spot.y), ts: now, mv: false };
+        s.journeyPos[tgt.id] = { x: Math.round(spot.x), y: Math.round(spot.y), ts: now, mv: false, tp: true }; // v0.143: принудительный телепорт
         log(`😈 ФРЕНДИ ПОЙМАЛ ${tgt.name} и вышвырнул в другой конец кошмара!`);
       }
       f.boss = null;
@@ -2880,14 +2892,20 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (pointInWall(map, x, y, s.wallsRemoved, s.qKeys?.[p.id])) break;
       /* защита от телепортаций: одно обновление не дальше 2.5 клеток от прошлой позиции.
          СТОП-обновление (mv=false) принимаем всегда — игрок реально стоит в этой точке,
-         иначе при сетевом заторе цепочка отклонённых апдейтов «застревала» надолго. */
+         иначе при сетевом заторе цепочка отклонённых апдейтов «застревала» надолго.
+         v0.143: НО если прошлая точка — ПРИНУДИТЕЛЬНЫЙ ТЕЛЕПОРТ (tp: Френди утащил на
+         задание / вышвырнул / переход портала), СТОП-обновление из СТАРОГО места
+         (дальше 2.5 клеток) в первые 5 с ОТБРАСЫВАЕТСЯ — раньше оно перезаписывало
+         телепорт, и жертва «иногда не телепортировалась» в ячейку. */
       const stopped = a.mv === false;
       /* ПОРТАЛ: обновление с tp — фишка вошла в зону портала и МГНОВЕННО перенеслась
         в точку перехода (обычно на другой плитке) — прыжок на любое расстояние легален.
         Без tp — прежняя защита от телепортаций: не дальше 2.5 клеток за одно обновление.
         СТОП-обновление (mv=false) принимаем всегда — игрок реально стоит в этой точке,
         иначе при сетевом заторе цепочка отклонённых апдейтов «застревала» надолго. */
+      const staleStop = stopped && !!prev.tp && Date.now() - (prev.ts ?? 0) < 5000; // v0.143
       if (prev && !stopped && !a.tp && Math.hypot(x - prev.x, y - prev.y) > CELL_PX * 2.5) break;
+      if (prev && staleStop && !a.tp && Math.hypot(x - prev.x, y - prev.y) > CELL_PX * 2.5) break;
       s.journeyPos = s.journeyPos ?? {};
       s.journeyPos[p.id] = { x, y, dir: a.dir, ts: Date.now(), mv: a.mv !== false, tp: a.tp || undefined };
       /* v0.132 ЭПИЛОГ: только позиция Скаллер — никаких триггеров ячеек (сцена финальная) */
@@ -3537,6 +3555,13 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (burnKind === 'dendyCart') {
         inv.splice(burnIdx, 1);
         f.strongUntil = nowB + FRENDY_STRONG_MS;
+        /* v0.143: ЩИТ ЖАРА — 6 с после каждого броска в печь Френди НЕ ТРОГАЕТ горящего:
+           не просыпается на нём, не бьёт и не ловит (механизм taskSafeUntil, тот же щит
+           заданий). Раньше печь будила Френди ПРЯМО НА игрока (v0.140), он хватал через
+           ~2.5 с — и «после двух картриджей микросхема не сгорала»: её просто не успевали
+           бросить. 6 с хватает на следующий бросок; отошёл от печи — снова охота. */
+        f.taskSafeUntil = f.taskSafeUntil ?? {};
+        f.taskSafeUntil[p.id] = nowB + FRENDY_BURN_SHIELD_MS;
         /* v0.140: разжёг печь — Френди НЕ СПИТ (жар привлекает кошмар): просыпается через 1.5 с,
            а если кто-то ещё копается в инвентаре — проснется прямо на нём (см. frendyTickDo) */
         if (!f.boss) f.nextSpawnAt = Math.min(f.nextSpawnAt, nowB + 1500);
@@ -3547,6 +3572,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!((f.strongUntil ?? 0) > nowB)) { log(`🔥 Огонь СЛАБЫЙ — микросхема не загорается! Сначала бросьте в печь КАРТРИДЖ Dendy 📼 (дают за победу над заданием ячейки)`); break; }
       inv.splice(burnIdx, 1);
       f.burned++;
+      f.taskSafeUntil = f.taskSafeUntil ?? {}; // v0.143: щит жара — 6 с после сожжённой микросхемы
+      f.taskSafeUntil[p.id] = nowB + FRENDY_BURN_SHIELD_MS;
       log(`🔥 ${p.name} СЖИГАЕТ микросхему Френди! (${f.burned}/${f.total})`);
       if (f.burned >= f.total) {
         f.won = true;

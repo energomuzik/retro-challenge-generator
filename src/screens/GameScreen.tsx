@@ -1447,6 +1447,7 @@ export default function GameScreen() {
   const lastPhraseTsRef = useRef(0);
   const lastBossFxTsRef = useRef(0);
   const lastFrendyFxTsRef = useRef(0); // v0.130: fx уровня состояния (поимка/ремонт)
+  const frendyTpSnapRef = useRef(0); // v0.143: меня ПОЙМАЛ Френди — фишка обязана снапнуться к ячейке, даже если бежала
   const [frendyShout, setFrendyShout] = useState<{ text: string; ts: number } | null>(null);
   const [frendyFlash, setFrendyFlash] = useState(0);
   const lastCaptureRef = useRef(0);
@@ -1838,14 +1839,20 @@ export default function GameScreen() {
                   /* v0.56: фишка НА МЕСТЕ — через 1 секунду запускается задание босса */
                   scheduleBossTaskGo(lastCapTsRef.current, 1000);
                 }
-              } else if (jp && !self.moving && !self.dirty) {
+              } else if (jp && ((!self.moving && !self.dirty) || frendyTpSnapRef.current)) {
+                /* v0.143: фишка ОБЯЗАНА снапнуться к точке хоста и когда БЕЖИТ — если это
+                   ПРИНУДИТЕЛЬНЫЙ телепорт (Френди поймал и утащил на задание, frendyTpSnapRef
+                   ставится по fx 'catch' с who === me). Раньше снап работал только для СТОЯЩей
+                   фишки — жертва, бежавшая в момент поимки, оставалась на старом месте:
+                   «иногда не телепортирует в то место, где находится ячейка». */
                 const snapD = Math.hypot(jp.x - self.x, jp.y - self.y);
-                if (snapD > CELL * 1.5) {
+                if (snapD > CELL * 1.5 || frendyTpSnapRef.current) {
                   self.x = jp.x;
                   self.y = jp.y;
                   self.pinside.clear();
                   for (const q of m.portals ?? []) if (self.x >= q.x && self.x < q.x + q.w && self.y >= q.y && self.y < q.y + q.h) self.pinside.add(q.id);
                 }
+                frendyTpSnapRef.current = 0;
               }
               let vx = 0, vy = 0;
               /* v0.59: ОКНО МОЕГО ЗАДАНИЯ = фишка стоит (QUEST — личное/боссовое, RUBG — личное:
@@ -2806,7 +2813,7 @@ export default function GameScreen() {
     if (!b?.fxTs || b.fxTs === lastBossFxTsRef.current) return;
     lastBossFxTsRef.current = b.fxTs;
     if (b.fx === 'attack') { sfx.frendyHit(); if (b.targetId === me) setFrendyFlash(Date.now()); }
-    else if (b.fx === 'catch') { sfx.frendyCatch(); if (b.targetId === me) { setFrendyFlash(Date.now()); frendyCatchClose(); } }
+    else if (b.fx === 'catch') { sfx.frendyCatch(); if (b.targetId === me) { setFrendyFlash(Date.now()); frendyCatchClose(); frendyTpSnapRef.current = 1; } }
     else if (b.fx === 'repair') sfx.frendyRepair(); // v0.130: вставил картридж — ячейка починена
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frendyBossFxTs]);
@@ -2819,7 +2826,7 @@ export default function GameScreen() {
     const fx = s?.frendy?.fx;
     if (!fx?.ts || fx.ts === lastFrendyFxTsRef.current) return;
     lastFrendyFxTsRef.current = fx.ts;
-    if (fx.kind === 'catch') { sfx.frendyCatch(); if (fx.who === me) { setFrendyFlash(Date.now()); frendyCatchClose(); } }
+    if (fx.kind === 'catch') { sfx.frendyCatch(); if (fx.who === me) { setFrendyFlash(Date.now()); frendyCatchClose(); frendyTpSnapRef.current = 1; } }
     else if (fx.kind === 'repair') sfx.frendyRepair();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frendyStateFxTs]);

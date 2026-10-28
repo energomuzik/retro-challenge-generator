@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import cartDendyImg from '../assets/carts/dendy.png';
+import { createPortal } from 'react-dom';
 import { FRENDY_INV_COLS, FRENDY_INV_ROWS, RUBG_ITEMS, rubgGridFits, rubgItemSize } from '../types';
 import type { RubgItem, RubgItemKind } from '../types';
 import { GhostBtn, Ic } from '../ui';
@@ -53,43 +53,44 @@ function useInvDrag(onEnd: (info: DragInfo) => void, onFirstMove?: () => void) {
   return { drag, start };
 }
 
-/* v0.142: МИКРОСХЕМА — настоящий ПИКСЕЛЬНЫЙ ЧИП (SVG) вместо эмодзи 🔩:
-   гайка с болтом на Windows выглядит как КОСТЬ, из-за чего игроки видели в рюкзаке
-   «кость вместо микросхемы». Тёмный корпус, золотые ножки, кристалл с молнией —
-   сразу читается и в сетке 2×2, и мелкой иконкой в HUD. */
+/* v0.143: МИКРОСХЕМА — ТОЧНАЯ КОПИЯ ИКОНКИ С ПОЛА (заказчик: «иконки в инвентаре должны
+   совпадать с теми, что на полу — те, что на полу, и есть оригинал»). На поле чип рисуется
+   в render.ts (drawFrendyChip): зелёная плата, золотые ножки, синий кристалл, красный
+   светодиод — этот SVG повторяет тот же рисунок, и в рюкзаке видна ТА ЖЕ микросхема. */
 export function ChipArt({ px, className }: { px: number; className?: string }) {
   return (
     <svg
       width={px}
       height={px}
-      viewBox="0 0 32 32"
+      viewBox="0 0 36 32"
       className={className}
       style={{ imageRendering: 'pixelated', userSelect: 'none', WebkitUserSelect: 'none' }}
       aria-label="Микросхема Френди"
       role="img"
     >
-      {/* ножки: по 3 с каждой стороны */}
-      {[7, 14, 21].map((y) => <rect key={`l${y}`} x={0.5} y={y} width={5.5} height={4} fill="#a0843c" />)}
-      {[7, 14, 21].map((y) => <rect key={`r${y}`} x={26} y={y} width={5.5} height={4} fill="#a0843c" />)}
-      {[7, 14, 21].map((x) => <rect key={`t${x}`} x={x} y={0.5} width={4} height={5.5} fill="#a0843c" />)}
-      {[7, 14, 21].map((x) => <rect key={`b${x}`} x={x} y={26} width={4} height={5.5} fill="#a0843c" />)}
-      {/* корпус (DIP) с фаской-ключом в левом верхнем углу, как у настоящих микросхем */}
-      <path d="M6 5.5 h20 a1.5 1.5 0 0 1 1.5 1.5 v18 a1.5 1.5 0 0 1 -1.5 1.5 h-20 a1.5 1.5 0 0 1 -1.5 -1.5 v-18 a1.5 1.5 0 0 1 1.5 -1.5 z" fill="#2b2416" stroke="#0c0e08" strokeWidth={1.5} />
-      <circle cx={8.5} cy={8.5} r={1.4} fill="#4a3d1e" />
-      {/* кристалл */}
-      <rect x={9.5} y={9.5} width={13} height={13} fill="#12100a" stroke="#5b4a22" strokeWidth={1} />
-      {/* золотая молния на кристалле */}
-      <polygon points="17.5,11 12.5,17 15.6,17 14.5,21 19.5,14.8 16.4,14.8 18.8,11" fill="#d8b95c" />
+      {/* золотые ножки: 5 сверху и 5 снизу, по краям торчат за плату — как на поле */}
+      {[-2, -1, 0, 1, 2].map((i) => <rect key={`t${i}`} x={18 + i * 5 - 1.2} y={2} width={2.4} height={6} fill="#c9a13c" />)}
+      {[-2, -1, 0, 1, 2].map((i) => <rect key={`b${i}`} x={18 + i * 5 - 1.2} y={24} width={2.4} height={6} fill="#c9a13c" />)}
+      {/* зелёная плата + светлый срез сверху */}
+      <rect x={9} y={8} width={18} height={16} fill="#1f7a3d" />
+      <rect x={9} y={8} width={18} height={3} fill="rgba(255,255,255,0.14)" />
+      {/* дорожки */}
+      <path d="M11 21 h5 v-4 h5" fill="none" stroke="rgba(200,255,210,0.5)" strokeWidth={1} />
+      <path d="M25 11 h-5" fill="none" stroke="rgba(200,255,210,0.5)" strokeWidth={1} />
+      {/* синий кристалл с бликом */}
+      <rect x={14} y={12} width={8} height={7} fill="#12335a" />
+      <rect x={14} y={12} width={8} height={2} fill="rgba(255,255,255,0.25)" />
+      {/* красный светодиод с ореолом */}
+      <circle cx={24} cy={20} r={3.6} fill="rgba(255,70,60,0.25)" />
+      <circle cx={24} cy={20} r={2.2} fill="#ff463c" />
     </svg>
   );
 }
 
-/* Картинка предмета: картридж Dendy — фирменный PNG из базы ромов, микросхема — пиксельный чип,
-   остальное — крупный эмодзи */
+/* Картинка предмета — ВСЕГДА ТА ЖЕ, ЧТО НА ПОЛУ (заказчик, v0.143): микросхема — зелёная
+   плата (та же, что рисует движок на карте), картридж Dendy — 📼, остальное — эмодзи из
+   каталога RUBG_ITEMS (ровно те же значки рисуются на полу в render.ts). */
 export function ItemArt({ kind, px }: { kind: RubgItemKind; px: number }) {
-  if (kind === 'dendyCart') {
-    return <img src={cartDendyImg} alt="Картридж Dendy" draggable={false} style={{ width: px, height: px, objectFit: 'contain', imageRendering: 'pixelated' }} />;
-  }
   if (kind === 'frendyChip') {
     return <ChipArt px={px} />;
   }
@@ -280,18 +281,23 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
         ЛКМ/палец — перетащить (за окно — выбросить) · ПКМ/долгое нажатие — меню · микросхема и картридж 2×2 · кофе 1×1 · аптечка 2×3
       </div>
 
-      {/* ПРИЗРАК ПРЕДМЕТА под курсором/пальцем */}
-      {dragApi.drag && (
+      {/* ПРИЗРАК ПРЕДМЕТА под курсором/пальцем — v0.143: через ПОРТАЛ в body:
+         окно «Инвентаря» держит transform от pop-in — fixed внутри него смещался */}
+      {dragApi.drag && createPortal(
         <div className="fixed z-[130] pointer-events-none" style={{ left: dragApi.drag.x, top: dragApi.drag.y, transform: 'translate(-50%,-50%) rotate(-6deg)', filter: 'drop-shadow(0 6px 10px rgba(0,0,0,0.8))' }}>
           <ItemArt kind={dragApi.drag.kind} px={40} />
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {/* КОНТЕКСТНОЕ МЕНЮ (ПКМ / долгое нажатие): использовать / сжечь в печи / выбросить */}
-      {menu && menuIt && (
+      {/* КОНТЕКСТНОЕ МЕНЮ (ПКМ / долгое нажатие): использовать / сжечь в печи / выбросить.
+          v0.143: через ПОРТАЛ в body — меню появляется ТОЧНО под местом нажатия ПКМ.
+          Раньше окно «Инвентаря» держало transform от pop-in (fill-mode both), и fixed-меню
+          позиционировалось относительно ОКНА, а не экрана — уезжало в сторону. */}
+      {menu && menuIt && createPortal(
         <div
           className="fixed z-[120] min-w-[190px] border-2 border-[#a0843c] bg-[rgba(12,10,6,0.97)] pixel-corners py-1.5 shadow-2xl"
-          style={{ left: Math.min(menu.x, window.innerWidth - 210), top: Math.min(menu.y, window.innerHeight - 150) }}
+          style={{ left: Math.max(4, Math.min(menu.x, window.innerWidth - 210)), top: Math.max(4, Math.min(menu.y, window.innerHeight - 150)) }}
           onPointerDown={(e) => e.stopPropagation()}
         >
           <div className="px-3 pb-1.5 font-display text-[10px] uppercase tracking-wider text-[#d8b95c] border-b border-[#a0843c]/30 mb-1">{RUBG_ITEMS[menuIt.kind].name}</div>
@@ -323,7 +329,8 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
             ✋ Выбросить на землю
           </button>
           {hpFull && usable(menuIt.kind) && <div className="px-3 pt-1 font-pixel text-[8px] text-faint">HP полна — лечение не нужно</div>}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -511,11 +518,12 @@ export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total
           </div>
         </div>
       </div>
-      {/* призрак предмета при перетаскивании ИЗ ЛОТКА */}
-      {trayDrag.drag && (
+      {/* призрак предмета при перетаскивании ИЗ ЛОТКА — v0.143: тоже через ПОРТАЛ */}
+      {trayDrag.drag && createPortal(
         <div className="fixed z-[130] pointer-events-none" style={{ left: trayDrag.drag.x, top: trayDrag.drag.y, transform: 'translate(-50%,-50%) rotate(-6deg)', filter: 'drop-shadow(0 6px 10px rgba(0,0,0,0.8))' }}>
           <ItemArt kind={trayDrag.drag.kind} px={40} />
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

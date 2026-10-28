@@ -1,5 +1,5 @@
 import type { AnimClip, CellDef, CutsceneDef, GameMap, NpcLibEntry, PlacedAnim, PlacedBoss, PlacedNpc, PortalZone, Stamp, TileDef, TileImg, TokenAnim, TokenDir, WallRect } from './types';
-import { doorKeyHex } from './types';
+import { doorKeyHex, RUBG_ITEMS } from './types';
 import { getImage } from './assets';
 import { patrolPos } from './patrol';
 import { frendyFrame } from './frendyAssets'; // v0.136: фирменный арт Френди на поле (ходьба/стойка)
@@ -545,18 +545,17 @@ const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, t
   ctx.save();
   ctx.translate(cx, cy);
   if (kind) {
-    /* выброшенная вещь — эмодзи на плашке */
-    ctx.fillStyle = 'rgba(7,9,18,0.75)';
+    /* v0.143: выброшенная вещь — иконка БЕЗ ОБОДКА (заказчик): мягкая тень на земле +
+       значок ИЗ ТОГО ЖЕ КАТАЛОГА (RUBG_ITEMS.icon), что и в инвентаре — картинки
+       на полу и в рюкзаке теперь совпадают один в один */
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.beginPath();
-    ctx.arc(0, 0, 12, 0, Math.PI * 2);
+    ctx.ellipse(0, 9, 10, 3.8, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,207,63,0.55)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
     ctx.font = '14px serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(kind === 'medkit' ? '🧰' : kind === 'coffee' ? '☕' : kind === 'dendyCart' ? '📼' : '📦', 0, 1);
+    ctx.fillText(RUBG_ITEMS[kind as keyof typeof RUBG_ITEMS]?.icon ?? '📦', 0, 1);
     ctx.restore();
     return;
   }
