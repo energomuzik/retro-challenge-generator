@@ -36,7 +36,7 @@ import { FrendyIntroCine, EndCredits, XFinale } from './FrendyCine'; // v0.124: 
 import { agentFrame, agentPortrait, AGENT_NAMES, EPI_SCRIPT, type AgentWho } from '../agentsAssets'; // v0.132: агенты Альдер/Скаллер (эпилог FRENDY)
 import { AgentsVn, VnText } from './AgentsVn'; // v0.132: разговор агентов в стиле визуальной новеллы + печатная машинка
 import { BogachPanel } from './BogachPanel'; // v0.109 БОГАЧ: панель донатов хоста
-import { FrendyInvGrid, FrendyFurnaceModal } from './FrendyInv'; // v0.141 FRENDY: DIABLO-инвентарь (сетка 10×6, печь + рюкзак)
+import { FrendyInvGrid, FrendyFurnaceModal, ChipArt } from './FrendyInv'; // v0.141 FRENDY: DIABLO-инвентарь (сетка 10×6, печь + рюкзак); v0.142: + пиксельная микросхема (ChipArt)
 import { hasDice } from '../bogach'; // v0.109: проверка пакостей/радостей «только для кубиков»
 import { DONATE_DICE_ONLY } from '../types';
 import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
@@ -239,6 +239,18 @@ export default function GameScreen() {
   const [tplOpen, setTplOpen] = useState(false);
   const [bogOpen, setBogOpen] = useState(false); // v0.109 БОГАЧ: панель донатов
   const [histOpen, setHistOpen] = useState(false); // v0.116: окно ПОЛНОЙ истории партии (поиск + время)
+  /* v0.142: РЕЖИМЫ ИСТОРИИ СОБЫТИЙ (Опции → «Партия» → «История событий на поле»):
+     'full' — как раньше (6 строк + строка истории), 'last' — только последнее событие,
+     'timed' — каждое событие 10 с, потом исчезает (свежая строка остаётся),
+     'timedQuiet' — как 'timed', но исчезает и свежая, а строка истории — только по наведению.
+     logTick дёргает перерисовку в режимах с 10-секундным таймером. */
+  const [logTick, setLogTick] = useState(0);
+  useEffect(() => {
+    const m = options.eventLog ?? 'full';
+    if (m !== 'timed' && m !== 'timedQuiet') return;
+    const iv = window.setInterval(() => setLogTick((x) => x + 1), 500);
+    return () => window.clearInterval(iv);
+  }, [options.eventLog]);
 
   const viewRef = useRef({ x: 0, y: 0, zoom: 1 });
   const dispRef = useRef<Record<string, { x: number; y: number }>>({});
@@ -681,10 +693,15 @@ export default function GameScreen() {
     if (furnOpen) journeyKeys.current.clear();
   }, [furnOpen]);
   /* v0.140: партия кончилась (например, сожгли ПОСЛЕДНЮЮ микросхему прямо из рюкзака) —
-     инвентарь закрывается сам, чтобы не закрывать финал/титры */
+     инвентарь закрывается сам, чтобы не закрывать финал/титры.
+     v0.142: окно ПЕЧИ закрывается при конце партии ТОЖЕ — иначе оно висит
+     над финальным окном «КОШМАР ПОБЕДИЛ» (печь z-40 выше панели z-30). */
   useEffect(() => {
-    if (invOpen && s && s.phase !== 'playing') setInvOpen(false);
-  }, [invOpen, s?.phase]);
+    if (s && s.phase !== 'playing') {
+      if (invOpen) setInvOpen(false);
+      if (furnOpen) setFurnOpen(false);
+    }
+  }, [invOpen, furnOpen, s?.phase]);
   /* v0.59: челлендж открылся (JOURNEY/SKILL/classic) — зажатые до него клавиши тоже сбрасываем,
      чтобы после задания фишка не убегала на старых зажатиях */
   useEffect(() => {
@@ -2735,11 +2752,15 @@ export default function GameScreen() {
      (печь + кто положил последнюю микросхему + Френди сгорает). Показ: phase === 'over'.
      Информация титров локальная — на сайт не уходит и после показа не нужна.
      v0.132 ЭПИЛОГ: после разговора агентов фаза снова 'over' — титры НЕ открываются второй раз
-     (guard по frendy.epi), показывается финальная панель ПОБЕДЫ. */
+     (guard по frendy.epi), показывается финальная панель ПОБЕДЫ.
+     v0.142: при ПОЛНОМ ПРОИГРЫШЕ во FRENDY (погибли все) титров БОЛЬШЕ НЕТ — сразу финальное
+     окно «КОШМАР ПОБЕДИЛ» с кнопками «Заново» и «В меню» (игроки проигрывают часто). */
   const over = s?.phase === 'over';
+  const frendyLost = isFrendy && !!s?.frendy && !s.frendy.won; // все погибли — кошмар победил
   useEffect(() => {
     if (!over || !s || !map) return;
     if (s.frendy?.epi) return; // v0.132: эпилог уже был/идёт — повторных титров нет
+    if (frendyLost) return; // v0.142: титры при полном проигрыше не показываем — сразу финальное окно
     setCreditsOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [over]);
@@ -2755,6 +2776,17 @@ export default function GameScreen() {
      затем СТИНГЕР — и только потом финальная панель ПОБЕДЫ (конец игры). */
   const [xfOpen, setXfOpen] = useState(false);
   const xfDoneRef = useRef(false);
+  /* v0.142: «Заново» (restartGame) — фаза вернулась из 'over' в игру: гасим ЛОКАЛЬНЫЕ
+     оверлеи конца партии (титры/финал «Тайные материалы»), иначе у клиентов они зависнут
+     поверх новой партии; xfDoneRef сбрасываем — победный финал в новой партии покажется снова. */
+  const phaseLive = s?.phase;
+  useEffect(() => {
+    if (phaseLive !== 'playing' && phaseLive !== 'rollOff') return;
+    if (creditsOpen) setCreditsOpen(false);
+    if (xfOpen) setXfOpen(false);
+    xfDoneRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phaseLive]);
   const epiDone = !!s?.frendy?.epi && s.frendy.epi.stage === 'done';
   useEffect(() => {
     if (s?.phase !== 'over' || !s.frendy?.won || !epiDone) return;
@@ -2765,25 +2797,29 @@ export default function GameScreen() {
   }, [s?.phase, epiDone]);
 
   /* ---------- v0.123 FRENDY: звуки атаки/поимки + красная вспышка, если цель — я ---------- */
+  /* v0.142: ЗАКРЫВАЕМ ИНВЕНТАРЬ И ПЕЧЬ у пойманного: если Френди ПОЙМАЛ игрока, пока тот
+     копался в рюкзаке или у печи, и утащил на задание — окна не должны висеть поверх задания */
+  const frendyCatchClose = () => { setInvOpen(false); setFurnOpen(false); };
   const frendyBossFxTs = s?.frendy?.boss?.fxTs;
   useEffect(() => {
     const b = s?.frendy?.boss;
     if (!b?.fxTs || b.fxTs === lastBossFxTsRef.current) return;
     lastBossFxTsRef.current = b.fxTs;
     if (b.fx === 'attack') { sfx.frendyHit(); if (b.targetId === me) setFrendyFlash(Date.now()); }
-    else if (b.fx === 'catch') { sfx.frendyCatch(); if (b.targetId === me) setFrendyFlash(Date.now()); }
+    else if (b.fx === 'catch') { sfx.frendyCatch(); if (b.targetId === me) { setFrendyFlash(Date.now()); frendyCatchClose(); } }
     else if (b.fx === 'repair') sfx.frendyRepair(); // v0.130: вставил картридж — ячейка починена
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frendyBossFxTs]);
   /* ---------- v0.130 FRENDY: fx УРОВНЯ СОСТОЯНИЯ (поимка/ремонт) — босс в этот тик растворяется,
      и boss.fxTs клиенты не видели ВООБЩЕ (звук поимки и вспышка были мёртвым кодом). Теперь
-     fx живёт в s.frendy.fx — как фразочка: и поимка (звук + вспышка жертве), и ремонт ячейки. */
+     fx живёт в s.frendy.fx — как фразочка: и поимка (звук + вспышка жертве), и ремонт ячейки.
+     v0.142: у ПОЙМАННОГО закрываются инвентарь и окно печи (его утащили на задание). */
   const frendyStateFxTs = s?.frendy?.fx?.ts;
   useEffect(() => {
     const fx = s?.frendy?.fx;
     if (!fx?.ts || fx.ts === lastFrendyFxTsRef.current) return;
     lastFrendyFxTsRef.current = fx.ts;
-    if (fx.kind === 'catch') { sfx.frendyCatch(); if (fx.who === me) setFrendyFlash(Date.now()); }
+    if (fx.kind === 'catch') { sfx.frendyCatch(); if (fx.who === me) { setFrendyFlash(Date.now()); frendyCatchClose(); } }
     else if (fx.kind === 'repair') sfx.frendyRepair();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frendyStateFxTs]);
@@ -3533,7 +3569,7 @@ export default function GameScreen() {
           {/* v0.123 FRENDY: счётчик микросхем, таймер кофе, предупреждение охоты */}
           {isFrendy && frendy && (
             <>
-              <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-[#ff8b3f]" title="Микросхемы Френди: сожжено/всего · ещё лежит на карте">🔩 {frendy.burned}/{frendy.total}{frendy.chips.length ? ` · на карте ${frendy.chips.length}` : ''}</span>
+              <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-[#ff8b3f] inline-flex items-center gap-1" title="Микросхемы Френди: сожжено/всего · ещё лежит на карте"><ChipArt px={11} /> {frendy.burned}/{frendy.total}{frendy.chips.length ? ` · на карте ${frendy.chips.length}` : ''}</span>
               {/* v0.130: сильный огонь печи — таймер СКРЫТ, только факт «пора жечь» */}
               {(frendy.strongUntil ?? 0) > Date.now() && <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-coral blink-hard" title="Сильный огонь: микросхемы Френди ГОРЯТ! Таймер скрыт — жгите, пока печь не погасла">🔥 СИЛЬНЫЙ ОГОНЬ — ЖГИТЕ ЧИПЫ!</span>}
               {(() => { const ms = (frendy.furyUntil ?? 0) - Date.now(); return ms > 0 ? <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-coral blink-hard" title="Френди В ЯРОСТИ (2 мин после сожжённой микросхемы): не спит и гонится за целью НЕ ОСТАНАВЛИВАЯСЬ">⚡ ЯРОСТЬ ФРЕНДИ {Math.ceil(ms / 1000)}с</span> : null; })()}
@@ -3819,24 +3855,48 @@ export default function GameScreen() {
         {/* лог. v0.116: МИНИ-КНОПКА «вся история» открывает окно с прокруткой ВСЕЙ истории
             колёсиком, поиском по буквам/именам игроков и временем каждого события.
             v0.119: кнопка ПЕРЕЕХАЛА В САМЫЙ НИЗ углового лога и стилизована под сообщение
-            истории — фиксированная строка «ПРОСМОТРЕТЬ ВСЮ ИСТОРИЮ» под новостями лога. */}
+            истории — фиксированная строка «ПРОСМОТРЕТЬ ВСЮ ИСТОРИЮ» под новостями лога.
+            v0.142: РЕЖИМ ОТОБРАЖЕНИЯ — из Опций («Партия» → «История событий на поле»):
+            'full' — 6 строк, как раньше; 'last' — только последнее событие; 'timed' —
+            каждое событие показывается 10 секунд и исчезает (самая свежая строка остаётся);
+            'timedQuiet' — через 10 секунд исчезает ВСЁ, а строка истории появляется,
+            только если на неё навести мышь (тап по её месту открывает историю сразу). */}
         <div className="absolute left-3 bottom-3 w-[290px] max-w-[45vw] pointer-events-none">
-          <div className="space-y-1">
-            {s.log.slice(0, 6).map((l, i) => (
-              <div key={`${l}-${i}`} className={`text-[10.5px] leading-tight px-2.5 py-1.5 bg-[rgba(7,9,18,0.8)] border-l-[3px] ${i === 0 ? 'border-gold text-paper slide-up' : 'border-edge text-dim'}`}>
-                {l}
-              </div>
-            ))}
-          </div>
-          <button
-            onClick={() => { setHistOpen(true); sfx.click(); }}
-            title="Вся история партии — скролл, поиск и время событий"
-            aria-label="Просмотреть всю историю"
-            className="pointer-events-auto mt-1 w-full text-left flex items-center gap-2 text-[10.5px] leading-tight px-2.5 py-1.5 bg-[rgba(7,9,18,0.8)] border-l-[3px] border-edge text-dim hover:text-gold hover:border-gold transition-colors cursor-pointer"
-          >
-            {Ic.clock(11)}
-            <span className="font-pixel text-[7px] tracking-wide">ПРОСМОТРЕТЬ ВСЮ ИСТОРИЮ</span>
-          </button>
+          {(() => {
+            const mode = options.eventLog ?? 'full';
+            const fullLog = s.logFull?.length ? s.logFull : (s.log ?? []).map((text) => ({ text, ts: 0 }));
+            const pool = fullLog.slice(0, 6);
+            const tnow = Date.now(); // logTick только дёргает перерисовку для 10-секундных режимов
+            void logTick;
+            const vis = pool.filter((e, i) => {
+              if (mode === 'full') return true;
+              if (mode === 'last') return i === 0;
+              if (e.ts === 0) return true; // старая партия без времени — не прячем
+              if (mode === 'timed') return i === 0 || tnow - e.ts < 10000;
+              return tnow - e.ts < 10000; // timedQuiet: прячется и последнее событие
+            });
+            const quietHidden = mode === 'timedQuiet' && vis.length === 0;
+            return (
+              <>
+                <div className="space-y-1">
+                  {vis.map((e, i) => (
+                    <div key={`${e.text}-${i}`} className={`text-[10.5px] leading-tight px-2.5 py-1.5 bg-[rgba(7,9,18,0.8)] border-l-[3px] ${i === 0 ? 'border-gold text-paper slide-up' : 'border-edge text-dim'}`}>
+                      {e.text}
+                    </div>
+                  ))}
+                </div>
+                <button
+                  onClick={() => { setHistOpen(true); sfx.click(); }}
+                  title="Вся история партии — скролл, поиск и время событий"
+                  aria-label="Просмотреть всю историю"
+                  className={`pointer-events-auto mt-1 w-full text-left flex items-center gap-2 text-[10.5px] leading-tight px-2.5 py-1.5 bg-[rgba(7,9,18,0.8)] border-l-[3px] border-edge text-dim hover:text-gold hover:border-gold transition-colors cursor-pointer ${quietHidden ? 'opacity-0 hover:opacity-100 focus-visible:opacity-100' : ''}`}
+                >
+                  {Ic.clock(11)}
+                  <span className="font-pixel text-[7px] tracking-wide">ПРОСМОТРЕТЬ ВСЮ ИСТОРИЮ</span>
+                </button>
+              </>
+            );
+          })()}
         </div>
 
         {/* трансляция соперника (миниатюра, видна и поверх инвентаря/торгов).
@@ -4262,7 +4322,7 @@ export default function GameScreen() {
         {isFrendy && nearItem && !furnOpen && !invOpen && s?.phase === 'playing' && !dlgNpcId && (
           <div className="absolute bottom-28 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
             <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#d8b95c] bg-[rgba(7,9,18,0.9)] border-2 border-[#a0843c]/50">
-              ✋ ПОДНЯТЬ {nearItem.kind === 'frendyChip' ? '🔩 МИКРОСХЕМУ' : nearItem.kind === 'dendyCart' ? '📼 КАРТРИДЖ' : `«${RUBG_ITEMS[nearItem.kind].name}»`} — <b className="text-paper">E</b> · джойстик · клик
+              ✋ ПОДНЯТЬ {nearItem.kind === 'frendyChip' ? <>МИКРОСХЕМУ <ChipArt px={12} className="inline-block align-[-2px]" /></> : nearItem.kind === 'dendyCart' ? '📼 КАРТРИДЖ' : `«${RUBG_ITEMS[nearItem.kind].name}»`} — <b className="text-paper">E</b> · джойстик · клик
             </span>
           </div>
         )}
@@ -4270,7 +4330,7 @@ export default function GameScreen() {
         {pickupBounce && (
           <div key={pickupBounce.key} className="frendy-pickup-bounce absolute bottom-40 left-1/2 z-30">
             <span className="block" style={{ fontSize: 42, filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.8))' }}>
-              {pickupBounce.kind === 'dendyCart' ? '📼' : pickupBounce.kind === 'coffee' ? '☕' : pickupBounce.kind === 'medkit' ? '🧰' : pickupBounce.kind === 'flask' ? '🥃' : '🔩'}
+              {pickupBounce.kind === 'dendyCart' ? '📼' : pickupBounce.kind === 'coffee' ? '☕' : pickupBounce.kind === 'medkit' ? '🧰' : pickupBounce.kind === 'flask' ? '🥃' : <ChipArt px={40} />}
             </span>
           </div>
         )}
@@ -4476,6 +4536,15 @@ export default function GameScreen() {
                 </>
               )}
               <div className="flex gap-3 justify-center mt-6">
+                {room.isHost && (
+                  <PxBtn
+                    color="teal"
+                    title="Запустить ЭТУ ЖЕ карту заново с этой же компанией: все ресурсы, микросхемы и ячейки — с нуля"
+                    onClick={() => { if (me) dispatch({ t: 'restartGame', id: me }); }}
+                  >
+                    {Ic.rotate(14)} Заново
+                  </PxBtn>
+                )}
                 {room.isHost && <GhostBtn onClick={() => void saveSessionSnapshot(`${map.name} · итог`)}>{Ic.save(13)} В архив</GhostBtn>}
                 <PxBtn onClick={() => { st.leaveRoom(); st.setScreen('menu'); }}>{Ic.home(14)} В меню</PxBtn>
               </div>
@@ -4914,12 +4983,14 @@ export default function GameScreen() {
       {/* ---------- инвентарь карточек (виден и зрителям) ---------- */}
       {invOpen && <InventoryModal onClose={() => setInvOpen(false)} />}
 
-      {/* ---------- наш редактор управления (клавиатура + геймпад) ---------- */}
+      {/* ---------- наш редактор управления (клавиатура + геймпад) ----------
+          v0.142: окно с потолком высоты 92vh — на коротких экранах содержимое
+          ПРОКРУЧИВАЕТСЯ колёсиком мыши, справа виден ползунок; шапка закреплена. */}
       {controlsOpen && (
         <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-[rgba(4,6,14,0.88)]" onClick={() => setControlsOpen(false)} />
-          <div className="relative pixel-panel pixel-corners pop-in w-full max-w-2xl p-5">
-            <div className="flex items-center gap-2 mb-3">
+          <div className="relative pixel-panel pixel-corners pop-in w-full max-w-2xl max-h-[92vh] flex flex-col p-5">
+            <div className="flex items-center gap-2 mb-3 shrink-0">
               <span className="text-magma">{Ic.gear(18)}</span>
               <span className="font-display uppercase tracking-wider text-paper text-sm">
                 Управление · {consoleLabel(taskRom?.ext)}
@@ -4927,7 +4998,9 @@ export default function GameScreen() {
               <span className="tick-label text-gold ml-2">применяется сразу</span>
               <GhostBtn small className="ml-auto" onClick={() => setControlsOpen(false)}>{Ic.cross(12)} Закрыть</GhostBtn>
             </div>
-            <KeyBinder compact mode={padFam} />
+            <div className="overflow-y-auto min-h-0 pr-1">
+              <KeyBinder compact mode={padFam} />
+            </div>
           </div>
         </div>
       )}

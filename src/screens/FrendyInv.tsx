@@ -53,13 +53,47 @@ function useInvDrag(onEnd: (info: DragInfo) => void, onFirstMove?: () => void) {
   return { drag, start };
 }
 
-/* Картинка предмета: картридж Dendy — фирменный PNG из базы ромов, остальное — крупный эмодзи */
+/* v0.142: МИКРОСХЕМА — настоящий ПИКСЕЛЬНЫЙ ЧИП (SVG) вместо эмодзи 🔩:
+   гайка с болтом на Windows выглядит как КОСТЬ, из-за чего игроки видели в рюкзаке
+   «кость вместо микросхемы». Тёмный корпус, золотые ножки, кристалл с молнией —
+   сразу читается и в сетке 2×2, и мелкой иконкой в HUD. */
+export function ChipArt({ px, className }: { px: number; className?: string }) {
+  return (
+    <svg
+      width={px}
+      height={px}
+      viewBox="0 0 32 32"
+      className={className}
+      style={{ imageRendering: 'pixelated', userSelect: 'none', WebkitUserSelect: 'none' }}
+      aria-label="Микросхема Френди"
+      role="img"
+    >
+      {/* ножки: по 3 с каждой стороны */}
+      {[7, 14, 21].map((y) => <rect key={`l${y}`} x={0.5} y={y} width={5.5} height={4} fill="#a0843c" />)}
+      {[7, 14, 21].map((y) => <rect key={`r${y}`} x={26} y={y} width={5.5} height={4} fill="#a0843c" />)}
+      {[7, 14, 21].map((x) => <rect key={`t${x}`} x={x} y={0.5} width={4} height={5.5} fill="#a0843c" />)}
+      {[7, 14, 21].map((x) => <rect key={`b${x}`} x={x} y={26} width={4} height={5.5} fill="#a0843c" />)}
+      {/* корпус (DIP) с фаской-ключом в левом верхнем углу, как у настоящих микросхем */}
+      <path d="M6 5.5 h20 a1.5 1.5 0 0 1 1.5 1.5 v18 a1.5 1.5 0 0 1 -1.5 1.5 h-20 a1.5 1.5 0 0 1 -1.5 -1.5 v-18 a1.5 1.5 0 0 1 1.5 -1.5 z" fill="#2b2416" stroke="#0c0e08" strokeWidth={1.5} />
+      <circle cx={8.5} cy={8.5} r={1.4} fill="#4a3d1e" />
+      {/* кристалл */}
+      <rect x={9.5} y={9.5} width={13} height={13} fill="#12100a" stroke="#5b4a22" strokeWidth={1} />
+      {/* золотая молния на кристалле */}
+      <polygon points="17.5,11 12.5,17 15.6,17 14.5,21 19.5,14.8 16.4,14.8 18.8,11" fill="#d8b95c" />
+    </svg>
+  );
+}
+
+/* Картинка предмета: картридж Dendy — фирменный PNG из базы ромов, микросхема — пиксельный чип,
+   остальное — крупный эмодзи */
 export function ItemArt({ kind, px }: { kind: RubgItemKind; px: number }) {
   if (kind === 'dendyCart') {
     return <img src={cartDendyImg} alt="Картридж Dendy" draggable={false} style={{ width: px, height: px, objectFit: 'contain', imageRendering: 'pixelated' }} />;
   }
-  const icon = kind === 'frendyChip' ? '🔩' : RUBG_ITEMS[kind].icon;
-  return <span style={{ fontSize: px, lineHeight: 1, userSelect: 'none' }} draggable={false}>{icon}</span>;
+  if (kind === 'frendyChip') {
+    return <ChipArt px={px} />;
+  }
+  return <span style={{ fontSize: px, lineHeight: 1, userSelect: 'none' }} draggable={false}>{RUBG_ITEMS[kind].icon}</span>;
 }
 
 const artFor = (kind: RubgItemKind): string => (kind === 'frendyChip' ? '🔩' : RUBG_ITEMS[kind].icon);
@@ -445,7 +479,7 @@ export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total
             <div className="font-pixel text-[9px] text-[#ffb257] animate-pulse">Предмет в огне…</div>
           )}
           {!tray && (
-            <p className="text-[11px] text-dim leading-snug">Перетащи <b className="text-paper">КАРТРИДЖ 📼</b> или <b className="text-gold">МИКРОСХЕМУ 🔩</b> из рюкзака <b className="text-paper">на печь</b>. Не сгорит — предмет останется у печи: забери его назад.</p>
+            <p className="text-[11px] text-dim leading-snug">Перетащи <b className="text-paper">КАРТРИДЖ 📼</b> или <b className="text-gold">МИКРОСХЕМУ <ChipArt px={11} className="inline-block align-[-1px]" /></b> из рюкзака <b className="text-paper">на печь</b>. Не сгорит — предмет останется у печи: забери его назад.</p>
           )}
         </div>
 

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useApp } from '../store';
 import { Field, GhostBtn, Ic, Modal, Panel, PxBtn, Toggle } from '../ui';
 import type { SpoilerMode } from '../types';
+import type { GameOptions } from '../types';
 import { idbDel, idbAll, exportLibrary, importLibrary } from '../db';
 import { STORES } from '../db';
 import { sfx } from '../sound';
@@ -396,6 +397,32 @@ export default function OptionsScreen() {
                 label="Приближение камеры при движении"
                 hint="ВЫКЛ (по умолчанию) — камера едет за фишкой без зума: карта не «наезжает» в самый интересный момент. ВКЛ — как раньше: во время движения камера приближается ×1.5"
               />
+              {/* v0.142: ОТОБРАЖЕНИЕ ИСТОРИИ СОБЫТИЙ — 4 режима углового лога (действует во всех режимах партии) */}
+              <div>
+                <div className="tick-label mb-1.5">История событий на поле (лог в левом нижнем углу)</div>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {([
+                    ['full', 'Как сейчас (6 строк)', 'В углу всегда видны последние 6 событий и строка «Просмотреть всю историю» — как было до v0.142'],
+                    ['last', 'Только последнее', 'Компактно: одно последнее событие и строка «Просмотреть всю историю» — лог занимает минимум места'],
+                    ['timed', 'Показ 10 секунд', 'Каждое событие появляется, висит 10 секунд и исчезает; САМАЯ СВЕЖАЯ строка остаётся, строка истории — на месте'],
+                    ['timedQuiet', 'Тихий (для скриншотов)', 'Через 10 секунд исчезает ВСЁ, включая свежее событие; строка «Просмотреть всю историю» появляется, только если на неё навести мышь (тап по её месту на телефоне сразу открывает историю)'],
+                  ] as [NonNullable<GameOptions['eventLog']>, string, string][]).map(([mode, lbl, hint]) => (
+                    <button
+                      key={mode}
+                      onClick={() => { setOptions({ eventLog: mode }); sfx.hover(); }}
+                      title={hint}
+                      className={`text-left px-3 py-2 border-2 transition-colors cursor-pointer ${options.eventLog === mode ? 'border-teal bg-teal/10' : 'border-edge hover:border-edge2'}`}
+                    >
+                      <div className={`font-display text-[11px] uppercase ${options.eventLog === mode ? 'text-teal' : 'text-paper'}`}>{lbl}</div>
+                      <div className="text-[10px] text-dim mt-0.5 leading-snug">{hint}</div>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-faint mt-2 leading-relaxed">
+                  Настройка локальная — действует во всех режимах партии (Ретрополия, Джёрни, QUEST, VERSUS, RUBG, FRENDY).
+                  Вся история по-прежнему доступна через «Просмотреть всю историю»: скролл, поиск и время каждого события.
+                </p>
+              </div>
             </div>
           </Panel>
 

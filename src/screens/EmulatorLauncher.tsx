@@ -908,12 +908,14 @@ export default function EmulatorLauncher() {
         />
       )}
 
-      {/* наш редактор управления (клавиатура + геймпад) */}
+      {/* наш редактор управления (клавиатура + геймпад)
+          v0.142: окно с потолком высоты 92vh — на коротких экранах содержимое
+          ПРОКРУЧИВАЕТСЯ колёсиком мыши, справа виден ползунок; шапка закреплена. */}
       {controlsOpen && (
         <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-[rgba(4,6,14,0.88)]" onClick={() => setControlsOpen(false)} />
-          <div className="relative pixel-panel pixel-corners pop-in w-full max-w-2xl p-5">
-            <div className="flex items-center gap-2 mb-3">
+          <div className="relative pixel-panel pixel-corners pop-in w-full max-w-2xl max-h-[92vh] flex flex-col p-5">
+            <div className="flex items-center gap-2 mb-3 shrink-0">
               <span className="text-magma">{Ic.gear(18)}</span>
               <span className="font-display uppercase tracking-wider text-paper text-sm">
                 Управление · {consoleLabel(realExt)}
@@ -921,7 +923,9 @@ export default function EmulatorLauncher() {
               <span className="tick-label text-gold ml-2">применяется сразу</span>
               <GhostBtn small className="ml-auto" onClick={() => setControlsOpen(false)}>{Ic.cross(12)} Закрыть</GhostBtn>
             </div>
-            <KeyBinder compact mode={padFam} />
+            <div className="overflow-y-auto min-h-0 pr-1">
+              <KeyBinder compact mode={padFam} />
+            </div>
           </div>
         </div>
       )}

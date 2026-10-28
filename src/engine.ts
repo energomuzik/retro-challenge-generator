@@ -30,6 +30,7 @@ export type Action =
   | { t: 'ready'; id: string; ready: boolean }
   | { t: 'kick'; id: string }
   | { t: 'start' }
+  | { t: 'restartGame'; id: string } // v0.142: «Заново» на финальной панели — хост перезапускает ТУ ЖЕ карту с ТЕМИ ЖЕ игроками (сессия пересоздаётся, инициализация — как у «Начать»)
   | { t: 'roll'; id: string; holdMs: number }
   | { t: 'rollOffGo' }
   | { t: 'rollOffReady'; id: string }
@@ -2553,7 +2554,28 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       }
       break;
     }
-    case 'start': {
+    case 'start':
+    case 'restartGame': {
+      /* v0.142: «Заново» на финальной панели — хост запускает ТУ ЖЕ карту с ТЕМИ ЖЕ игроками.
+         Сессия пересоздаётся НАЧИСТО (все хвосты проигранной партии — frendy/rubg/broken/
+         qJobs/ending/winner/log — исчезают), имена, цвета, фишки и роли хоста сохраняются,
+         фаза становится 'lobby' — дальше выполняется ровно та же инициализация, что у «Начать». */
+      if (a.t === 'restartGame') {
+        const hostR = s.players.find((p) => p.isHost);
+        if (!hostR || a.id !== hostR.id) break; // перезапускает только хост
+        if (s.phase !== 'over') break; // только из закончившейся партии
+        const fresh = newSession(s.code, s.mapId, hostR.id, hostR.name);
+        fresh.players = s.players.map((p) => {
+          const np = mkPlayer(p.id, p.name, p.color, p.isHost);
+          np.tokenImg = p.tokenImg ?? null; // своя фишка сохраняется
+          if (p.tokenKey) np.tokenKey = p.tokenKey;
+          if (p.tokenSize) np.tokenSize = p.tokenSize;
+          return np;
+        });
+        for (const k of Object.keys(s)) delete (s as unknown as Record<string, unknown>)[k];
+        Object.assign(s, fresh);
+        log(`🔁 ${hostR.name} запустил партию ЗАНОВО — та же карта и та же компания!`);
+      }
       if (s.phase !== 'lobby') break;
       /* Одиночные режимы (SKILL CHALLENGE, JOURNEY-на-одного): хост может начать и в
         одиночку — остальные в лобби станут зрителями; в остальных режимах партия
