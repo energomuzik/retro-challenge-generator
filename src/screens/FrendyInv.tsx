@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FRENDY_INV_COLS, FRENDY_INV_ROWS, RUBG_ITEMS, rubgGridFits, rubgItemSize } from '../types';
+import { frendyConsoleImg } from '../consoleAssets'; // v0.144: фото приставок (Dendy/Famicom/NES)
 import type { RubgItem, RubgItemKind } from '../types';
 import { GhostBtn, Ic } from '../ui';
 import { sfx } from '../sound';
@@ -90,9 +91,21 @@ export function ChipArt({ px, className }: { px: number; className?: string }) {
 /* Картинка предмета — ВСЕГДА ТА ЖЕ, ЧТО НА ПОЛУ (заказчик, v0.143): микросхема — зелёная
    плата (та же, что рисует движок на карте), картридж Dendy — 📼, остальное — эмодзи из
    каталога RUBG_ITEMS (ровно те же значки рисуются на полу в render.ts). */
-export function ItemArt({ kind, px }: { kind: RubgItemKind; px: number }) {
+export function ItemArt({ kind, px, cartSrc }: { kind: RubgItemKind; px: number; cartSrc?: string | null }) {
   if (kind === 'frendyChip') {
     return <ChipArt px={px} />;
+  }
+  /* v0.144: КАРТРИДЖ ЗАДАНИЯ — его ОБЛОЖКА (та же картинка, что в редакторе заданий:
+     своя обложка рома или фото картриджа платформы); без картинки (старые сейвы) — 📼 */
+  if (kind === 'dendyCart' && cartSrc) {
+    return (
+      <img
+        src={cartSrc}
+        alt="Картридж задания"
+        draggable={false}
+        style={{ maxHeight: px, maxWidth: px * 1.5, width: 'auto', imageRendering: 'auto', userSelect: 'none' }}
+      />
+    );
   }
   return <span style={{ fontSize: px, lineHeight: 1, userSelect: 'none' }} draggable={false}>{RUBG_ITEMS[kind].icon}</span>;
 }
@@ -107,12 +120,13 @@ export interface FrendyGridActions {
   onMove: (itemId: string, gx: number, gy: number) => void; // переложить в сетке
 }
 
-export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef, zoneRef, containerRef, onDragTo }: {
+export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef, zoneRef, containerRef, onDragTo, cartArtOf }: {
   items: RubgItem[];
   actions: FrendyGridActions;
   near: boolean;   // стоишь у печи (для «Сжечь» из меню)
   strong: boolean; // в печи сильный огонь (микросхемы горят)
   hpFull: boolean; // полоска HP полна — «Использовать» не нужно
+  cartArtOf?: (it: RubgItem) => { src: string | null; title: string | null } | null; // v0.144: арт/название картриджей заданий
   furnaceRef?: React.MutableRefObject<HTMLDivElement | null>; // куда падает «на печь» (только в окне печи)
   zoneRef?: React.MutableRefObject<HTMLDivElement | null>; // окно рюкзака целиком: дроп внутри окна (мимо сетки) — НЕ выброс, а «вернуть» (щелчок в ближайшую клетку)
   containerRef?: React.MutableRefObject<HTMLDivElement | null>; // наружный ref на сетку (окну печи — для дропа из лотка)
@@ -246,6 +260,8 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
           const sz = rubgItemSize(it.kind);
           if (it.gx === undefined || it.gy === undefined) return null; // предмет без места — движок кладёт при выдаче
           const meta = RUBG_ITEMS[it.kind];
+          const ca = cartArtOf ? cartArtOf(it) : null; // v0.144: обложка/название картриджа
+          const nm = it.kind === 'dendyCart' && ca?.title ? `Картридж «${ca.title}»` : meta.name;
           return (
             <div
               key={it.id}
@@ -256,7 +272,7 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
                 border: '1px solid rgba(160,132,60,0.65)',
                 boxShadow: 'inset 0 0 8px rgba(0,0,0,0.6)',
               }}
-              title={`${meta.name}${it.kind === 'frendyChip' ? ' — сожги в ПЕЧИ (сильный огонь)' : it.kind === 'dendyCart' ? ' — брось в ПЕЧЬ: 2 минуты сильного огня' : it.kind === 'coffee' ? ' — 5 минут без поимки' : meta.hp > 0 ? ` — лечит +${meta.hp}% HP` : ''}`}
+              title={`${nm}${it.kind === 'frendyChip' ? ' — сожги в ПЕЧИ (сильный огонь)' : it.kind === 'dendyCart' ? ' — брось в ПЕЧЬ (сильный огонь) или вставь в пустую ПРИСТАВКУ' : it.kind === 'coffee' ? ' — 5 минут без поимки' : meta.hp > 0 ? ` — лечит +${meta.hp}% HP` : ''}`}
               onPointerDown={(e) => {
                 /* телефон: долгое нажатие (~550 мс) — контекстное меню; движение — перетаскивание */
                 if (e.pointerType === 'touch') {
@@ -272,7 +288,7 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
               }}
               onContextMenu={(e) => { e.preventDefault(); openMenu(e, it); }}
             >
-              <ItemArt kind={it.kind} px={Math.min(sz.w, sz.h) >= 2 ? 34 : 24} />
+              <ItemArt kind={it.kind} px={Math.min(sz.w, sz.h) >= 2 ? 34 : 24} cartSrc={ca?.src ?? null} />
             </div>
           );
         })}
@@ -285,7 +301,7 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
          окно «Инвентаря» держит transform от pop-in — fixed внутри него смещался */}
       {dragApi.drag && createPortal(
         <div className="fixed z-[130] pointer-events-none" style={{ left: dragApi.drag.x, top: dragApi.drag.y, transform: 'translate(-50%,-50%) rotate(-6deg)', filter: 'drop-shadow(0 6px 10px rgba(0,0,0,0.8))' }}>
-          <ItemArt kind={dragApi.drag.kind} px={40} />
+          <ItemArt kind={dragApi.drag.kind} px={40} cartSrc={cartArtOf?.(items.find((x) => x.id === dragApi.drag!.itemId) ?? ({ id: '', kind: dragApi.drag.kind } as RubgItem))?.src ?? null} />
         </div>,
         document.body,
       )}
@@ -300,7 +316,7 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
           style={{ left: Math.max(4, Math.min(menu.x, window.innerWidth - 210)), top: Math.max(4, Math.min(menu.y, window.innerHeight - 150)) }}
           onPointerDown={(e) => e.stopPropagation()}
         >
-          <div className="px-3 pb-1.5 font-display text-[10px] uppercase tracking-wider text-[#d8b95c] border-b border-[#a0843c]/30 mb-1">{RUBG_ITEMS[menuIt.kind].name}</div>
+          <div className="px-3 pb-1.5 font-display text-[10px] uppercase tracking-wider text-[#d8b95c] border-b border-[#a0843c]/30 mb-1">{(() => { const ca2 = cartArtOf ? cartArtOf(menuIt) : null; return menuIt.kind === 'dendyCart' && ca2?.title ? `Картридж «${ca2.title}»` : RUBG_ITEMS[menuIt.kind].name; })()}</div>
           {usable(menuIt.kind) && (
             <button
               className="w-full text-left px-3 py-1.5 text-[12px] text-paper hover:bg-[#a0843c]/20 cursor-pointer font-display"
@@ -339,7 +355,7 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
 /* ---------- ОКНО ПЕЧИ + РЮКЗАК (E у печи): два окна РЯДОМ — печь и сетка-рюкзак.
    Чтобы сжечь — перетащи картридж/микросхему ИЗ рюкзака НА ПЕЧЬ. Не горит (слабый огонь /
    не то) — предмет остаётся ЛЕЖАТЬ У ПЕЧИ в «лотке»: перетащи его обратно в рюкзак. ---------- */
-export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total, hpFull, dispatches }: {
+export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total, hpFull, dispatches, cartArtOf }: {
   onClose: () => void;
   items: RubgItem[];
   near: boolean;
@@ -347,6 +363,7 @@ export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total
   burned: number;
   total: number;
   hpFull: boolean;
+  cartArtOf?: (it: RubgItem) => { src: string | null; title: string | null } | null; // v0.144: обложки картриджей
   dispatches: {
     burn: (itemId: string) => void;   // диспатч frendyBurn (предпроверки сделаны)
     use: (itemId: string) => void;
@@ -454,7 +471,7 @@ export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total
               ))}
             </div>
             {trayIt && !tray?.burning && (
-              <div className="absolute left-1/2 -bottom-1 -translate-x-1/2"><ItemArt kind={trayIt.kind} px={30} /></div>
+              <div className="absolute left-1/2 -bottom-1 -translate-x-1/2"><ItemArt kind={trayIt.kind} px={30} cartSrc={cartArtOf?.(trayIt)?.src ?? null} /></div>
             )}
           </div>
           <div className={`font-pixel text-[10px] leading-snug ${strong ? 'text-coral' : 'text-dim'}`}>
@@ -465,7 +482,7 @@ export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total
           {tray && trayIt && !tray.burning && (
             <div className="border-2 border-[#ff5d73]/60 bg-[rgba(60,8,14,0.5)] px-2.5 py-2 text-left">
               <div className="flex items-center gap-2">
-                <ItemArt kind={trayIt.kind} px={26} />
+                <ItemArt kind={trayIt.kind} px={26} cartSrc={cartArtOf?.(trayIt)?.src ?? null} />
                 <div className="min-w-0">
                   <div className="font-display text-[11px] text-[#ff8b7a] leading-tight">НЕ СГОРЕЛО</div>
                   <div className="font-pixel text-[9px] text-dim leading-snug">{tray.why}</div>
@@ -478,7 +495,7 @@ export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total
                 onPointerDown={(e) => trayDrag.start(e, trayIt.id, trayIt.kind, 'tray')}
                 title="Схвати и перетащи: в рюкзак — забрать, на печь — попробовать снова"
               >
-                <ItemArt kind={trayIt.kind} px={22} />
+                <ItemArt kind={trayIt.kind} px={22} cartSrc={cartArtOf?.(trayIt)?.src ?? null} />
               </div>
             </div>
           )}
@@ -502,6 +519,7 @@ export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total
             near={near}
             strong={strong}
             hpFull={hpFull}
+            cartArtOf={cartArtOf}
             furnaceRef={furnaceRef}
             zoneRef={zoneRef}
             containerRef={gridRef}
@@ -521,7 +539,7 @@ export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total
       {/* призрак предмета при перетаскивании ИЗ ЛОТКА — v0.143: тоже через ПОРТАЛ */}
       {trayDrag.drag && createPortal(
         <div className="fixed z-[130] pointer-events-none" style={{ left: trayDrag.drag.x, top: trayDrag.drag.y, transform: 'translate(-50%,-50%) rotate(-6deg)', filter: 'drop-shadow(0 6px 10px rgba(0,0,0,0.8))' }}>
-          <ItemArt kind={trayDrag.drag.kind} px={40} />
+          <ItemArt kind={trayDrag.drag.kind} px={40} cartSrc={cartArtOf?.(items.find((x) => x.id === trayDrag.drag!.itemId) ?? ({ id: '', kind: trayDrag.drag.kind } as RubgItem))?.src ?? null} />
         </div>,
         document.body,
       )}
@@ -531,3 +549,156 @@ export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total
 
 /* подпись предмета на земле (HUD-подсказка «подними») */
 export const groundItemLabel = (kind: RubgItemKind): string => `${artFor(kind)} «${RUBG_ITEMS[kind].name}»`;
+
+/* ---------- v0.144: ОКНО ПРИСТАВКИ + РЮКЗАК (E у приставки) ----------
+   Слева — фотография приставки со слотом: перетащи КАРТРИДЖ из рюкзака НА ПРИСТАВКУ —
+   он встанет в слот (диспатч frendyCartInsert). Потом жми КНОПКУ ПИТАНИЯ — запустится
+   игра-задание, записанное на картридже (frendyPowerOn). Победа — картридж переедет
+   в рюкзак (его жгут в печи или вставляют в другую пустую приставку). */
+export function FrendyConsoleModal({ onClose, cellIdx, items, cartTaskIdx, busy, cartImgSrc, cartTitle, hpFull, dispatches }: {
+  onClose: () => void;
+  cellIdx: number;                 // индекс ячейки-приставки
+  items: RubgItem[];
+  cartTaskIdx: number | null;      // какой картридж ВСТАВЛЕН (null — приставка пуста)
+  busy: boolean;                   // приставку сейчас играет кто-то (qJobs)
+  cartImgSrc: string | null;       // арт вставленного картриджа (обложка)
+  cartTitle: string | null;        // игра на вставленном картридже
+  hpFull: boolean;
+  dispatches: {
+    insert: (itemId: string) => void;   // frendyCartInsert (перетащили картридж на приставку)
+    powerOn: () => void;                // frendyPowerOn (кнопка питания)
+    use: (itemId: string) => void;
+    drop: (itemId: string) => void;
+    move: (itemId: string, gx: number, gy: number) => void;
+    cartArt: (it: RubgItem) => { src: string | null; title: string | null } | null; // арт/название картриджа из рюкзака
+  };
+}) {
+  const slotRef = useRef<HTMLDivElement | null>(null);   // зона «на приставку» (сюда тащат картридж)
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const zoneRef = useRef<HTMLDivElement | null>(null);
+  const [slotHot, setSlotHot] = useState(false);          // над слотом тащат предмет
+  const [slotMsg, setSlotMsg] = useState<string | null>(null); // почему вставить нельзя
+  const msgTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (msgTimer.current !== null) window.clearTimeout(msgTimer.current); }, []);
+  const flashSlot = (msg: string) => {
+    setSlotMsg(msg);
+    sfx.fail();
+    if (msgTimer.current !== null) window.clearTimeout(msgTimer.current);
+    msgTimer.current = window.setTimeout(() => setSlotMsg(null), 3200);
+  };
+
+  /* попытка вставить (drag на приставку): предпроверки — движок перепроверит у хоста */
+  const tryInsert = (itemId: string) => {
+    const it = items.find((x) => x.id === itemId);
+    if (!it) return;
+    if (it.kind !== 'dendyCart') { flashSlot('Приставка принимает только КАРТРИДЖИ заданий 📼'); return; }
+    if (typeof it.taskIdx !== 'number') { flashSlot('Это безымянный картридж — приставка играет только картриджи ЗАДАНИЙ'); return; }
+    if (cartTaskIdx !== null) { flashSlot('В приставке УЖЕ ЕСТЬ картридж — сначала победи её задание'); return; }
+    if (busy) { flashSlot('Приставку сейчас играет другой игрок'); return; }
+    sfx.frendyStrong(); // щелчок «вставили» — тот же звук, что у Френди
+    dispatches.insert(itemId);
+  };
+
+  /* драг из сетки: подсветка слота */
+  const onDragTo = (pos: { x: number; y: number } | null, kind: RubgItemKind | null) => {
+    if (!pos || !kind) { setSlotHot(false); return; }
+    const sr = slotRef.current;
+    if (!sr) { setSlotHot(false); return; }
+    const r = sr.getBoundingClientRect();
+    setSlotHot(pos.x >= r.left && pos.x <= r.right && pos.y >= r.top && pos.y <= r.bottom);
+  };
+
+  const cartArtOf = (it: RubgItem): { src: string | null; title: string | null } | null => (
+    it.kind === 'dendyCart' ? dispatches.cartArt(it) : null
+  );
+
+  const powerWhy = cartTaskIdx === null ? 'Приставка ПУСТА — вставь картридж' : busy ? 'Приставку сейчас играет другой' : null;
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-[rgba(4,6,14,0.82)] p-3" style={{ touchAction: 'none' }}>
+      <div className="flex flex-col md:flex-row items-stretch justify-center gap-3 max-w-4xl w-full">
+        {/* ---------- ОКНО 1: ПРИСТАВКА (сюда тащат картридж, тут кнопка питания) ---------- */}
+        <div className="relative pixel-panel pixel-corners p-4 w-full md:w-[320px] shrink-0 text-center space-y-2.5">
+          <div className="font-display uppercase text-lg text-[#8fd0ff]">🎮 Приставка №{cellIdx + 1}</div>
+          <div
+            ref={slotRef}
+            className={`relative mx-auto h-[190px] w-[240px] border-2 border-[#3a3f5a] flex items-center justify-center ${slotHot ? 'furnace-hot' : ''}`}
+            style={{
+              background: 'radial-gradient(circle at 50% 38%, rgba(70,84,140,0.35), rgba(10,12,24,0.95) 72%)',
+              boxShadow: slotHot ? 'inset 0 0 26px rgba(140,200,255,0.55)' : 'inset 0 0 22px rgba(0,0,0,0.8)',
+            }}
+          >
+            <img
+              src={frendyConsoleImg(cellIdx)}
+              alt="Приставка"
+              draggable={false}
+              className="absolute inset-0 w-full h-full object-contain p-2 pointer-events-none"
+              style={{ imageRendering: 'auto' }}
+            />
+            {/* слот: вставленный картридж (или подсказка «вставь картридж») */}
+            {cartTaskIdx !== null ? (
+              <div className="relative z-10 mt-6 flex flex-col items-center gap-1">
+                <div style={{ filter: 'drop-shadow(0 5px 9px rgba(0,0,0,0.85))' }}>
+                  {cartImgSrc
+                    ? <img src={cartImgSrc} alt="Картридж" draggable={false} style={{ maxHeight: 52, maxWidth: 96, width: 'auto' }} />
+                    : <span style={{ fontSize: 40 }}>📼</span>}
+                </div>
+                <div className="font-pixel text-[8px] text-[#d8b95c] bg-[rgba(7,9,18,0.85)] px-1.5 py-0.5 max-w-[200px] truncate">{cartTitle ?? 'игра'}</div>
+              </div>
+            ) : (
+              <div className="relative z-10 mt-8 font-pixel text-[8px] text-dim bg-[rgba(7,9,18,0.85)] px-2 py-1 border border-[#a0843c]/40">
+                ПУСТО — тащи картридж сюда
+              </div>
+            )}
+          </div>
+          {/* КНОПКА ПИТАНИЯ */}
+          <button
+            className={`w-full py-2.5 font-display uppercase tracking-wider text-sm border-2 transition-colors ${powerWhy ? 'border-edge text-faint cursor-not-allowed' : 'border-[#2ee6a8] text-[#2ee6a8] hover:bg-[rgba(46,230,168,0.12)] cursor-pointer pulse-ring'}`}
+            disabled={!!powerWhy}
+            title={powerWhy ?? 'Включить картридж — запустится игра-задание'}
+            onClick={() => { if (powerWhy) return; sfx.start(); dispatches.powerOn(); }}
+          >
+            ⏻ POWER ON
+          </button>
+          <div className={`font-pixel text-[10px] leading-snug ${slotMsg ? 'text-[#ff8b7a]' : 'text-dim'}`}>
+            {slotMsg ?? (busy
+              ? '🕹 Эту приставку сейчас ИГРАЕТ кто-то другой — дождись победы/поражения'
+              : cartTaskIdx !== null
+                ? `В слоте: «${cartTitle ?? 'игра'}». Жми POWER ON — задание запустится в обычном окне (победа — картридж ВЕСЬ ТВОЙ)`
+                : 'Перетащи КАРТРИДЖ из рюкзака на приставку, затем жми POWER ON. Забрать картридж можно, только ПОБЕДИВ задание')}
+          </div>
+        </div>
+
+        {/* ---------- ОКНО 2: РЮКЗАК-СЕТКА (Diablo) ---------- */}
+        <div ref={zoneRef} className="relative pixel-panel pixel-corners p-4 w-full">
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <span className="font-display uppercase tracking-wider text-paper text-sm">🎒 Рюкзак</span>
+            <span className="tick-label text-faint">{items.length} предм.</span>
+            <GhostBtn small className="ml-auto" onClick={onClose}>{Ic.cross(12)} Закрыть</GhostBtn>
+          </div>
+          <FrendyInvGrid
+            items={items}
+            near={false}
+            strong={false}
+            hpFull={hpFull}
+            furnaceRef={slotRef}
+            zoneRef={zoneRef}
+            containerRef={gridRef}
+            onDragTo={onDragTo}
+            cartArtOf={cartArtOf}
+            actions={{
+              /* дроп НА ПРИСТАВКУ = вставить картридж (другое — отказ с пояснением) */
+              onBurn: tryInsert,
+              onUse: dispatches.use,
+              onDrop: (id) => { dispatches.drop(id); sfx.drop?.(); },
+              onMove: dispatches.move,
+            }}
+          />
+          <div className="font-pixel text-[9px] text-faint mt-2 leading-snug">
+            ПКМ по предмету — меню (сжечь в ПЕЧИ — только рядом с ней) · за окно — выбросить на землю
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

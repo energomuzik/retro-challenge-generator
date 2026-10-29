@@ -12,7 +12,7 @@ import { CODE_TYPE_LABEL, OP_LABEL, formatCond, hex8, memCondText, parseCond, pa
 import { renumberByPath, fixLinksAfterDelete } from '../render';
 import { HoldDeleteButton, rememberDeleted } from '../delGuard';
 import { effSpoilerOpen, loadSpoilerFlag, loadSpoilerRec, saveSpoilerFlag, saveSpoilerRec } from '../spoilers';
-import { CartridgeBadge, CartCutModal, CoverCropBtn, CoverPickBtn, CoverRemoveBtn, PlatName, RomPicsModal, RomTile, cartLabelOf, fileToCover, storeRomCover } from '../cartridge';
+import { CartridgeBadge, CartCoverModal, CartCutModal, CoverCropBtn, CoverPickBtn, CoverRemoveBtn, PlatName, RomPicsModal, RomTile, cartLabelOf, fileToCover, storeRomCover } from '../cartridge';
 import { sfx } from '../sound';
 
 const EFFECTS: { key: EffectType; label: string; hasValue?: boolean; hasTarget?: boolean; unit?: string; def: number }[] = [
@@ -68,6 +68,7 @@ export default function TaskEditor() {
   const selRef = useRef(selCell); selRef.current = selCell;
 
   // форма задания
+  const [coverView, setCoverView] = useState<RomDef | null>(null); // v0.144: большой просмотр обложки картриджа
   const [fRom, setFRom] = useState('');
   const [fSave, setFSave] = useState('');
   const [fTitle, setFTitle] = useState('');
@@ -346,7 +347,14 @@ export default function TaskEditor() {
           className="w-full text-left cursor-pointer"
         >
           <div className="flex items-center gap-2">
-            <CartridgeBadge rom={r} h={18} />
+            {/* v0.144: клик по бейджу — БОЛЬШОЙ ПРОСМОТР обложки картриджа (не выбирает ром) */}
+            <span
+              className="cursor-zoom-in shrink-0"
+              title="Клик — посмотреть обложку картриджа КРУПНО"
+              onClick={(e) => { e.stopPropagation(); setCoverView(r); sfx.click(); }}
+            >
+              <CartridgeBadge rom={r} h={18} />
+            </span>
             <span className={`font-display text-[11px] uppercase truncate ${sel ? 'text-gold' : 'text-paper'}`}>{sel ? '✓ ' : ''}{r.name}</span>
           </div>
           <div className="tick-label text-faint mt-1">{cartLabelOf(r)} · сохранений: {svCount}{inPool ? ` · в пуле донатов №${poolNo}` : ''}</div>
@@ -1009,7 +1017,15 @@ export default function TaskEditor() {
                         <div className="flex items-center gap-2 border-2 border-gold/60 bg-gold/5 px-2.5 py-2">
                           {(() => {
                             const cur = roms.find((r) => r.id === fRom);
-                            return cur ? <CartridgeBadge rom={cur} h={18} /> : null;
+                            return cur ? (
+                              <span
+                                className="cursor-zoom-in"
+                                title="Клик — посмотреть обложку картриджа КРУПНО"
+                                onClick={() => { setCoverView(cur); sfx.click(); }}
+                              >
+                                <CartridgeBadge rom={cur} h={18} />
+                              </span>
+                            ) : null;
                           })()}
                           <span className="font-display text-[11px] uppercase text-gold truncate">✓ {romName(fRom)}</span>
                         </div>
@@ -1395,6 +1411,8 @@ export default function TaskEditor() {
           }}
         />
       )}
+      {/* v0.144: БОЛЬШОЙ ПРОСМОТР обложки картриджа — клик по бейджу рома (панель «Ромы» или форма задания) */}
+      {coverView && <CartCoverModal rom={coverView} onClose={() => setCoverView(null)} />}
       </div>
     </div>
   );

@@ -3536,7 +3536,7 @@ export default function MapEditor() {
       const taskCnt = map.cells.filter((c) => c.type === 'task').length;
       if (taskCnt < 10) {
         sfx.fail();
-        toast(`FRENDY: нужно минимум 10 ЯЧЕЕК С ЗАДАНИЕМ — сейчас ${taskCnt}. Френди оттаскивает пойманных игроков к СЛУЧАЙНОЙ ячейке задания и запускает его лично — без 10 ячеек режим не работает. Добавьте ячейки «Зад.» с заданиями`, 'err');
+        toast(`FRENDY: нужно минимум 10 ПРИСТАВОК (ячеек задания) — сейчас ${taskCnt}. Френди оттаскивает пойманных к СЛУЧАЙНОЙ ПРИСТАВКЕ с картриджем и запускает задание; игроки тоже включают приставки по E — без 10 приставок режим не работает. Добавьте ячейки «Приставка» с заданиями`, 'err');
         return;
       }
     } else if (map.cells.some((c) => c.type === 'furnace')) {
@@ -5202,7 +5202,7 @@ export default function MapEditor() {
                   <div>
                     <div className="tick-label mb-1.5">Тип</div>
                     <div className="grid grid-cols-8 gap-1">
-                      {[...CELL_TYPES, ...((map.mode ?? 'classic') === 'rubg' ? [LOOT_CELL_TYPE] : (map.mode ?? 'classic') === 'frendy' ? [FURNACE_CELL_TYPE] : [])].map((t) => (
+                      {[...CELL_TYPES.map((t) => (t.key === 'task' && (map.mode ?? 'classic') === 'frendy') ? { ...t, label: 'Приставка' } : t), ...((map.mode ?? 'classic') === 'rubg' ? [LOOT_CELL_TYPE] : (map.mode ?? 'classic') === 'frendy' ? [FURNACE_CELL_TYPE] : [])].map((t) => (
                         <button
                           key={t.key}
                           onClick={() => { updCell(selCell, { type: t.key }); renumber(); dirtyRef.current = true; }}

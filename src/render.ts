@@ -1,5 +1,6 @@
 import type { AnimClip, CellDef, CutsceneDef, GameMap, NpcLibEntry, PlacedAnim, PlacedBoss, PlacedNpc, PortalZone, Stamp, TileDef, TileImg, TokenAnim, TokenDir, WallRect } from './types';
 import { doorKeyHex, RUBG_ITEMS } from './types';
+import { frendyConsoleImg } from './consoleAssets'; // v0.144 FRENDY: фото приставок (Dendy/Famicom/NES)
 import { getImage } from './assets';
 import { patrolPos } from './patrol';
 import { frendyFrame } from './frendyAssets'; // v0.136: фирменный арт Френди на поле (ходьба/стойка)
@@ -447,7 +448,12 @@ export interface BoardDrawOpts {
      зона-триггер — пунктирный прямоугольник с плашкой «ТРИГГЕР»; active — выделенная */
   cutViz?: { pts: { x: number; y: number }[]; zone: { x: number; y: number; w: number; h: number } | null; color: string; active: boolean }[];
   /* v0.123 FRENDY: предметы НА ПОЛЕ (микросхемы/выброшенное) и супер-босс Френди (позиция сглажена клиентом) */
-  frendyChips?: { x: number; y: number; kind?: string }[] | null;
+  frendyChips?: { x: number; y: number; kind?: string; taskIdx?: number }[] | null; // v0.144: у картриджей — taskIdx задания
+  /* v0.144 FRENDY: ПРИСТАВКИ ВМЕСТО ЯЧЕЕК — режим, сессия и арты картриджей */
+  frendyMode?: boolean;                                // режим карты FRENDY — ячейки задания рисуются ПРИСТАВКАМИ
+  frendyConsoles?: Record<string, number | null>;      // какой картридж вставлен (нет ключа — «свой»)
+  taskCartImgs?: Record<string, string | null>;        // taskIdx → арт картриджа (обложка рома / фото платформы)
+  taskTitles?: Record<string, string | null>;          // taskIdx → название задания (подпись под приставкой)
   /* v0.136: + walking/flip — идёт ли Френди сейчас (цикл ходьбы vs стойка) и разворот спрайта
      (рисунок смотрит ВЛЕВО — при движении вправо флипаем; считает GameScreen по скорости) */
   frendyBoss?: { x: number; y: number; fx?: string | null; fxTs?: number; targetId?: string | null; walking?: boolean; flip?: boolean } | null;
@@ -539,9 +545,72 @@ const drawFurnace = (ctx: CanvasRenderingContext2D, cx: number, cy: number, s: n
   ctx.restore();
 };
 
+/* v0.144 FRENDY: ПРИСТАВКА на месте ячейки задания — фотография настоящей консоли
+   (Dendy Classic / Famicom / NES — по индексу ячейки) + ВСТАВЛЕННЫЙ КАРТРИДЖ (обложка
+   задания, маленьким в зоне слота) + подпись: игра на картридже или «ПРИСТАВКА». */
+const drawFrendyConsole = (
+  ctx: CanvasRenderingContext2D, W: number, H: number, idx: number, time: number,
+  consoles: Record<string, number | null> | undefined, cartImgs: Record<string, string | null> | undefined,
+  titles: Record<string, string | null> | undefined, isHush: boolean,
+) => {
+  const img = getImage(frendyConsoleImg(idx));
+  const sz = Math.min(W, H);
+  if (img) {
+    const iw = img.naturalWidth || 1, ih = img.naturalHeight || 1;
+    const sc = Math.min((W * 0.88) / iw, (H * 0.82) / ih);
+    const dw = iw * sc, dh = ih * sc;
+    /* мягкая тень под корпусом + фото */
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(0, dh / 2 + H * 0.055, dw * 0.42, dh * 0.07, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.drawImage(img, -dw / 2, -dh / 2 - H * 0.04, dw, dh);
+  }
+  /* какой картридж вставлен (ленивое «свой», если таблицы/ключа нет) */
+  let taskIdx: number | null;
+  if (consoles && Object.prototype.hasOwnProperty.call(consoles, idx)) {
+    const v = consoles[idx];
+    taskIdx = typeof v === 'number' && v >= 0 ? v : null;
+  } else {
+    taskIdx = idx;
+  }
+  if (taskIdx !== null && !isHush) {
+    const src = cartImgs ? cartImgs[taskIdx] ?? null : null;
+    const cart = src ? getImage(src) : null;
+    if (cart) {
+      const cw0 = sz * 0.4;
+      const ch0 = cw0 * ((cart.naturalHeight || 1) / (cart.naturalWidth || 1));
+      const chC = Math.min(ch0, sz * 0.3);
+      const cwC = chC * ((cart.naturalWidth || 1) / (cart.naturalHeight || 1));
+      /* подставка-тень, чтобы картридж «лежал» на приставке */
+      ctx.fillStyle = 'rgba(0,0,0,0.28)';
+      ctx.beginPath();
+      ctx.ellipse(0, H * 0.1 + 2, cwC * 0.55, chC * 0.14, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.drawImage(cart, -cwC / 2, H * 0.1 - chC / 2, cwC, chC);
+      /* мигающий светодиод питания */
+      const led = 0.5 + 0.5 * Math.sin(time / 300);
+      ctx.fillStyle = `rgba(255,70,60,${0.35 + 0.65 * led})`;
+      ctx.beginPath();
+      ctx.arc(cwC / 2 + 4, H * 0.1 + chC / 2, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  /* подпись — только у достаточно крупных ячеек (в маленьких места нет) */
+  if (H >= 56) {
+    const title = isHush ? '???' : ((titles ? (titles[taskIdx ?? ''] ?? null) : null) || 'ПРИСТАВКА');
+    ctx.fillStyle = 'rgba(7,9,18,0.75)';
+    ctx.fillRect(-W / 2 + 3, H / 2 - 14, W - 6, 11);
+    ctx.fillStyle = '#e9ecff';
+    ctx.font = '7px "Press Start 2P", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(String(title).toUpperCase().slice(0, Math.max(4, Math.floor((W - 12) / 7))), 0, H / 2 - 5.5);
+  }
+};
+
 /* v0.123 FRENDY: МИКРОСХЕМА на поле — зелёная плата с ножками и мигающим светодиодом.
    Чужой предмет (kind) — рисуем эмодзи вещи. */
-const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, time: number, kind?: string) => {
+const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, time: number, kind?: string, cartImg?: string | null) => {
   ctx.save();
   ctx.translate(cx, cy);
   if (kind) {
@@ -552,6 +621,18 @@ const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, t
     ctx.beginPath();
     ctx.ellipse(0, 9, 10, 3.8, 0, 0, Math.PI * 2);
     ctx.fill();
+    /* v0.144: картридж ЗАДАНИЯ на полу — его ОБЛОЖКА (фото платформы/своя картинка),
+       как в редакторе; без картинки (старые сейвы) — прежний 📼 */
+    if (kind === 'dendyCart' && cartImg) {
+      const cimg = getImage(cartImg);
+      if (cimg) {
+        const chH = 19;
+        const cwW = chH * ((cimg.naturalWidth || 1) / (cimg.naturalHeight || 1));
+        ctx.drawImage(cimg, -cwW / 2, -chH / 2 - 1, cwW, chH);
+        ctx.restore();
+        return;
+      }
+    }
     ctx.font = '14px serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -1205,6 +1286,10 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
         ctx.textAlign = 'center';
         ctx.fillText('СТАРТ', 0, H / 2 - 8);
       } else if (cell.type === 'task') {
+        /* v0.144 FRENDY: ячейка задания — ПРИСТАВКА (фото консоли + картридж в слоте) */
+        if (o.frendyMode) {
+          drawFrendyConsole(ctx, W, H, i, o.time, o.frendyConsoles, o.taskCartImgs, o.taskTitles, isHush);
+        } else {
         const imgSrc = isHush ? null : (cell.task?.imageId || cell.imageId); // скрыто — картинку не рисуем (выдала бы задание)
         const img = imgSrc ? getImage(imgSrc) : null;
         const areaTop = -H / 2 + (cell.color ? 20 : 5);
@@ -1236,6 +1321,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
           ctx.font = '10px "Press Start 2P", monospace';
           ctx.textAlign = 'center';
           ctx.fillText('!', W / 2 - 9, -H / 2 + (cell.color ? 30 : 16));
+        }
         }
       } else {
         const icon = cell.type === 'bonus' ? STAR : cell.type === 'trap' ? SKULL : cell.type === 'rest' ? REST : cell.type === 'loot' ? BOX : cell.type === 'furnace' ? FURN : QUIZ;
@@ -1296,7 +1382,10 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       ctx.strokeRect(-W / 2 + 3, -H / 2 + 3, W - 6, H - 6);
 
       const cellImg = !isHush && cell.imageId ? getImage(cell.imageId) : null; // v0.99: скрыто — картинку не рисуем
-      if (isStart) {
+      if (o.frendyMode && cell.type === 'task') {
+        /* v0.144 FRENDY: приставка в малой ячейке — фото + картридж (без подписи) */
+        drawFrendyConsole(ctx, W, H, i, o.time, o.frendyConsoles, o.taskCartImgs, o.taskTitles, isHush);
+      } else if (isStart) {
         flagIcon(ctx, 4, '#ffcf3f');
       } else if (cellImg) {
         ctx.imageSmoothingEnabled = false;
@@ -1776,7 +1865,10 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
 
   /* v0.123 FRENDY: предметы НА ПОЛЕ (под фишками) и ФРЕНДИ (поверх всех — он поверх мира) */
   if (o.frendyChips) {
-    for (const c of o.frendyChips) drawFrendyChip(ctx, c.x, c.y, o.time, c.kind);
+    for (const c of o.frendyChips) {
+      const cartArt = c.kind === 'dendyCart' && typeof c.taskIdx === 'number' ? (o.taskCartImgs ? o.taskCartImgs[c.taskIdx] ?? null : null) : null;
+      drawFrendyChip(ctx, c.x, c.y, o.time, c.kind, cartArt);
+    }
   }
   if (o.frendyBoss) {
     drawFrendyBoss(ctx, o.frendyBoss.x, o.frendyBoss.y, o.time, o.frendyBoss.fx, o.frendyBoss.fxTs, o.frendyBoss.walking, o.frendyBoss.flip);

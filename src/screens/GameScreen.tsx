@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, getRomData, useBlobImage } from '../store';
 import { dispatch, streamBus, type StreamPacket } from '../useGame';
 import { CELL, cellAtPoint, cellCenter, drawBoard, drawRubgOverlay, fitView, mapSize, plateMetrics, plateNumAt, plateRectOf, smoothPxPerFrame, jumpFrameFactor, DEF_MOVE_SPEED, clampMoveSpeed } from '../render';
 import { patrolPos } from '../patrol';
-import { cellHushed, cellRectOf, cellTaskOf, bogachCellList, fmtClock, spentInfo } from '../engine';
+import { cellHushed, cellRectOf, cellTaskOf, frendyCartTaskIdx, bogachCellList, fmtClock, spentInfo } from '../engine';
 import { effectLabel } from './TaskEditor';
 import { cardArt, cartridgeArt } from '../assets';
+import { cartImgSrcOf } from '../cartridge'; // v0.144: обложка/фото картриджа задания
 import SegaBox, { type SegaApi } from '../SegaBox';
 import { isFloatT, opOk, readAt } from '../memcode';
 import KeyBinder from '../KeyBinder';
@@ -19,7 +20,7 @@ import {
 import { saveSessionSnapshot } from './Lobby';
 import QuizOverlay from './QuizOverlay';
 import { AnimPreview, EmuVolumeChip, Field, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin, CoinRow } from '../ui';
-import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isBossCatchMode, isSoloMode, isFrendyMode, FRENDY_PHRASES, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf } from '../types';
+import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isBossCatchMode, isSoloMode, isFrendyMode, FRENDY_PHRASES, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf } from '../types';
 import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem, RubgItemKind } from '../types';
 import Randomizer from './Randomizer';
 import TradeWindow from './TradeWindow';
@@ -36,7 +37,7 @@ import { FrendyIntroCine, EndCredits, XFinale } from './FrendyCine'; // v0.124: 
 import { agentFrame, agentPortrait, AGENT_NAMES, EPI_SCRIPT, type AgentWho } from '../agentsAssets'; // v0.132: агенты Альдер/Скаллер (эпилог FRENDY)
 import { AgentsVn, VnText } from './AgentsVn'; // v0.132: разговор агентов в стиле визуальной новеллы + печатная машинка
 import { BogachPanel } from './BogachPanel'; // v0.109 БОГАЧ: панель донатов хоста
-import { FrendyInvGrid, FrendyFurnaceModal, ChipArt } from './FrendyInv'; // v0.141 FRENDY: DIABLO-инвентарь (сетка 10×6, печь + рюкзак); v0.142: + пиксельная микросхема (ChipArt)
+import { FrendyInvGrid, FrendyFurnaceModal, FrendyConsoleModal, ChipArt } from './FrendyInv'; // v0.141 FRENDY: DIABLO-инвентарь (сетка 10×6, печь + рюкзак); v0.142: + пиксельная микросхема (ChipArt)
 import { hasDice } from '../bogach'; // v0.109: проверка пакостей/радостей «только для кубиков»
 import { DONATE_DICE_ONLY } from '../types';
 import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
@@ -274,7 +275,7 @@ export default function GameScreen() {
   /* экранный D-pad: пока открыт мини-экран (карман/взлом) или ИНВЕНТАРЬ — направления
      игнорируются, фишка на фоне стоит (ref объявлен ниже, читается в рантайме после монтирования) */
   const journeyPress = (d: TokenDir, on: boolean) => {
-    if (on && (pocketBlockRef.current || invBlockRef.current || furnBlockRef.current)) return;
+    if (on && (pocketBlockRef.current || invBlockRef.current || furnBlockRef.current || consoleBlockRef.current)) return; // v0.144: окно приставки тоже стоит
     if (on) journeyKeys.current.add(d); else journeyKeys.current.delete(d);
   };
   /* ---------- FX: разовые анимации-спектакль (5-я/6-я фишки, реакции боссов) ----------
@@ -692,6 +693,13 @@ export default function GameScreen() {
     furnBlockRef.current = furnOpen;
     if (furnOpen) journeyKeys.current.clear();
   }, [furnOpen]);
+  /* v0.144: ОКНО ПРИСТАВКИ открыто — фишка СТОИТ (как у печи) */
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const consoleBlockRef = useRef(false);
+  useEffect(() => {
+    consoleBlockRef.current = consoleOpen;
+    if (consoleOpen) journeyKeys.current.clear();
+  }, [consoleOpen]);
   /* v0.140: партия кончилась (например, сожгли ПОСЛЕДНЮЮ микросхему прямо из рюкзака) —
      инвентарь закрывается сам, чтобы не закрывать финал/титры.
      v0.142: окно ПЕЧИ закрывается при конце партии ТОЖЕ — иначе оно висит
@@ -700,8 +708,9 @@ export default function GameScreen() {
     if (s && s.phase !== 'playing') {
       if (invOpen) setInvOpen(false);
       if (furnOpen) setFurnOpen(false);
+      if (consoleOpen) setConsoleOpen(false);
     }
-  }, [invOpen, furnOpen, s?.phase]);
+  }, [invOpen, furnOpen, consoleOpen, s?.phase]);
   /* v0.59: челлендж открылся (JOURNEY/SKILL/classic) — зажатые до него клавиши тоже сбрасываем,
      чтобы после задания фишка не убегала на старых зажатиях */
   useEffect(() => {
@@ -758,7 +767,23 @@ export default function GameScreen() {
       if (!r) continue;
       const dx = Math.max(r.x - myJourneyPos.x, 0, myJourneyPos.x - (r.x + r.w));
       const dy = Math.max(r.y - myJourneyPos.y, 0, myJourneyPos.y - (r.y + r.h));
-      if (Math.hypot(dx, dy) <= Math.max(140, Math.max(r.w, r.h) * 0.8 + 40)) return { idx: i };
+      /* v0.144: ВПЛОТНУЮ — ровно тот радиус, в котором движок реально жжёт (от края) */
+      if (Math.hypot(dx, dy) <= FRENDY_FURNACE_NEAR) return { idx: i };
+    }
+    return null;
+  }, [isFrendy, s, map, mePlayer, myJourneyPos?.x, myJourneyPos?.y]);
+  /* v0.144 FRENDY: ПРИСТАВКА в радиусе (E — окно «приставка + рюкзак», POWER ON).
+     Радиус — от КРАЯ ячейки (FRENDY_CONSOLE_NEAR), как у печи. */
+  const nearConsole = useMemo(() => {
+    if (!isFrendy || !s || s.phase !== 'playing' || !map || !mePlayer || !mePlayer.alive || mePlayer.spect) return null;
+    if (!myJourneyPos) return null;
+    for (let i = 0; i < map.cells.length; i++) {
+      if (map.cells[i].type !== 'task') continue;
+      const r = cellRectOf(map, i);
+      if (!r) continue;
+      const dx = Math.max(r.x - myJourneyPos.x, 0, myJourneyPos.x - (r.x + r.w));
+      const dy = Math.max(r.y - myJourneyPos.y, 0, myJourneyPos.y - (r.y + r.h));
+      if (Math.hypot(dx, dy) <= FRENDY_CONSOLE_NEAR) return { idx: i };
     }
     return null;
   }, [isFrendy, s, map, mePlayer, myJourneyPos?.x, myJourneyPos?.y]);
@@ -937,6 +962,8 @@ export default function GameScreen() {
         if (cur && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); openDialog(cur.npc.id); } // v0.56: в кат-сцене разговоров нет
         /* v0.123 FRENDY: E у ПЕЧИ — окно сжигания микросхемы */
         else if (isFrendy && nearFurnace && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setFurnOpen(true); }
+        /* v0.144 FRENDY: E у ПРИСТАВКИ — окно «приставка + рюкзак» (картридж + POWER ON) */
+        else if (isFrendy && nearConsole && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setConsoleOpen(true); }
         /* v0.132 ЭПИЛОГ: E у АЛЬДЕРА — начать разговор в стиле визуальной новеллы (все видят) */
         else if (epiNearAlder && !cutActiveRef.current) { e.preventDefault(); sfx.click(); dispatch({ t: 'epiTalk', id: me }); }
       }
@@ -961,7 +988,7 @@ export default function GameScreen() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [nearNpc, dlgNpcId, isFrendy, nearFurnace, epiNearAlder]);
+  }, [nearNpc, dlgNpcId, isFrendy, nearFurnace, !!nearConsole, epiNearAlder]);
   /* v0.133 FRENDY: ПЕЧЬ С ДЖОЙСТИКА — лицевые кнопки (W3C 0/1/2/3 = A/B/X/Y всех падов)
      и назначенные под A/B в раскладках консолей открывают окно печи рядом, как клавиша E.
      Край-триггер: открывает только НОВОЕ нажатие — удержание и кнопка, зажатая ДО
@@ -984,6 +1011,24 @@ export default function GameScreen() {
     }, 66);
     return () => window.clearInterval(iv);
   }, [isFrendy, !!nearFurnace, furnOpen, s?.phase]);
+  /* v0.144 FRENDY: ПРИСТАВКА С ДЖОЙСТИКА — лицевые кнопки открывают окно приставки,
+     как клавиша E (край-триггер тот же, что у печи). */
+  const consolePadPrevRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!isFrendy || !nearConsole || consoleOpen || furnOpen || s?.phase !== 'playing') return;
+    const init = new Set<number>();
+    collectPadButtons(init);
+    consolePadPrevRef.current = init; // уже зажатое в момент подхода — не открывает
+    const iv = window.setInterval(() => {
+      const cur = new Set<number>();
+      collectPadButtons(cur);
+      let fresh = false;
+      for (const b of cur) if (!consolePadPrevRef.current.has(b)) { fresh = true; break; }
+      consolePadPrevRef.current = cur;
+      if (fresh) { sfx.click(); setConsoleOpen(true); }
+    }, 66);
+    return () => window.clearInterval(iv);
+  }, [isFrendy, !!nearConsole, consoleOpen, furnOpen, s?.phase]);
   /* v0.135: АЛЬДЕР С ДЖОЙСТИКА — те же лицевые кнопки открывают разговор в эпилоге,
      когда Скаллер (хост) стоит рядом с Альдером, как клавиша E. Край-триггер тот же. */
   const alderPadPrevRef = useRef<Set<number>>(new Set());
@@ -1009,6 +1054,34 @@ export default function GameScreen() {
      или клик по предмету на карте. В рюкзаке нет места — движок откажет: предмет ОСТАНЕТСЯ
      на земле, клиент покажет «отскок» и подсказку (как в Diablo 1). */
   const [pickupBounce, setPickupBounce] = useState<{ key: number; kind: RubgItemKind } | null>(null);
+  /* v0.144 FRENDY: арты и названия заданий карты — для ПРИСТАВОК на поле и КАРТРИДЖЕЙ на полу.
+     Обложка рома / фото платформы — те же картинки, что в редакторе заданий (cartImgSrcOf). */
+  /* v0.144: арт/название картриджа из рюкзака (для окон печи и приставки) */
+  const frendyCartArtOf = useCallback((it: RubgItem): { src: string | null; title: string | null } | null => {
+    if (!s || !map || it.kind !== 'dendyCart') return null;
+    const t = typeof it.taskIdx === 'number' ? (s.sessionTasks[it.taskIdx] ?? map.cells[it.taskIdx]?.task ?? null) : null;
+    const rom = t ? st.roms.find((r) => r.id === t.romId) : undefined;
+    return { src: rom ? cartImgSrcOf(rom) : null, title: t?.title ?? null };
+  }, [s, map, st.roms]);
+  const frendyTaskArt = useMemo(() => {
+    const imgs: Record<string, string | null> = {};
+    const titles: Record<string, string | null> = {};
+    if (!isFrendy || !s || !map) return { imgs, titles };
+    for (let i = 0; i < map.cells.length; i++) {
+      if (map.cells[i].type !== 'task') continue;
+      const cartIdx = frendyCartTaskIdx(s, map, i);
+      if (cartIdx === null) { imgs[i] = null; titles[i] = null; continue; } // приставка ПУСТА
+      const tk = s.sessionTasks[cartIdx] ?? map.cells[cartIdx]?.task ?? null;
+      if (!tk) { imgs[i] = null; titles[i] = null; continue; }
+      const rom = st.roms.find((r) => r.id === tk.romId);
+      imgs[i] = rom ? cartImgSrcOf(rom) : null;
+      titles[i] = tk.title;
+    }
+    return { imgs, titles };
+  }, [isFrendy, s, map, st.roms]);
+  /* rAF-цикл читает useApp.getState() живьём — memo в его замыкании УСТАРЕЛ бы; держим ref */
+  const frendyTaskArtRef = useRef(frendyTaskArt);
+  frendyTaskArtRef.current = frendyTaskArt;
   const pickTryRef = useRef<{ id: string; at: number } | null>(null);
   const tryPickup = () => {
     if (!isFrendy || !me || !nearItem || s?.phase !== 'playing') return;
@@ -1081,16 +1154,17 @@ export default function GameScreen() {
       if (cutActiveRef.current || taskWinRef.current || dlgOpenIdRef.current || pocketBlockRef.current) return;
       e.preventDefault();
       if (furnOpen) { setFurnOpen(false); sfx.click(); return; } // окно печи закрывается той же кнопкой
+      if (consoleOpen) { setConsoleOpen(false); sfx.click(); return; } // v0.144: окно приставки — тоже
       setInvOpen((o) => !o);
       sfx.click();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [s?.phase, furnOpen]);
+  }, [s?.phase, furnOpen, consoleOpen]);
   /* кнопка джойстика «инвентарь» — край-триггер (у печи лицевые кнопки открывают печь — не мешаем; когда инвентарь открыт — работает эффект ЗАКРЫТИЯ ниже) */
   const invPadPrevRef = useRef(false);
   useEffect(() => {
-    if (!s || s.phase !== 'playing' || invOpen || (isFrendy && !!nearFurnace)) return; // у печи — приоритет окна печи
+    if (!s || s.phase !== 'playing' || invOpen || (isFrendy && !!nearFurnace) || (isFrendy && !!nearConsole)) return; // у печи/приставки — приоритет их окон
     const init = new Set<number>();
     collectPadButtons(init);
     invPadPrevRef.current = init.has(loadEmuPrefs().invPad ?? 3);
@@ -1102,7 +1176,7 @@ export default function GameScreen() {
       invPadPrevRef.current = now;
     }, 66);
     return () => window.clearInterval(iv);
-  }, [s?.phase, invOpen, isFrendy, !!nearFurnace]);
+  }, [s?.phase, invOpen, isFrendy, !!nearFurnace, !!nearConsole]);
   /* ОТКРЫТЫЕ ОКНА закрываются кнопкой джойстика: окно печи — любой лицевой, инвентарь — кнопка «инвентарь».
      Базлайн снимается В МОМЕНТ открытия (кнопка открытия сама окно не закрывает). */
   const furnClosePadRef = useRef<Set<number>>(new Set());
@@ -1121,6 +1195,23 @@ export default function GameScreen() {
     }, 66);
     return () => window.clearInterval(iv);
   }, [furnOpen]);
+  /* v0.144: окно ПРИСТАВКИ закрывается кнопкой джойстика (любой лицевой) — как окно печи */
+  const consoleClosePadRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!consoleOpen) return;
+    const init = new Set<number>();
+    collectPadButtons(init);
+    consoleClosePadRef.current = init;
+    const iv = window.setInterval(() => {
+      const cur = new Set<number>();
+      collectPadButtons(cur);
+      let fresh = false;
+      for (const b of cur) if (!consoleClosePadRef.current.has(b)) { fresh = true; break; }
+      consoleClosePadRef.current = cur;
+      if (fresh) { sfx.click(); setConsoleOpen(false); }
+    }, 66);
+    return () => window.clearInterval(iv);
+  }, [consoleOpen]);
   const invClosePadRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     if (!invOpen || !isFrendy) return; // в остальных режимах инвентарь закрывается как раньше (крестик/Esc)
@@ -2575,6 +2666,11 @@ export default function GameScreen() {
           npcPin,
           /* v0.123 FRENDY: предметы на поле + Френди (fxTs переводим из часов Date.now хоста в rAF-часы клиента) */
           frendyChips: sess.frendy?.chips ?? null,
+          /* v0.144 FRENDY: ПРИСТАВКИ вместо ячеек + арты картриджей */
+          frendyMode: isFrendy,
+          frendyConsoles: sess.frendyConsoles,
+          taskCartImgs: frendyTaskArtRef.current.imgs,
+          taskTitles: frendyTaskArtRef.current.titles,
           agents: agentsDraw, // v0.132: Альдер и Скаллер в эпилоге
           /* v0.134 ЭПИЛОГ: «место преступления очищено» — все ячейки скрыты, кроме печи
              (на ней лежит вся сцена с агентами); стрелки/номера/флаг/боссы/NPC тоже скрыты */
@@ -2691,11 +2787,11 @@ export default function GameScreen() {
      Хост считает занятость свежей (FRENDY_UIBUSY_MS), Френди наказывает копающихся в рюкзаке
      (переключается на них и телепортируется с атакой — логика в движке, в помощи НЕ описана). ---------- */
   useEffect(() => {
-    if (!isFrendy || !me || (!invOpen && !furnOpen) || s?.phase !== 'playing') return;
+    if (!isFrendy || !me || (!invOpen && !furnOpen && !consoleOpen) || s?.phase !== 'playing') return;
     dispatch({ t: 'frendyBusy', id: me, on: true });
     const hb = setInterval(() => dispatch({ t: 'frendyBusy', id: me, on: true }), 2500);
     return () => { clearInterval(hb); dispatch({ t: 'frendyBusy', id: me, on: false }); };
-  }, [isFrendy, me, invOpen, furnOpen, s?.phase]);
+  }, [isFrendy, me, invOpen, furnOpen, consoleOpen, s?.phase]);
 
   /* ---------- v0.132 ЭПИЛОГ: тик хоста (~0.4 с) — АЛЬДЕР сам шагает к печи ---------- */
   useEffect(() => {
@@ -2806,7 +2902,7 @@ export default function GameScreen() {
   /* ---------- v0.123 FRENDY: звуки атаки/поимки + красная вспышка, если цель — я ---------- */
   /* v0.142: ЗАКРЫВАЕМ ИНВЕНТАРЬ И ПЕЧЬ у пойманного: если Френди ПОЙМАЛ игрока, пока тот
      копался в рюкзаке или у печи, и утащил на задание — окна не должны висеть поверх задания */
-  const frendyCatchClose = () => { setInvOpen(false); setFurnOpen(false); };
+  const frendyCatchClose = () => { setInvOpen(false); setFurnOpen(false); setConsoleOpen(false); };
   const frendyBossFxTs = s?.frendy?.boss?.fxTs;
   useEffect(() => {
     const b = s?.frendy?.boss;
@@ -3094,8 +3190,8 @@ export default function GameScreen() {
      Во время задания = ПЕРЕЗАПУСК задания: та же логика, что у кнопки «Перезапуск»
      открытого окна (VERSUS — с платой 1 бронза; классика — через reloadSave; RUBG —
      перезагрузка рома с сохранения). Где окна нет — клавиша молчит.
-     v0.139: во FRENDY перезапуска задания НЕТ — клавиша молчит (перепройти задание
-     можно, снова зайдя на ячейку сразу после поражения). */
+     v0.139: во FRENDY перезапуска задания НЕТ — клавиша молчит (v0.144: перепройти
+     можно, снова нажав POWER ON на приставке по E). */
   const quickLoadFire = () => {
     if (myQJob && myQTask) { // QUEST / БОГАЧ (VERSUS) / FRENDY — личное окно задания
       if (isFrendy) return; // v0.139: перезапуска задания во FRENDY нет
@@ -3338,7 +3434,7 @@ export default function GameScreen() {
       /* v0.59: окно МОЕГО задания открыто — WASD/стрелки ведут игру в окне, не фишку */
       /* v0.138: окно ИНВЕНТАРЯ открыто — фишка на месте (FRENDY/RUBG/VERSUS/QUEST/JOURNEY) */
       /* v0.141: окно ПЕЧИ открыто — фишка тоже на месте */
-      if (pocketBlockRef.current || taskWinRef.current || invBlockRef.current || furnBlockRef.current) return;
+      if (pocketBlockRef.current || taskWinRef.current || invBlockRef.current || furnBlockRef.current || consoleBlockRef.current) return;
       e.preventDefault(); // стрелки не крутят страницу — они ведут фишку
       journeyKeys.current.add(d);
     };
@@ -3369,7 +3465,7 @@ export default function GameScreen() {
       /* v0.59: окно МОЕГО задания открыто — крестовина/стик ведут игру в окне, не фишку */
       /* v0.138: окно ИНВЕНТАРЯ открыто — крестовина/стик фишку не ведут */
       /* v0.141: окно ПЕЧИ открыто — тоже не ведут */
-      if (!pocketBlockRef.current && !taskWinRef.current && !invBlockRef.current && !furnBlockRef.current && prefs.gamepad !== false) {
+      if (!pocketBlockRef.current && !taskWinRef.current && !invBlockRef.current && !furnBlockRef.current && !consoleBlockRef.current && prefs.gamepad !== false) {
         const pads = listGamepads();
         const addBtn = (gp: Gamepad, idx: number | undefined, d: TokenDir) => {
           if (idx === undefined || idx < 0 || idx > 17) return;
@@ -3672,6 +3768,10 @@ export default function GameScreen() {
               } else if (isFrendy && idx >= 0 && nearFurnace && nearFurnace.idx === idx && !dlgOpenIdRef.current && !cutActiveRef.current) {
                 sfx.click();
                 setFurnOpen(true);
+              } else if (isFrendy && idx >= 0 && nearConsole && nearConsole.idx === idx && !dlgOpenIdRef.current && !cutActiveRef.current) {
+                /* v0.144: КЛИК ПО ПРИСТАВКЕ (стоишь рядом) — окно «приставка + рюкзак» */
+                sfx.click();
+                setConsoleOpen(true);
               } else if (isFrendy && nearItem && !dlgOpenIdRef.current && !cutActiveRef.current
                   && Math.hypot(wx - nearItem.x, wy - nearItem.y) <= CELL * 0.75) {
                 /* v0.141: КЛИК ПО ПРЕДМЕТУ на карте (стоишь рядом) — поднять, как по E
@@ -4325,6 +4425,12 @@ export default function GameScreen() {
             <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#ff8b3f] bg-[rgba(7,9,18,0.9)] border-2 border-[#ff8b3f]/50">🔥 ПЕЧЬ ФРЕНДИ — <b className="text-paper">E</b> · джойстик · клик</span>
           </div>
         )}
+        {/* ---------- v0.144 FRENDY: подсказка у ПРИСТАВКИ + окно «приставка + рюкзак» ---------- */}
+        {isFrendy && nearConsole && !consoleOpen && !nearFurnace && s?.phase === 'playing' && mePlayer?.alive && !mePlayer.spect && (
+          <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#8fd0ff] bg-[rgba(7,9,18,0.9)] border-2 border-[#8fd0ff]/50">🎮 ПРИСТАВКА — <b className="text-paper">E</b> · джойстик · клик</span>
+          </div>
+        )}
         {/* ---------- v0.141 FRENDY: подсказка у ПРЕДМЕТА на земле (поднять) ---------- */}
         {isFrendy && nearItem && !furnOpen && !invOpen && s?.phase === 'playing' && !dlgNpcId && (
           <div className="absolute bottom-28 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
@@ -4387,6 +4493,7 @@ export default function GameScreen() {
             <FrendyFurnaceModal
               onClose={() => setFurnOpen(false)}
               items={mePlayer?.items ?? []}
+              cartArtOf={frendyCartArtOf}
               near={!!nearFurnace}
               strong={strong}
               burned={s?.frendy?.burned ?? 0}
@@ -4397,6 +4504,34 @@ export default function GameScreen() {
                 use: (itemId) => { if (me) dispatch({ t: 'frendyUse', id: me, itemId }); },
                 drop: (itemId) => { if (me) dispatch({ t: 'frendyDrop', id: me, itemId }); },
                 move: (itemId, gx, gy) => { if (me) dispatch({ t: 'frendyInvMove', id: me, itemId, gx, gy }); },
+              }}
+            />
+          );
+        })()}
+        {/* ---------- v0.144 FRENDY: ОКНО ПРИСТАВКИ — приставка + DIABLO-рюкзак ---------- */}
+        {isFrendy && consoleOpen && nearConsole && s && map && (() => {
+          const idx = nearConsole.idx;
+          const cartTask = frendyCartTaskIdx(s, map, idx);
+          const busy = Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === idx);
+          const cartDef = cartTask !== null ? (s.sessionTasks[cartTask] ?? map.cells[cartTask]?.task ?? null) : null;
+          const cartRom = cartDef ? st.roms.find((r) => r.id === cartDef.romId) : undefined;
+          return (
+            <FrendyConsoleModal
+              onClose={() => setConsoleOpen(false)}
+              cellIdx={idx}
+              items={mePlayer?.items ?? []}
+              cartTaskIdx={cartTask}
+              busy={busy}
+              cartImgSrc={cartRom ? cartImgSrcOf(cartRom) : null}
+              cartTitle={cartDef?.title ?? null}
+              hpFull={(mePlayer?.hp ?? 100) >= 100}
+              dispatches={{
+                insert: (itemId) => { if (me) dispatch({ t: 'frendyCartInsert', id: me, cellIdx: idx, itemId }); },
+                powerOn: () => { if (me) { dispatch({ t: 'frendyPowerOn', id: me, cellIdx: idx }); setConsoleOpen(false); } },
+                use: (itemId) => { if (me) dispatch({ t: 'frendyUse', id: me, itemId }); },
+                drop: (itemId) => { if (me) dispatch({ t: 'frendyDrop', id: me, itemId }); },
+                move: (itemId, gx, gy) => { if (me) dispatch({ t: 'frendyInvMove', id: me, itemId, gx, gy }); },
+                cartArt: frendyCartArtOf,
               }}
             />
           );
@@ -5331,8 +5466,9 @@ export default function GameScreen() {
                               </PxBtn>
                             </div>
                           )}
-                          {/* v0.139: во FRENDY перезапуска задания БОЛЬШЕ НЕТ (кнопка убрана) —
-                             перепройти задание можно, снова зайдя на ячейку сразу после поражения */}
+                          {/* v0.139: во FRENDY перезапуска задания БОЛЬШЕ НЕТ (кнопка убрана).
+                             v0.144: перепройти задание можно, снова нажав POWER ON на той же
+                             приставке по E сразу после поражения (картридж остался в слоте) */}
                           <div className={`grid ${isFrendy ? 'grid-cols-2' : 'grid-cols-3'} gap-2 mt-2`}>
                             <GhostBtn onClick={() => setQPaused((x) => !x)} title="Пауза эмулятора без сброса прогресса">
                               {qPaused ? Ic.play(13) : Ic.pause(13)} {qPaused ? 'Продолжить' : 'Пауза'}

@@ -863,3 +863,48 @@ export function CartCutModal({
     </Modal>
   );
 }
+
+/* ---------- v0.144: ИСТОЧНИК КАРТИНКИ КАРТРИДЖА — обложка рома → фото платформы ----------
+   Единая точка для рюкзака FRENDY, пола и больших просмотров: картридж задания
+   рисуется ТОЙ ЖЕ картинкой, что и в редакторе заданий (RomDef.cover, а без неё —
+   фотография картриджа платформы/региона). null — рисуемfallback (эмодзи/рисованный). */
+export function cartImgSrcOf(rom: { cover?: string; ext: string; fileName: string }): string | null {
+  if (rom.cover) return rom.cover;
+  const key = cartImgKeyOf(rom.ext, rom.fileName);
+  return (key && CART_IMG[key]) || null;
+}
+
+/* ---------- v0.144: БОЛЬШОЙ ПРОСМОТР ОБЛОЖКИ (клик по бейджу картриджа в редакторе) ---------- */
+export function CartCoverModal({ rom, onClose }: { rom: { cover?: string; ext: string; fileName: string; name: string }; onClose: () => void }) {
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', esc);
+    return () => window.removeEventListener('keydown', esc);
+  }, [onClose]);
+  const src = cartImgSrcOf(rom);
+  return (
+    <div className="fixed inset-0 z-[95] flex items-center justify-center bg-[rgba(4,6,14,0.9)] p-6 cursor-pointer" onClick={onClose}>
+      <div className="max-w-[86vmin] w-full space-y-2.5 text-center cursor-default" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-center">
+          {src ? (
+            <img
+              src={src}
+              alt={rom.name}
+              className="max-h-[68vmin] max-w-full object-contain border-[3px] border-edge bg-[#05070f]"
+              style={{ imageRendering: 'auto' }}
+            />
+          ) : (
+            <div className="text-dim font-display text-sm py-16 border-2 border-dashed border-edge px-10">
+              Обложки нет — только рисованный картридж платформы
+            </div>
+          )}
+        </div>
+        <div className="font-display text-sm text-paper uppercase tracking-wider">{rom.name}</div>
+        <div className="tick-label text-faint">{cartLabelOf(rom)} · обложка картриджа</div>
+        <div>
+          <GhostBtn small onClick={onClose}>{Ic.cross(12)} Закрыть (Esc)</GhostBtn>
+        </div>
+      </div>
+    </div>
+  );
+}
