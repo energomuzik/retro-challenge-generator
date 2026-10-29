@@ -1,5 +1,5 @@
 import type { CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
-import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_BURN_SHIELD_MS, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, cartFitsConsole, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, rubgItemSize, rubgGridFits, rubgGridFirstFit, FRENDY_INV_COLS, FRENDY_INV_ROWS, playerPx, doorKeyName, frameWallsOf } from './types';
+import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_ENERGETIC_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_BURN_SHIELD_MS, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, cartFitsConsole, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, rubgItemSize, rubgGridFits, rubgGridFirstFit, FRENDY_INV_COLS, FRENDY_INV_ROWS, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
@@ -1635,6 +1635,22 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     }
   };
   const frendyRespawnMs = (f: FrendyState): number => frendyParams(f).sleepMs;
+  /* v0.146: ПРАВИЛА ЯРОСТИ ПО КАРТЕ (заказчик): 'easy' («Легко — без ярости») — её НЕТ ВОВСЕ;
+     'custom' — галочки: rageOn (мастер-выключатель), rageOnCart (ярость после броска КАРТРИДЖА
+     в печь — сильный огонь), rageOnChip (ярость после сжигания микросхемы) и длительность rageSec;
+     остальные режимы — как в 0.139: 2 минуты за каждую сожжённую микросхему. */
+  const frendyRageOn = (trigger: 'chip' | 'cart'): boolean => {
+    if (map.frendyAggr === 'easy') return false;
+    if (map.frendyAggr === 'custom') {
+      const c = map.frendyAggrCustom ?? {};
+      if (c.rageOn === false) return false;
+      return trigger === 'chip' ? c.rageOnChip !== false : c.rageOnCart === true;
+    }
+    return trigger === 'chip'; // 'now'/'chips'/'cells'/'rage' — только за микросхему (как было)
+  };
+  const frendyFuryMs = (): number => (map.frendyAggr === 'custom'
+    ? Math.round(Math.max(10, Math.min(600, map.frendyAggrCustom?.rageSec ?? 120)) * 1000)
+    : FRENDY_FURY_MS);
   /** ТИК ФРЕНДИ (только хост, ~0.4 с): подбор предметов с поля + ИИ босса. */
   const frendyTickDo = () => {
     const f = s.frendy;
@@ -1664,8 +1680,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
        • УЛЬТРА — на карте осталась ОДНА микросхема: очень быстр, телепортируется к фишке
          каждые FRENDY_ULTRA_TP_MS и бьёт ВСЕХ фишек рядом. */
     const chipsLeft = f.chips.filter((x) => !x.kind || x.kind === 'frendyChip').length;
-    const furious = (f.furyUntil ?? 0) > now || map.frendyAggr === 'rage';
-    const ultra = chipsLeft === 1;
+    /* v0.146: ярость подчиняется ПРАВИЛАМ КАРТЫ (frendyRageOn): «Легко — без ярости» и «Свой
+       вариант» с выключенной галочкой ярости НИКОГДА не яростны; УЛЬТРА отключена только в 'easy' */
+    const rageAllowed = map.frendyAggr !== 'easy' && (map.frendyAggr !== 'custom' || (map.frendyAggrCustom?.rageOn ?? true));
+    const furious = ((f.furyUntil ?? 0) > now || map.frendyAggr === 'rage') && rageAllowed;
+    const ultra = chipsLeft === 1 && map.frendyAggr !== 'easy';
     /* v0.144: «сломанных ячеек» больше нет — картриджи играются на любой приставке */
     /* v0.130: общий шаг по полю (охота и поездка за ремонтом): BFS-обход стен (frendyStepToward) + скольжение */
     const frendyWalk = (b: FrendyBossState, tx: number, ty: number, speedMult: number): void => {
@@ -1745,16 +1764,28 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       }
       if (busyTgt) tgt = busyTgt;
     }
-    if (tgt.id !== b.targetId) { b.targetId = tgt.id; b.holdMs = 0; b.sinceTs = now; }
+    if (tgt.id !== b.targetId) { b.targetId = tgt.id; b.holdMs = 0; b.sinceTs = now; b.plan = null; } // v0.146: план охоты сбрасывается со сменой цели
     const tp = s.journeyPos?.[tgt.id];
     if (!tp) return;
     const dist = Math.hypot(tp.x - b.x, tp.y - b.y);
     const prm = frendyParams(f); // v0.131: параметры по режиму агрессии (скорость/КД удара/урон/длительность охоты)
     const immune = (f.coffeeUntil[tgt.id] ?? 0) > now;
-    /* ПОИМКА: продержал жертву в лапах — телепорт на задание + кража микросхемы/картриджа */
-    if (!immune && !busy(tgt.id) && dist < FRENDY_CATCH_RANGE) b.holdMs += 400;
+    /* v0.146 ОБЫЧНЫЙ РЕЖИМ — РОВНО ОДНО ДЕЙСТВИЕ ЗА ОХОТУ (заказчик: «в обычном режиме Френди
+       должен с охотой ЛИБО ударить тебя один раз, ЛИБО телепортировать к игре. А то, что в ярости,
+       что нет, он ударяет тебя, а затем телепортирует, а если выпил кофе — тебя бесконечно бьет.
+       Такая логика в ярости — отлично, а вот в обычном режиме — не очень»):
+       при первом контакте (в радиусе лапы) кидается жребий — план охоты: 'hit' — ОДИН удар и
+       растворился, 'catch' — схватить и утащить на приставку (50/50). Кофе (поимка невозможна) —
+       всегда 'hit'. В ЯРОСТИ/УЛЬТРА плана нет — бьёт и таскает одновременно, как было. */
+    const normalMode = !furious && !ultra;
+    if (normalMode && dist < FRENDY_HIT_RANGE && !b.plan) b.plan = immune ? 'hit' : (Math.random() < 0.5 ? 'hit' : 'catch');
+    if (normalMode && immune) b.plan = 'hit'; // кофе выпит по пути — ловить нечего, бьёт один раз и уходит
+    /* ПОИМКА: продержал жертву в лапах — телепорт на задание + кража микросхемы/картриджа
+       (в обычном режиме — только по плану 'catch'; в ярости/ультра — как всегда) */
+    const wantCatch = !normalMode || b.plan === 'catch';
+    if (wantCatch && !immune && !busy(tgt.id) && dist < FRENDY_CATCH_RANGE) b.holdMs += 400;
     else b.holdMs = Math.max(0, b.holdMs - 400);
-    if (!immune && !busy(tgt.id) && b.holdMs >= FRENDY_CATCH_HOLD) {
+    if (wantCatch && !immune && !busy(tgt.id) && b.holdMs >= FRENDY_CATCH_HOLD) {
       b.fx = 'catch'; b.fxTs = now;
       f.fx = { kind: 'catch', who: tgt.id, ts: now }; // v0.130: fx на уровне состояния — босс ниже обнулится, а звук/вспышка поимки клиенты ДОЛЖНЫ увидеть
       f.caught = f.caught ?? {}; // v0.124: счётчик поимок — попадёт в титры (сколько раз Френди кого ловил)
@@ -1861,17 +1892,21 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       return;
     }
     /* УДАР лапой (по всем в радиусе — кофе от ударов не спасает); v0.127: проходящего задание не бьёт.
-       v0.139 УЛЬТРА: кулдаун короче, урон не ниже ярости, и бьёт ВСЕХ фишек рядом (не только цель). */
+       v0.139 УЛЬТРА: кулдаун короче, урон не ниже ярости, и бьёт ВСЕХ фишек рядом (не только цель).
+       v0.146: ЭНЕРГЕТИК — иммунитет к УДАРАМ (урон не проходит); в обычном режиме — только по плану
+       'hit', и после ОДНОГО удара Френди растворился (жребий «удар ИЛИ поимка» — см. выше). */
     {
       const hitCdEff = ultra ? Math.min(prm.hitCd, FRENDY_ULTRA_HIT_CD) : prm.hitCd;
       const dmgEff = ultra ? Math.max(prm.dmg, FRENDY_HIT_DMG + FRENDY_HIT_DMG_RAGE) : prm.dmg;
-      if (!busy(tgt.id) && dist < FRENDY_HIT_RANGE && now - b.lastHitAt >= hitCdEff) {
+      const wantHit = !normalMode || b.plan === 'hit';
+      if (wantHit && !busy(tgt.id) && dist < FRENDY_HIT_RANGE && now - b.lastHitAt >= hitCdEff) {
         b.lastHitAt = now;
         b.fx = 'attack'; b.fxTs = now;
         if (ultra) {
           let hits = 0;
           for (const p of s.players) {
             if (!p.alive || p.spect || busy(p.id)) continue;
+            if ((f.energeticUntil?.[p.id] ?? 0) > now) continue; // v0.146: энергетик держит удар — урона нет
             const pp = s.journeyPos?.[p.id];
             if (!pp || Math.hypot(pp.x - b.x, pp.y - b.y) > FRENDY_HIT_RANGE) continue;
             p.hp = Math.max(0, (p.hp ?? RUBG_HP_MAX) - dmgEff);
@@ -1880,9 +1915,21 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           if (hits > 0) log(`😈 ФРЕНДИ УЛЬТРА бьёт лапами ВСЕХ рядом: −${dmgEff}% HP${hits > 1 ? ` — зацепил ${hits} фишек!` : ''}`);
           checkElim();
         } else {
-          tgt.hp = Math.max(0, (tgt.hp ?? RUBG_HP_MAX) - dmgEff);
-          log(`😈 ФРЕНДИ бьёт ${tgt.name} когтями: −${dmgEff}% HP — HP ${Math.round(tgt.hp)}%${immune ? ' (кофе не спасает от УДАРОВ!)' : ''}`);
+          const energ = (f.energeticUntil?.[tgt.id] ?? 0) > now;
+          if (energ) log(`⚡ ФРЕНДИ бьёт ${tgt.name}, но ЭНЕРГЕТИК держит удар — БЕЗ УРОНА! (схватить всё равно может)`);
+          else {
+            tgt.hp = Math.max(0, (tgt.hp ?? RUBG_HP_MAX) - dmgEff);
+            log(`😈 ФРЕНДИ бьёт ${tgt.name} когтями: −${dmgEff}% HP — HP ${Math.round(tgt.hp)}%${immune ? ' (кофе не спасает от УДАРОВ!)' : ''}`);
+          }
           checkElim();
+        }
+        /* v0.146: в ОБЫЧНОМ режиме после ОДНОГО удара Френди РАСТВОРЯЕТСЯ — ни добиваний,
+           ни «удар, а потом всё равно утащил» (в ярости/ультра охота продолжается, как было) */
+        if (normalMode) {
+          f.boss = null;
+          f.nextSpawnAt = now + frendyRespawnMs(f);
+          log(`😈 ФРЕНДИ доволен одним ударом и растворяется в кошмаре…`);
+          return;
         }
       }
     }
@@ -3020,17 +3067,10 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
             p.pos = i;
             revealCell(s, p.id, i);
             if (c.type === 'task') {
-              /* v0.145: ЗАЙТИ В ПРИСТАВКУ = ПЕРЕСЕЧЬ её (заказчик: «как раньше просто её пересечь»;
-                 E и джойстик больше приставку НЕ открывают — конфликновали с подъёмом предметов).
-                 В приставке КАРТРИДЖ — задание ВКЛЮЧАЕТСЯ проходом (то же, что кнопка POWER ON);
-                 ПУСТАЯ приставка — клиент сам откроет окно «приставка + рюкзак» (вставить картридж). */
-              if (frendyCartTaskIdx(s, map, i) !== null && !s.qJobs?.[p.id]
-                  && !Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === i)) {
-                s.qJobs = s.qJobs ?? {};
-                s.qJobs[p.id] = { cellIdx: i, startedAt: Date.now() };
-                const tkIn = cellTaskOf(s, map, i);
-                log(`▶ ${p.name} заходит к ПРИСТАВКЕ №${i + 1} и включает КАРТРИДЖ «${(tkIn?.title ?? 'игра').slice(0, 30)}» — задание пошло!`);
-              }
+              /* v0.146: ЗАЙТИ В ПРИСТАВКУ ПРОХОДОМ БОЛЬШЕ НИЧЕГО НЕ ДЕЛАЕТ (заказчик вернул
+                 открытие по E/джойстику/тапу — «после победы приставка снова случайно
+                 открывается»): задание стартует ТОЛЬКО кнопкой POWER ON в окне приставки
+                 (или Френди утащит жертву и включит сам). */
             } else if (c.type === 'bonus' || c.type === 'trap') {
               const deck = c.type === 'bonus' ? map.bonusCards : map.trapCards;
               if (!deck.length) continue;
@@ -3594,6 +3634,14 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         const cartTitle = burnedCart && typeof burnedCart.taskIdx === 'number' ? (cellTaskOf(s, map, burnedCart.taskIdx)?.title ?? null) : null;
         inv.splice(burnIdx, 1);
         f.strongUntil = nowB + FRENDY_STRONG_MS;
+        /* v0.146: ЯРОСТЬ ОТ КАРТРИДЖА (только если включена на карте — галочка rageOnCart в
+           «Своём варианте»; в «Легко — без ярости» и прочих режимах не включается): жар сильного
+           огня вводит Френди в ярость на то же время, что и сожжённая микросхема */
+        if (frendyRageOn('cart')) {
+          f.furyUntil = nowB + frendyFuryMs();
+          log(`😈 ЖАР ПЕЧИ ВВОДИТ ФРЕНДИ В ЯРОСТЬ на ${Math.round(frendyFuryMs() / 60000)} мин — гонится за целью НЕ ОСТАНАВЛИВАЯСЬ!`);
+          if (!f.boss) f.nextSpawnAt = Math.min(f.nextSpawnAt, nowB + 1500);
+        }
         /* v0.143: ЩИТ ЖАРА — 6 с после каждого броска в печь Френди НЕ ТРОГАЕТ горящего:
            не просыпается на нём, не бьёт и не ловит (механизм taskSafeUntil, тот же щит
            заданий). Раньше печь будила Френди ПРЯМО НА игрока (v0.140), он хватал через
@@ -3620,11 +3668,15 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         s.winner = p.id;
         log('🎉 ПОСЛЕДНЯЯ МИКРОСХЕМА СОЖЖЕНА — ФРЕНДИ ПОВЕРЖЕН! Кошмар рассеялся — ПОБЕДА!');
       } else {
-        /* v0.139 ЯРОСТЬ: на FRENDY_FURY_MS Френди не спит и не растворяется — непрерывно
-           гонится за выбранной фишкой. Пока печь горит сильным — жгите следующую. */
-        f.furyUntil = nowB + FRENDY_FURY_MS;
-        log(`😈 ФРЕНДИ В ЯРОСТИ на ${Math.round(FRENDY_FURY_MS / 60000)} минуты — гонится за целью НЕ ОСТАНАВЛИВАЯСЬ! Осталось сожжечь: ${f.total - f.burned}.`);
-        if (!f.boss) f.nextSpawnAt = Math.min(f.nextSpawnAt, nowB + 1500); // разбудить сразу — «не спит, когда всё горит»
+        /* v0.139 ЯРОСТЬ: на время ярости Френди не спит и не растворяется — непрерывно
+           гонится за выбранной фишкой. Пока печь горит сильным — жгите следующую.
+           v0.146: ярость включается ТОЛЬКО по правилам карты («Легко — без ярости» — никогда,
+           «Свой вариант» — по галочке rageOnChip, длительность rageSec). */
+        if (frendyRageOn('chip')) {
+          f.furyUntil = nowB + frendyFuryMs();
+          log(`😈 ФРЕНДИ В ЯРОСТИ на ${Math.round(frendyFuryMs() / 60000)} минуты — гонится за целью НЕ ОСТАНАВЛИВАЯСЬ! Осталось сожжечь: ${f.total - f.burned}.`);
+          if (!f.boss) f.nextSpawnAt = Math.min(f.nextSpawnAt, nowB + 1500); // разбудить сразу — «не спит, когда всё горит»
+        }
       }
       break;
     }
@@ -3708,6 +3760,13 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         inv.splice(ii, 1);
         s.frendy.coffeeUntil[p.id] = Date.now() + FRENDY_COFFEE_MS;
         log(`☕ ${p.name} выпивает КОФЕ: 5 минут иммунитета к ПОИМКЕ Френди (бить он всё равно может)!`);
+      } else if (kind === 'energetic') {
+        /* v0.146: ЭНЕРГЕТИК — иммунитет к УДАРАМ Френди (зеркально кофе): урон по HP не
+           проходит, но схватить и утащить на приставку всё равно может */
+        inv.splice(ii, 1);
+        s.frendy.energeticUntil = s.frendy.energeticUntil ?? {};
+        s.frendy.energeticUntil[p.id] = Date.now() + FRENDY_ENERGETIC_MS;
+        log(`⚡ ${p.name} хлещет ЭНЕРГЕТИК: ${Math.round(FRENDY_ENERGETIC_MS / 60000)} минуты иммунитета к УДАРАМ Френди (схватить и утащить всё равно может)!`);
       } else if (kind === 'medkit' || kind === 'flask' || kind === 'bigmed') {
         const meta = RUBG_ITEMS[kind];
         if (meta.hp <= 0 || (p.hp ?? 0) >= RUBG_HP_MAX) break;
@@ -3827,9 +3886,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           log(`🛡 ${p.name}: Френди НЕ ТРОНЕТ ещё ${Math.round(FRENDY_TASK_GRACE_MS / 1000)} с — заслуженный отдых после задания`);
         }
         if (a.win) {
-          const kind: RubgItemKind = Math.random() < 0.5 ? 'medkit' : 'coffee';
+          /* v0.146: награда за победу — ИНОГДА ЭНЕРГЕТИК (заказчик): 15% энергетик (иммунитет
+             к УДАРАМ Френди 3 мин), иначе как было — аптечка/кофе */
+          const roll = Math.random();
+          const kind: RubgItemKind = roll < 0.15 ? 'energetic' : roll < 0.6 ? 'medkit' : 'coffee';
           rubgGiveItem(p, kind);
-          log(`🏆 ${p.name} ПРОШЁЛ задание${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : ''}: награда ${RUBG_ITEMS[kind].icon} ${RUBG_ITEMS[kind].name}${kind === 'coffee' ? ' — иммунитет к ПОИМКЕ Френди на 5 минут (активируй в инвентаре!)' : ' — лечит +25% HP'}`);
+          log(`🏆 ${p.name} ПРОШЁЛ задание${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : ''}: награда ${RUBG_ITEMS[kind].icon} ${RUBG_ITEMS[kind].name}${kind === 'coffee' ? ' — иммунитет к ПОИМКЕ Френди на 5 минут (активируй в инвентаре!)' : kind === 'energetic' ? ' — иммунитет к УДАРАМ Френди на 3 минуты (активируй в инвентаре!)' : ' — лечит +25% HP'}`);
           /* v0.144: ПРИСТАВКА ПОБЕЖДЕНА — вставленный в неё КАРТРИДЖ ПЕРЕХОДИТ В РЮКЗАК
              победителя (его и жгут в печи, либо вставляют в другую пустую приставку);
              приставка ПУСТЕЕТ. Ячейки больше не ломаются — «сломанных ячеек» нет. */

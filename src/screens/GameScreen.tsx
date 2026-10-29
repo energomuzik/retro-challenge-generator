@@ -963,9 +963,10 @@ export default function GameScreen() {
         if (cur && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); openDialog(cur.npc.id); } // v0.56: в кат-сцене разговоров нет
         /* v0.123 FRENDY: E у ПЕЧИ — окно сжигания микросхемы */
         else if (isFrendy && nearFurnace && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setFurnOpen(true); }
-        /* v0.145: E у ПРИСТАВКИ больше НЕ открывает окно (перекликалось с подъёмом предметов).
-           Приставка открывается ПРОХОДОМ по ней (пустая — окно, с картриджем — движок включает
-           задание) или КЛИКОМ/ТАПОМ по ней. */
+        /* v0.146: E у ПРИСТАВКИ — окно «приставка + рюкзак» (заказчик вернул механику 0.144:
+           «надо не пересекать её, а нажать на E или действие на джое или тыкнуть на приставку»);
+           проход по ячейке больше ничего не открывает */
+        else if (isFrendy && nearConsole && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setConsoleOpen(true); }
         /* v0.132 ЭПИЛОГ: E у АЛЬДЕРА — начать разговор в стиле визуальной новеллы (все видят) */
         else if (epiNearAlder && !cutActiveRef.current) { e.preventDefault(); sfx.click(); dispatch({ t: 'epiTalk', id: me }); }
       }
@@ -990,30 +991,11 @@ export default function GameScreen() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [nearNpc, dlgNpcId, isFrendy, nearFurnace, epiNearAlder]);
-  /* v0.145 FRENDY: ЗАЙТИ В ПУСТУЮ ПРИСТАВКУ = ПЕРЕСЕЧЬ её — окно «приставка + рюкзак»
-     открывается САМО при входе на ячейку (E/джойстик больше не открывают — конфликтовали
-     с подъёмом предметов). С картриджем проход включает задание (движок), окно не нужно.
-     Тап/клик по приставке по-прежнему открывает окно вручную. */
-  const lastConsoleCellRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (!isFrendy || !s || s.phase !== 'playing' || !map || !mePlayer || !mePlayer.alive || mePlayer.spect || !myJourneyPos) { lastConsoleCellRef.current = null; return; }
-    if (consoleOpen || furnOpen || invOpen || dlgOpenId || cutActiveRef.current || taskWinRef.current) return;
-    let cur: number | null = null;
-    for (let i = 0; i < map.cells.length; i++) {
-      if (map.cells[i].type !== 'task') continue;
-      const r = cellRectOf(map, i);
-      if (!r) continue;
-      if (myJourneyPos.x >= r.x && myJourneyPos.x < r.x + r.w && myJourneyPos.y >= r.y && myJourneyPos.y < r.y + r.h) { cur = i; break; }
-    }
-    if (cur !== null && cur !== lastConsoleCellRef.current) {
-      const playingNow = Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === cur);
-      /* пустая и неиграемая приставка — «войти» в неё: окно вставки картриджа */
-      if (frendyCartTaskIdx(s, map, cur) === null && !playingNow) { sfx.click(); setConsoleOpen(true); }
-    }
-    lastConsoleCellRef.current = cur;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [myJourneyPos?.x, myJourneyPos?.y, isFrendy, consoleOpen, furnOpen, invOpen, dlgOpenId, s?.phase]);
+  }, [nearNpc, dlgNpcId, isFrendy, nearFurnace, nearConsole, epiNearAlder]);
+  /* v0.146: ОТКРЫТИЕ ПРИСТАВКИ ПРОХОДОМ УДАЛЕНО (заказчик вернул E/джойстик/тап: «после победы
+     (или поражения) приставка снова случайно открывается — это даст дополнительное действие
+     игроку, с которым он может замешкаться»). Авто-окно при входе на ячейку (v0.145) и движковое
+     включение задания проходом убраны: задание стартует ТОЛЬКО кнопкой POWER ON в окне. */
   /* v0.133 FRENDY: ПЕЧЬ С ДЖОЙСТИКА — лицевые кнопки (W3C 0/1/2/3 = A/B/X/Y всех падов)
      и назначенные под A/B в раскладках консолей открывают окно печи рядом, как клавиша E.
      Край-триггер: открывает только НОВОЕ нажатие — удержание и кнопка, зажатая ДО
@@ -1036,10 +1018,24 @@ export default function GameScreen() {
     }, 66);
     return () => window.clearInterval(iv);
   }, [isFrendy, !!nearFurnace, furnOpen, s?.phase]);
-  /* v0.144 FRENDY: ПРИСТАВКА С ДЖОЙСТИКА — лицевые кнопки открывают окно приставки,
-     как клавиша E (край-триггер тот же, что у печи).
-     v0.145: УБРАНО (заказчик: джойстик больше не открывает приставку — как и E).
-     Приставка открывается проходом по ней или кликом/тапом. */
+  /* v0.146 FRENDY: ПРИСТАВКА С ДЖОЙСТИКА — лицевые кнопки открывают окно приставки, как клавиша E
+     (край-триггер тот же, что у печи; v0.145 убирал — заказчик вернул). */
+  const consPadPrevRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!isFrendy || !nearConsole || consoleOpen || s?.phase !== 'playing') return;
+    const init = new Set<number>();
+    collectPadButtons(init);
+    consPadPrevRef.current = init; // уже зажатое в момент подхода — не открывает
+    const iv = window.setInterval(() => {
+      const cur = new Set<number>();
+      collectPadButtons(cur);
+      let fresh = false;
+      for (const b of cur) if (!consPadPrevRef.current.has(b)) { fresh = true; break; }
+      consPadPrevRef.current = cur;
+      if (fresh) { sfx.click(); setConsoleOpen(true); }
+    }, 66);
+    return () => window.clearInterval(iv);
+  }, [isFrendy, !!nearConsole, consoleOpen, s?.phase]);
   /* v0.135: АЛЬДЕР С ДЖОЙСТИКА — те же лицевые кнопки открывают разговор в эпилоге,
      когда Скаллер (хост) стоит рядом с Альдером, как клавиша E. Край-триггер тот же. */
   const alderPadPrevRef = useRef<Set<number>>(new Set());
@@ -1132,7 +1128,7 @@ export default function GameScreen() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!isFrendy || !nearItem || s?.phase !== 'playing') return;
-      if (nearNpc || nearFurnace || epiNearAlder) return; // у интерактива — его клавиша
+      if (nearNpc || nearFurnace || nearConsole || epiNearAlder) return; // у интерактива — его клавиша
       const prefs = loadEmuPrefs();
       if (e.key.toLowerCase() !== (prefs.pickupKey ?? 'e').toLowerCase()) return;
       const tgt = e.target as HTMLElement | null;
@@ -1142,12 +1138,12 @@ export default function GameScreen() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isFrendy, !!nearItem, s?.phase, !!nearNpc, !!nearFurnace, epiNearAlder]);
+  }, [isFrendy, !!nearItem, s?.phase, !!nearNpc, !!nearFurnace, !!nearConsole, epiNearAlder]);
   /* кнопка джойстика подъёма (по умолчанию L1/LB = W3C 4) — край-триггер */
   const pickPadPrevRef = useRef(false);
   useEffect(() => {
     if (!isFrendy || !nearItem || s?.phase !== 'playing') return;
-    if (nearNpc || nearFurnace || epiNearAlder) return;
+    if (nearNpc || nearFurnace || nearConsole || epiNearAlder) return;
     const init = new Set<number>();
     collectPadButtons(init);
     pickPadPrevRef.current = init.has(loadEmuPrefs().pickupPad ?? 4);
@@ -1159,7 +1155,7 @@ export default function GameScreen() {
       pickPadPrevRef.current = now;
     }, 66);
     return () => window.clearInterval(iv);
-  }, [isFrendy, !!nearItem, s?.phase, !!nearNpc, !!nearFurnace, epiNearAlder]);
+  }, [isFrendy, !!nearItem, s?.phase, !!nearNpc, !!nearFurnace, !!nearConsole, epiNearAlder]);
 
   /* ---------- v0.141: КЛАВИША «ИНВЕНТАРЬ» (по умолчанию Tab) и кнопка джойстика (Y/треугольник) ----------
      Tab открывает/закрывает ИНВЕНТАРЬ; когда открыто ОКНО ПЕЧИ — Tab (и джойстик) закрывают его. */
@@ -3697,6 +3693,8 @@ export default function GameScreen() {
               {(frendy.strongUntil ?? 0) > Date.now() && <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-coral blink-hard" title="Сильный огонь: микросхемы Френди ГОРЯТ! Таймер скрыт — жгите, пока печь не погасла">🔥 СИЛЬНЫЙ ОГОНЬ — ЖГИТЕ ЧИПЫ!</span>}
               {(() => { const ms = (frendy.furyUntil ?? 0) - Date.now(); return ms > 0 ? <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-coral blink-hard" title="Френди В ЯРОСТИ (2 мин после сожжённой микросхемы): не спит и гонится за целью НЕ ОСТАНАВЛИВАЯСЬ">⚡ ЯРОСТЬ ФРЕНДИ {Math.ceil(ms / 1000)}с</span> : null; })()}
               {(() => { const ms = (frendy.coffeeUntil[me] ?? 0) - Date.now(); return ms > 0 ? <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-teal" title="Кофе: иммунитет к ПОИМКЕ Френди (удары — нет)">☕ {Math.ceil(ms / 1000)}с</span> : null; })()}
+              {/* v0.146: таймер ЭНЕРГЕТИКА — иммунитет к УДАРАМ Френди */}
+              {(() => { const ms = (frendy.energeticUntil?.[me] ?? 0) - Date.now(); return ms > 0 ? <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-[#7ee787]" title="Энергетик: иммунитет к УДАРАМ Френди (поимка — нет)">🥤 {Math.ceil(ms / 1000)}с</span> : null; })()}
               {(() => { const ms = (frendy.taskSafeUntil?.[me] ?? 0) - Date.now(); return ms > 0 ? <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-gold" title="Щит задания: Френди НЕ ТРОГАЕТ — ни бить, ни ловить (даётся за личное задание)">🛡 {Math.ceil(ms / 1000)}с</span> : null; })()}
               {frendy.boss && frendy.boss.targetId === me && s?.phase === 'playing' && <span className="hud-chip pixel-corners px-2.5 py-1.5 font-pixel text-[9px] text-coral blink-hard" title="Френди охотится на тебя — БЕГИ!">😈 ФРЕНДИ ЗА ТОБОЙ!</span>}
             </>
@@ -4448,7 +4446,7 @@ export default function GameScreen() {
         {/* ---------- v0.144 FRENDY: подсказка у ПРИСТАВКИ + окно «приставка + рюкзак» ---------- */}
         {isFrendy && nearConsole && !consoleOpen && !nearFurnace && s?.phase === 'playing' && mePlayer?.alive && !mePlayer.spect && (
           <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
-            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#8fd0ff] bg-[rgba(7,9,18,0.9)] border-2 border-[#8fd0ff]/50">🎮 ПРИСТАВКА — войди в неё или кликни</span>
+            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#8fd0ff] bg-[rgba(7,9,18,0.9)] border-2 border-[#8fd0ff]/50">🎮 ПРИСТАВКА — <b className="text-paper">E</b> · джойстик · клик</span>
           </div>
         )}
         {/* ---------- v0.141 FRENDY: подсказка у ПРЕДМЕТА на земле (поднять) ---------- */}
@@ -4463,7 +4461,7 @@ export default function GameScreen() {
         {pickupBounce && (
           <div key={pickupBounce.key} className="frendy-pickup-bounce absolute bottom-40 left-1/2 z-30">
             <span className="block" style={{ fontSize: 42, filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.8))' }}>
-              {pickupBounce.kind === 'dendyCart' ? '📼' : pickupBounce.kind === 'coffee' ? '☕' : pickupBounce.kind === 'medkit' ? '🧰' : pickupBounce.kind === 'flask' ? '🥃' : <ChipArt px={40} />}
+              {pickupBounce.kind === 'dendyCart' ? '📼' : pickupBounce.kind === 'coffee' ? '☕' : pickupBounce.kind === 'energetic' ? '🥤' : pickupBounce.kind === 'medkit' ? '🧰' : pickupBounce.kind === 'flask' ? '🥃' : <ChipArt px={40} />}
             </span>
           </div>
         )}

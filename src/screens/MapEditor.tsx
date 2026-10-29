@@ -3900,9 +3900,21 @@ export default function MapEditor() {
                         <div className="flex items-center justify-between"><span className="text-[10px] text-dim">Длительность охоты</span><Stepper value={map.frendyAggrCustom?.huntSec ?? 30} onChange={(v) => { updMap({ frendyAggrCustom: { ...(map.frendyAggrCustom ?? {}), huntSec: v } } as Partial<GameMap>); dirtyRef.current = true; }} min={8} max={90} step={1} suffix=" с" /></div>
                         <div className="flex items-center justify-between"><span className="text-[10px] text-dim">Перерыв удара</span><Stepper value={map.frendyAggrCustom?.hitCdSec ?? 1.1} onChange={(v) => { updMap({ frendyAggrCustom: { ...(map.frendyAggrCustom ?? {}), hitCdSec: v } } as Partial<GameMap>); dirtyRef.current = true; }} min={0.6} max={4} step={0.1} suffix=" с" /></div>
                         <div className="flex items-center justify-between"><span className="text-[10px] text-dim">Урон за удар</span><Stepper value={map.frendyAggrCustom?.dmg ?? 13} onChange={(v) => { updMap({ frendyAggrCustom: { ...(map.frendyAggrCustom ?? {}), dmg: v } } as Partial<GameMap>); dirtyRef.current = true; }} min={1} max={20} step={1} suffix=" % HP" /></div>
+                        {/* v0.146: ПРАВИЛА ЯРОСТИ — галочки заказчика + время ярости */}
+                        <div className="mt-1.5 pt-1.5 border-t border-edge/60 space-y-1">
+                          <div className="text-[10px] text-dim">Правила ярости:</div>
+                          <Toggle checked={map.frendyAggrCustom?.rageOn ?? true} onChange={(v) => { updMap({ frendyAggrCustom: { ...(map.frendyAggrCustom ?? {}), rageOn: v } } as Partial<GameMap>); dirtyRef.current = true; }} label="Ярость включена" />
+                          {(map.frendyAggrCustom?.rageOn ?? true) && (
+                            <>
+                              <Toggle checked={map.frendyAggrCustom?.rageOnCart ?? false} onChange={(v) => { updMap({ frendyAggrCustom: { ...(map.frendyAggrCustom ?? {}), rageOnCart: v } } as Partial<GameMap>); dirtyRef.current = true; }} label="Ярость после броска КАРТРИДЖА в печь" />
+                              <Toggle checked={map.frendyAggrCustom?.rageOnChip ?? true} onChange={(v) => { updMap({ frendyAggrCustom: { ...(map.frendyAggrCustom ?? {}), rageOnChip: v } } as Partial<GameMap>); dirtyRef.current = true; }} label="Ярость после сжигания микросхемы" />
+                              <div className="flex items-center justify-between"><span className="text-[10px] text-dim">Время ярости</span><Stepper value={map.frendyAggrCustom?.rageSec ?? 120} onChange={(v) => { updMap({ frendyAggrCustom: { ...(map.frendyAggrCustom ?? {}), rageSec: v } } as Partial<GameMap>); dirtyRef.current = true; }} min={10} max={600} step={10} suffix=" с" /></div>
+                            </>
+                          )}
+                        </div>
                       </div>
                     )}
-                    <p className="text-[9px] text-faint leading-tight mt-1">«Как сейчас» — злее с каждой сожжённой микросхемой (как в 0.130). «Плавно» — спокойный в начале партии и ярость к финалу: по сожжённым микросхемам или по сломанным (пройденным) ячейкам заданий. «Всегда яростный» — хардкор без пощады: Френди НЕ спит и НЕ растворяется — непрерывно гонится за целью на скорости ярости, а на последней микросхеме — УЛЬТРА (очень быстр, телепортируется, бьёт всех рядом). Каждая сожжённая микросхема вводит ярость на 2 минуты в ЛЮБОМ режиме. «Свой вариант» — ручные параметры. Настройка работает только в режиме FRENDY; у старых карт и без выбора — «как сейчас».</p>
+                    <p className="text-[9px] text-faint leading-tight mt-1">«Легко — как сейчас» — злее с каждой сожжённой микросхемой (как в 0.130). «Средне — плавно» — спокойный в начале партии и ярость к финалу: по сожжённым микросхемам или по пройденным приставкам. «Сложно — всегда яростный» — хардкор без пощады: Френди НЕ спит и НЕ растворяется — непрерывно гонится за целью на скорости ярости, а на последней микросхеме — УЛЬТРА (очень быстр, телепортируется, бьёт всех рядом). Каждая сожжённая микросхема вводит ярость на 2 минуты в ЛЮБОМ режиме, кроме «Легко — без ярости»: там её НЕТ ВОВСЕ (и УЛЬТРА тоже). «Свой вариант» — ручные параметры + СВОИ правила ярости (галочки и время). Настройка работает только в режиме FRENDY; у старых карт и без выбора — «Легко — как сейчас».</p>
                   </div>
                 )}
               </div>

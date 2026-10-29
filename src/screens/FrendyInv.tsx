@@ -235,7 +235,7 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
     if (kind === 'frendyChip' && !strong) return 'Огонь СЛАБЫЙ — микросхема не загорается. Сначала сожги в печи картридж Dendy 📼';
     return null;
   };
-  const usable = (kind: RubgItemKind): boolean => kind === 'medkit' || kind === 'flask' || kind === 'bigmed' || kind === 'coffee';
+  const usable = (kind: RubgItemKind): boolean => kind === 'medkit' || kind === 'flask' || kind === 'bigmed' || kind === 'coffee' || kind === 'energetic'; // v0.146: + энергетик
 
   const openMenu = (e: React.PointerEvent | React.MouseEvent, it: RubgItem) => {
     if (lpTimer.current !== null) { window.clearTimeout(lpTimer.current); lpTimer.current = null; }
@@ -292,7 +292,7 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
                 border: '1px solid rgba(160,132,60,0.65)',
                 boxShadow: 'inset 0 0 8px rgba(0,0,0,0.6)',
               }}
-              title={`${nm}${it.kind === 'frendyChip' ? ' — сожги в ПЕЧИ (сильный огонь)' : it.kind === 'dendyCart' ? ' — брось в ПЕЧЬ (сильный огонь) или вставь в пустую ПРИСТАВКУ' : it.kind === 'coffee' ? ' — 5 минут без поимки' : meta.hp > 0 ? ` — лечит +${meta.hp}% HP` : ''}`}
+              title={`${nm}${it.kind === 'frendyChip' ? ' — сожги в ПЕЧИ (сильный огонь)' : it.kind === 'dendyCart' ? ' — брось в ПЕЧЬ (сильный огонь) или вставь в пустую ПРИСТАВКУ' : it.kind === 'coffee' ? ' — 5 минут без поимки' : it.kind === 'energetic' ? ' — 3 минуты без УДАРОВ Френди' : meta.hp > 0 ? ` — лечит +${meta.hp}% HP` : ''}`}
               onPointerDown={(e) => {
                 /* телефон: долгое нажатие (~550 мс) — контекстное меню; движение — перетаскивание */
                 if (e.pointerType === 'touch') {
@@ -314,7 +314,7 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
         })}
       </div>
       <div className="font-pixel text-[9px] text-faint mt-1.5 leading-snug">
-        ЛКМ/палец — перетащить (за окно — выбросить) · ПКМ/долгое нажатие — меню · микросхема и картридж 2×2 · кофе 1×1 · аптечка 2×3
+        ЛКМ/палец — перетащить (за окно — выбросить) · ПКМ/долгое нажатие — меню · микросхема и картридж 2×2 · кофе и энергетик 1×1 · аптечка 2×3
       </div>
 
       {/* ПРИЗРАК ПРЕДМЕТА под курсором/пальцем — v0.143: через ПОРТАЛ в body:
@@ -342,7 +342,7 @@ export function FrendyInvGrid({ items, actions, near, strong, hpFull, furnaceRef
               className="w-full text-left px-3 py-1.5 text-[12px] text-paper hover:bg-[#a0843c]/20 cursor-pointer font-display"
               onClick={() => { setMenu(null); actions.onUse(menuIt.id); }}
             >
-              {menuIt.kind === 'coffee' ? '☕ Выпить (иммунитет 5 мин)' : '🩹 Использовать (лечит)'}
+              {menuIt.kind === 'coffee' ? '☕ Выпить (иммунитет 5 мин)' : menuIt.kind === 'energetic' ? '🥤 Выпить (броня от ударов 3 мин)' : '🩹 Использовать (лечит)'}
             </button>
           )}
           {(menuIt.kind === 'frendyChip' || menuIt.kind === 'dendyCart') && (() => {
