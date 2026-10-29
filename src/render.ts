@@ -454,6 +454,7 @@ export interface BoardDrawOpts {
   frendyConsoles?: Record<string, number | null>;      // какой картридж вставлен (нет ключа — «свой»)
   taskCartImgs?: Record<string, string | null>;        // taskIdx → арт картриджа (обложка рома / фото платформы)
   taskTitles?: Record<string, string | null>;          // taskIdx → название задания (подпись под приставкой)
+  consoleImgs?: Record<string, string | null>;         // v0.145: индекс приставки → фото ЕЁ региона (Dendy/Famicom/NES по рому)
   /* v0.136: + walking/flip — идёт ли Френди сейчас (цикл ходьбы vs стойка) и разворот спрайта
      (рисунок смотрит ВЛЕВО — при движении вправо флипаем; считает GameScreen по скорости) */
   frendyBoss?: { x: number; y: number; fx?: string | null; fxTs?: number; targetId?: string | null; walking?: boolean; flip?: boolean } | null;
@@ -552,8 +553,11 @@ const drawFrendyConsole = (
   ctx: CanvasRenderingContext2D, W: number, H: number, idx: number, time: number,
   consoles: Record<string, number | null> | undefined, cartImgs: Record<string, string | null> | undefined,
   titles: Record<string, string | null> | undefined, isHush: boolean,
+  consoleImgs?: Record<string, string | null>,
 ) => {
-  const img = getImage(frendyConsoleImg(idx));
+  /* v0.145: фото приставки — ПО РЕГИОНУ её родного рома (Dendy/Famicom/NES);
+     нет региона (старые карты) — прежняя детерминированная по индексу */
+  const img = getImage(consoleImgs?.[idx] || frendyConsoleImg(idx));
   const sz = Math.min(W, H);
   if (img) {
     const iw = img.naturalWidth || 1, ih = img.naturalHeight || 1;
@@ -1288,7 +1292,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       } else if (cell.type === 'task') {
         /* v0.144 FRENDY: ячейка задания — ПРИСТАВКА (фото консоли + картридж в слоте) */
         if (o.frendyMode) {
-          drawFrendyConsole(ctx, W, H, i, o.time, o.frendyConsoles, o.taskCartImgs, o.taskTitles, isHush);
+          drawFrendyConsole(ctx, W, H, i, o.time, o.frendyConsoles, o.taskCartImgs, o.taskTitles, isHush, o.consoleImgs);
         } else {
         const imgSrc = isHush ? null : (cell.task?.imageId || cell.imageId); // скрыто — картинку не рисуем (выдала бы задание)
         const img = imgSrc ? getImage(imgSrc) : null;
@@ -1384,7 +1388,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       const cellImg = !isHush && cell.imageId ? getImage(cell.imageId) : null; // v0.99: скрыто — картинку не рисуем
       if (o.frendyMode && cell.type === 'task') {
         /* v0.144 FRENDY: приставка в малой ячейке — фото + картридж (без подписи) */
-        drawFrendyConsole(ctx, W, H, i, o.time, o.frendyConsoles, o.taskCartImgs, o.taskTitles, isHush);
+        drawFrendyConsole(ctx, W, H, i, o.time, o.frendyConsoles, o.taskCartImgs, o.taskTitles, isHush, o.consoleImgs);
       } else if (isStart) {
         flagIcon(ctx, 4, '#ffcf3f');
       } else if (cellImg) {

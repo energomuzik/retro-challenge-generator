@@ -1,5 +1,5 @@
 import type { CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
-import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_BURN_SHIELD_MS, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, rubgItemSize, rubgGridFits, rubgGridFirstFit, FRENDY_INV_COLS, FRENDY_INV_ROWS, playerPx, doorKeyName, frameWallsOf } from './types';
+import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_BURN_SHIELD_MS, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, cartFitsConsole, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, rubgItemSize, rubgGridFits, rubgGridFirstFit, FRENDY_INV_COLS, FRENDY_INV_ROWS, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
@@ -1767,46 +1767,63 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         f.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round(spot?.x ?? Math.random() * W), y: Math.round(spot?.y ?? Math.random() * H) });
         log(`😈 ФРЕНДИ забрал у ${tgt.name} микросхему и перепрятал её в другом конце кошмара!`);
       }
-      /* v0.144: КАРТРИДЖ ЗАДАНИЯ — вырвать у жертвы и СРАЗУ ВСТАВИТЬ В ПРИСТАВКУ
-         («Френди может отобрать картридж и вставить в приставку обратно»).
-         Свободная приставка — туда; свободных нет — вытолкнуть картридж НЕ-играемой
-         приставки на землю. Безымянные картриджи (старые сейвы, без taskIdx) Френди не берёт. */
+      /* v0.144: КАРТРИДЖ ЗАДАНИЯ — вырвать у жертвы... v0.145: Френди НЕ ВСЕГДА вставляет
+         отобранный картридж — ЧАСТО ПРОСТО ПРЯЧЕТ его в другом конце кошмара (заказчик).
+         А когда решает вставить — выбирает ТОЛЬКО ПРИСТАВКУ ПРАВИЛЬНОГО РЕГИОНА (карик NES —
+         только NES, Dendy — только Dendy, Famicom — Dendy/Famicom); подходящей нет (занята
+         чужим/неподходящим картриджем или играет) — прячет. Безымянные (старые сейвы,
+         без taskIdx) Френди не берёт. */
       let tookCart = false;
       const ck = inv.findIndex((x) => x.kind === 'dendyCart' && typeof x.taskIdx === 'number' && !!cellTaskOf(s, map, x.taskIdx!));
       if (ck >= 0) {
         const [cart] = inv.splice(ck, 1);
         tookCart = true;
         const cartTitle = cellTaskOf(s, map, cart.taskIdx!)?.title ?? 'игра';
-        const consoles = map.cells.map((c, i) => ({ c, i })).filter(({ c }) => c.type === 'task');
-        const playingNow = (ci: number) => Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === ci);
-        const free = consoles.filter(({ i }) => frendyCartTaskIdx(s, map, i) === null && !playingNow(i));
-        let pick: number | null = null;
-        let displaced: number | null = null; // чей картридж вытолкнут на землю
-        if (free.length) {
-          pick = free[Math.floor(Math.random() * free.length)].i;
-        } else {
-          const swappable = consoles.filter(({ i }) => frendyCartTaskIdx(s, map, i) !== null && !playingNow(i));
-          if (swappable.length) {
-            const sw = swappable[Math.floor(Math.random() * swappable.length)];
-            pick = sw.i;
-            displaced = frendyCartTaskIdx(s, map, sw.i);
-          }
-        }
-        if (pick !== null) {
-          s.frendyConsoles = s.frendyConsoles ?? {};
-          s.frendyConsoles[pick] = cart.taskIdx!;
-          if (displaced !== null && displaced !== cart.taskIdx) {
-            const rr = cellRectOf(map, pick);
-            f.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round((rr ? rr.x + rr.w / 2 : W / 2) + (Math.random() * 40 - 20)), y: Math.round((rr ? rr.y + rr.h / 2 : H / 2) + (Math.random() * 40 - 20)), kind: 'dendyCart', taskIdx: displaced });
-            log(`😈 ФРЕНДИ вырвал у ${tgt.name} КАРТРИДЖ «${cartTitle}» 📼 и вставил его в ПРИСТАВКУ №${pick + 1} ВМЕСТО старого — тот выпал на землю рядом!`);
-          } else {
-            log(`😈 ФРЕНДИ вырвал у ${tgt.name} КАРТРИДЖ «${cartTitle}» 📼 и ВСТАВИЛ его в ПРИСТАВКУ №${pick + 1} — задание снова можно играть!`);
-          }
-          f.fx = { kind: 'repair', ts: now }; // звук «вставил картридж» — слышат все
-        } else {
+        const cartReg = cellTaskOf(s, map, cart.taskIdx!)?.cartRegion ?? null;
+        /* v0.145: СПРЯТАТЬ — в половине случаев, а также ВСЕГДА, когда правильной
+           свободной приставки не нашлось (нет свободных / все заняты чужими картриджами) */
+        const hideInstead = Math.random() < 0.45;
+        const hideCart = (msg: string) => {
           const spotC = frendyFreeSpot([{ x: tp.x, y: tp.y }]) ?? { x: W / 2, y: H / 2 };
           f.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round(spotC.x), y: Math.round(spotC.y), kind: 'dendyCart', taskIdx: cart.taskIdx! });
-          log(`😈 ФРЕНДИ вырвал у ${tgt.name} КАРТРИДЖ «${cartTitle}» 📼 — свободных приставок нет, картридж ВЫПАЛ НА ЗЕМЛЮ!`);
+          log(msg);
+        };
+        if (!hideInstead) {
+          const consoles = map.cells.map((c, i) => ({ c, i })).filter(({ c }) => c.type === 'task');
+          const playingNow = (ci: number) => Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === ci);
+          /* свободные И ПРАВИЛЬНОГО РЕГИОНА (регион приставки — её родное задание) */
+          const free = consoles.filter(({ i }) => frendyCartTaskIdx(s, map, i) === null && !playingNow(i)
+            && cartFitsConsole(cartReg, map.cells[i].task?.cartRegion ?? null));
+          let pick: number | null = null;
+          let displaced: number | null = null; // чей картридж вытолкнут на землю
+          if (free.length) {
+            pick = free[Math.floor(Math.random() * free.length)].i;
+          } else {
+            /* влезть СИЛОЙ в занятую-не-играемую правильную приставку: старый картридж вытолкнуть */
+            const swappable = consoles.filter(({ i }) => frendyCartTaskIdx(s, map, i) !== null && !playingNow(i)
+              && cartFitsConsole(cartReg, map.cells[i].task?.cartRegion ?? null));
+            if (swappable.length) {
+              const sw = swappable[Math.floor(Math.random() * swappable.length)];
+              pick = sw.i;
+              displaced = frendyCartTaskIdx(s, map, sw.i);
+            }
+          }
+          if (pick !== null) {
+            s.frendyConsoles = s.frendyConsoles ?? {};
+            s.frendyConsoles[pick] = cart.taskIdx!;
+            if (displaced !== null && displaced !== cart.taskIdx) {
+              const rr = cellRectOf(map, pick);
+              f.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round((rr ? rr.x + rr.w / 2 : W / 2) + (Math.random() * 40 - 20)), y: Math.round((rr ? rr.y + rr.h / 2 : H / 2) + (Math.random() * 40 - 20)), kind: 'dendyCart', taskIdx: displaced });
+              log(`😈 ФРЕНДИ вырвал у ${tgt.name} КАРТРИДЖ «${cartTitle}» 📼 и вставил его в ПРИСТАВКУ №${pick + 1} ВМЕСТО старого — тот выпал на землю рядом!`);
+            } else {
+              log(`😈 ФРЕНДИ вырвал у ${tgt.name} КАРТРИДЖ «${cartTitle}» 📼 и ВСТАВИЛ его в ПРИСТАВКУ №${pick + 1} — задание снова можно играть!`);
+            }
+            f.fx = { kind: 'repair', ts: now }; // звук «вставил картридж» — слышат все
+          } else {
+            hideCart(`😈 ФРЕНДИ вырвал у ${tgt.name} КАРТРИДЖ «${cartTitle}» 📼 и СПРЯТАЛ его в другом конце кошмара — придётся поискать!`);
+          }
+        } else {
+          hideCart(`😈 ФРЕНДИ вырвал у ${tgt.name} КАРТРИДЖ «${cartTitle}» 📼, посмеялся и СПРЯТАЛ его в другом конце кошмара!`);
         }
       }
       /* v0.144: оттащить жертву — на ПРИСТАВКУ С КАРТРИДЖЕМ и ВКЛЮЧИТЬ его
@@ -3003,8 +3020,17 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
             p.pos = i;
             revealCell(s, p.id, i);
             if (c.type === 'task') {
-              /* v0.144: ПРИСТАВКА — ПРОХОД СКВОЗЬ НЕЁ больше не запускает задание.
-                 Старт: E у приставки (картридж + кнопка питания) или поимка Френди. */
+              /* v0.145: ЗАЙТИ В ПРИСТАВКУ = ПЕРЕСЕЧЬ её (заказчик: «как раньше просто её пересечь»;
+                 E и джойстик больше приставку НЕ открывают — конфликновали с подъёмом предметов).
+                 В приставке КАРТРИДЖ — задание ВКЛЮЧАЕТСЯ проходом (то же, что кнопка POWER ON);
+                 ПУСТАЯ приставка — клиент сам откроет окно «приставка + рюкзак» (вставить картридж). */
+              if (frendyCartTaskIdx(s, map, i) !== null && !s.qJobs?.[p.id]
+                  && !Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === i)) {
+                s.qJobs = s.qJobs ?? {};
+                s.qJobs[p.id] = { cellIdx: i, startedAt: Date.now() };
+                const tkIn = cellTaskOf(s, map, i);
+                log(`▶ ${p.name} заходит к ПРИСТАВКЕ №${i + 1} и включает КАРТРИДЖ «${(tkIn?.title ?? 'игра').slice(0, 30)}» — задание пошло!`);
+              }
             } else if (c.type === 'bonus' || c.type === 'trap') {
               const deck = c.type === 'bonus' ? map.bonusCards : map.trapCards;
               if (!deck.length) continue;
@@ -3622,6 +3648,22 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (ii < 0) break;
       const it = inv[ii];
       if (it.kind !== 'dendyCart' || typeof it.taskIdx !== 'number' || !cellTaskOf(s, map, it.taskIdx)) { log(`📼 Это не картридж ЗАДАНИЯ — приставка его не примет`); break; }
+      /* v0.145: РЕГИОН «КАК В РЕАЛЬНОСТИ» — карик входит только в СВОЮ приставку:
+         NES → только NES; Dendy → только Dendy; Famicom → Dendy и Famicom.
+         Регион картриджа — его задания (TaskDef.cartRegion), «железо» приставки — её
+         РОДНОЕ задание (map.cells[cIdx].task). Неизвестные регионы (старые карты,
+         не-NES ромы) — совместимы со всем. */
+      const insCartReg = cellTaskOf(s, map, it.taskIdx)?.cartRegion ?? null;
+      const insConReg = map.cells[cIdx].task?.cartRegion ?? null;
+      if (!cartFitsConsole(insCartReg, insConReg)) {
+        const whyReg = insCartReg === 'nes'
+          ? 'NES-картридж играет ТОЛЬКО на NES-приставке'
+          : insCartReg === 'dendy'
+            ? 'картридж Dendy играет ТОЛЬКО на приставке Dendy'
+            : 'картридж Famicom играет только на Dendy и Famicom';
+        log(`📼 Не подходит: ${whyReg} — ищи приставку нужного региона`);
+        break;
+      }
       inv.splice(ii, 1);
       s.frendyConsoles = s.frendyConsoles ?? {};
       s.frendyConsoles[cIdx] = it.taskIdx;

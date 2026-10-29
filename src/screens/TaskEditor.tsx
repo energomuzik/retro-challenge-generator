@@ -5,7 +5,7 @@ import { cellAtPoint, drawBoard, fitView } from '../render';
 import { idbGet, idbPut, uid } from '../db';
 import { cartridgeArt, cardArt, fileToDataUrl } from '../assets';
 import type { CardDef, CardEffect, CellType, ChaosKind, CodeOp, CodeType, EffectType, GameMap, MemCond, RomDef, SaveKind, TaskDef } from '../types';
-import { CHAOS_LIST, chaosLabel, mkChaosCard, JOY_LIST, SAVE_KIND_CLS, SAVE_KIND_LABEL, SAVE_KIND_SHORT, saveKindOf, taskPlatOfExt, DONATE_DICE_ONLY } from '../types';
+import { CHAOS_LIST, chaosLabel, mkChaosCard, JOY_LIST, SAVE_KIND_CLS, SAVE_KIND_LABEL, SAVE_KIND_SHORT, saveKindOf, taskPlatOfExt, cartRegionOfRom, DONATE_DICE_ONLY } from '../types';
 import { hasDice, loadPool, savePool, subscribeBogach, sideBtnsOn, loadCodes, saveCodes, type BogachCode, type BogachPool } from '../bogach'; // v0.109: кубиковые пакости только в Ретрополии; v0.112: пул донатов в редакторе; v0.114: мини-кнопки 💰 скрываются; v0.122: база кодов
 import { BogachPanel } from './BogachPanel'; // v0.112: панель «💰 Донаты» — та же, что у хоста в партии
 import { CODE_TYPE_LABEL, OP_LABEL, formatCond, hex8, memCondText, parseCond, parseHex } from '../memcode';
@@ -487,6 +487,15 @@ export default function TaskEditor() {
       ...(fCodeOnly ? { codeOnly: true } : {}),
       /* v0.104: платформа задания (для иммунитетов БОГАЧА) — по расширению рома */
       plat: taskPlatOfExt(roms.find((r) => r.id === fRom)?.ext),
+      /* v0.145: РЕГИОН КАРТРИДЖА (приставки FRENDY «как в реальности») — по формату+региону
+         рома: (P)/(pirate)/(dendy) → Dendy, (J)/(Japan) → Famicom, иначе → NES; не-NES ром
+         поля не имеет (универсальный картридж). Пересохраните задания старых карт, чтобы
+         регионы заработали. */
+      ...((() => {
+        const r0 = roms.find((r) => r.id === fRom);
+        const reg = r0 ? cartRegionOfRom(r0.ext, r0.fileName) : null;
+        return reg ? { cartRegion: reg } : {};
+      })()),
     };
     /* v0.104: задание пишется в АКТИВНЫЙ слот — основное (task) или вариант (taskVariants).
        Слоты ПОЗИЦИОННЫЕ: в массиве возможны пропуски (null) — движок их игнорирует. */

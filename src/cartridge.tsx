@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { idbPut } from './db';
 import type { RomDef, TileImg } from './types';
+import { cartRegionOfRom } from './types'; // v0.145: единый регион NES-рома (types.ts — чистая функция)
 import { extractTilesFromImage, type ExtractInfo } from './tilecut';
 import { HoldDeleteButton } from './delGuard';
 import { GhostBtn, Ic, Modal, PxBtn, Stepper } from './ui';
@@ -125,21 +126,22 @@ function tagHit(tags: string[], exact: string[], prefixes: string[]): boolean {
   return tags.some((t) => exact.includes(t) || prefixes.some((n) => t.startsWith(n)));
 }
 
-/* ключ дефолтной фото-обложки рома; null — фото нет (рисуем как раньше) */
+/* ключ дефолтной фото-обложки рома; null — фото нет (рисуем как раньше).
+   v0.145: NES-регион считается ЕДИНОЙ чистой функцией cartRegionOfRom из types.ts
+   (та же, что ставит TaskDef.cartRegion и решает совместимость с приставками FRENDY) */
 export function cartImgKeyOf(ext: string | undefined, fileName?: string): string | null {
   const e = (ext ?? '').toLowerCase();
-  const tags = fileNameTags(fileName);
-  const hasUSA = tagHit(tags, ['u', 'usa', 'us'], ['usa']);
-  const hasJ = tagHit(tags, ['j', 'jap', 'jp'], ['japan']);
-  const hasP = tagHit(tags, ['p'], ['pirate', 'dendy']);
-  if (e === 'nes') return hasP ? 'nes-pirate' : hasJ ? 'nes-jp' : 'nes-usa';
-  if (e === 'snes') return hasJ ? 'snes-jp' : 'snes-usa';
+  if (e === 'nes') {
+    const r = cartRegionOfRom(e, fileName);
+    return r === 'dendy' ? 'nes-pirate' : r === 'famicom' ? 'nes-jp' : 'nes-usa';
+  }
+  if (e === 'snes') return tagHit(fileNameTags(fileName), ['j', 'jap', 'jp'], ['japan']) ? 'snes-jp' : 'snes-usa';
   if (e === 'sega') {
     const fe = ((fileName ?? '').split('.').pop() ?? '').toLowerCase();
     if (fe === 'sms') return 'sms';
     if (fe === 'gg') return 'gg';
     if (fe === '32x') return 'sega32';
-    return hasUSA ? 'md-usa' : 'md-eu'; // .md/.gen/.bin и старые ромы без расширения
+    return tagHit(fileNameTags(fileName), ['u', 'usa', 'us'], ['usa']) ? 'md-usa' : 'md-eu'; // .md/.gen/.bin и старые ромы без расширения
   }
   if (e === 'gb') return 'gb';
   if (e === 'gbc') return 'gbc';

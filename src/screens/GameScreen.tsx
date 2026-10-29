@@ -7,6 +7,7 @@ import { cellHushed, cellRectOf, cellTaskOf, frendyCartTaskIdx, bogachCellList, 
 import { effectLabel } from './TaskEditor';
 import { cardArt, cartridgeArt } from '../assets';
 import { cartImgSrcOf } from '../cartridge'; // v0.144: обложка/фото картриджа задания
+import { frendyConsoleImgOfRegion, frendyConsoleImg } from '../consoleAssets'; // v0.144/145: фото приставок (Dendy/Famicom/NES)
 import SegaBox, { type SegaApi } from '../SegaBox';
 import { isFloatT, opOk, readAt } from '../memcode';
 import KeyBinder from '../KeyBinder';
@@ -20,8 +21,8 @@ import {
 import { saveSessionSnapshot } from './Lobby';
 import QuizOverlay from './QuizOverlay';
 import { AnimPreview, EmuVolumeChip, Field, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin, CoinRow } from '../ui';
-import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isBossCatchMode, isSoloMode, isFrendyMode, FRENDY_PHRASES, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf } from '../types';
-import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem, RubgItemKind } from '../types';
+import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isBossCatchMode, isSoloMode, isFrendyMode, FRENDY_PHRASES, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf, cartRegionOfRom } from '../types';
+import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem, RubgItemKind, CartRegion } from '../types';
 import Randomizer from './Randomizer';
 import TradeWindow from './TradeWindow';
 /* v0.135: карточка «Лор Френди» убрана из игры (и отсюда, и из обучения) — предысторию
@@ -962,8 +963,9 @@ export default function GameScreen() {
         if (cur && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); openDialog(cur.npc.id); } // v0.56: в кат-сцене разговоров нет
         /* v0.123 FRENDY: E у ПЕЧИ — окно сжигания микросхемы */
         else if (isFrendy && nearFurnace && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setFurnOpen(true); }
-        /* v0.144 FRENDY: E у ПРИСТАВКИ — окно «приставка + рюкзак» (картридж + POWER ON) */
-        else if (isFrendy && nearConsole && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setConsoleOpen(true); }
+        /* v0.145: E у ПРИСТАВКИ больше НЕ открывает окно (перекликалось с подъёмом предметов).
+           Приставка открывается ПРОХОДОМ по ней (пустая — окно, с картриджем — движок включает
+           задание) или КЛИКОМ/ТАПОМ по ней. */
         /* v0.132 ЭПИЛОГ: E у АЛЬДЕРА — начать разговор в стиле визуальной новеллы (все видят) */
         else if (epiNearAlder && !cutActiveRef.current) { e.preventDefault(); sfx.click(); dispatch({ t: 'epiTalk', id: me }); }
       }
@@ -988,7 +990,30 @@ export default function GameScreen() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [nearNpc, dlgNpcId, isFrendy, nearFurnace, !!nearConsole, epiNearAlder]);
+  }, [nearNpc, dlgNpcId, isFrendy, nearFurnace, epiNearAlder]);
+  /* v0.145 FRENDY: ЗАЙТИ В ПУСТУЮ ПРИСТАВКУ = ПЕРЕСЕЧЬ её — окно «приставка + рюкзак»
+     открывается САМО при входе на ячейку (E/джойстик больше не открывают — конфликтовали
+     с подъёмом предметов). С картриджем проход включает задание (движок), окно не нужно.
+     Тап/клик по приставке по-прежнему открывает окно вручную. */
+  const lastConsoleCellRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!isFrendy || !s || s.phase !== 'playing' || !map || !mePlayer || !mePlayer.alive || mePlayer.spect || !myJourneyPos) { lastConsoleCellRef.current = null; return; }
+    if (consoleOpen || furnOpen || invOpen || dlgOpenId || cutActiveRef.current || taskWinRef.current) return;
+    let cur: number | null = null;
+    for (let i = 0; i < map.cells.length; i++) {
+      if (map.cells[i].type !== 'task') continue;
+      const r = cellRectOf(map, i);
+      if (!r) continue;
+      if (myJourneyPos.x >= r.x && myJourneyPos.x < r.x + r.w && myJourneyPos.y >= r.y && myJourneyPos.y < r.y + r.h) { cur = i; break; }
+    }
+    if (cur !== null && cur !== lastConsoleCellRef.current) {
+      const playingNow = Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === cur);
+      /* пустая и неиграемая приставка — «войти» в неё: окно вставки картриджа */
+      if (frendyCartTaskIdx(s, map, cur) === null && !playingNow) { sfx.click(); setConsoleOpen(true); }
+    }
+    lastConsoleCellRef.current = cur;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myJourneyPos?.x, myJourneyPos?.y, isFrendy, consoleOpen, furnOpen, invOpen, dlgOpenId, s?.phase]);
   /* v0.133 FRENDY: ПЕЧЬ С ДЖОЙСТИКА — лицевые кнопки (W3C 0/1/2/3 = A/B/X/Y всех падов)
      и назначенные под A/B в раскладках консолей открывают окно печи рядом, как клавиша E.
      Край-триггер: открывает только НОВОЕ нажатие — удержание и кнопка, зажатая ДО
@@ -1012,23 +1037,9 @@ export default function GameScreen() {
     return () => window.clearInterval(iv);
   }, [isFrendy, !!nearFurnace, furnOpen, s?.phase]);
   /* v0.144 FRENDY: ПРИСТАВКА С ДЖОЙСТИКА — лицевые кнопки открывают окно приставки,
-     как клавиша E (край-триггер тот же, что у печи). */
-  const consolePadPrevRef = useRef<Set<number>>(new Set());
-  useEffect(() => {
-    if (!isFrendy || !nearConsole || consoleOpen || furnOpen || s?.phase !== 'playing') return;
-    const init = new Set<number>();
-    collectPadButtons(init);
-    consolePadPrevRef.current = init; // уже зажатое в момент подхода — не открывает
-    const iv = window.setInterval(() => {
-      const cur = new Set<number>();
-      collectPadButtons(cur);
-      let fresh = false;
-      for (const b of cur) if (!consolePadPrevRef.current.has(b)) { fresh = true; break; }
-      consolePadPrevRef.current = cur;
-      if (fresh) { sfx.click(); setConsoleOpen(true); }
-    }, 66);
-    return () => window.clearInterval(iv);
-  }, [isFrendy, !!nearConsole, consoleOpen, furnOpen, s?.phase]);
+     как клавиша E (край-триггер тот же, что у печи).
+     v0.145: УБРАНО (заказчик: джойстик больше не открывает приставку — как и E).
+     Приставка открывается проходом по ней или кликом/тапом. */
   /* v0.135: АЛЬДЕР С ДЖОЙСТИКА — те же лицевые кнопки открывают разговор в эпилоге,
      когда Скаллер (хост) стоит рядом с Альдером, как клавиша E. Край-триггер тот же. */
   const alderPadPrevRef = useRef<Set<number>>(new Set());
@@ -1054,30 +1065,38 @@ export default function GameScreen() {
      или клик по предмету на карте. В рюкзаке нет места — движок откажет: предмет ОСТАНЕТСЯ
      на земле, клиент покажет «отскок» и подсказку (как в Diablo 1). */
   const [pickupBounce, setPickupBounce] = useState<{ key: number; kind: RubgItemKind } | null>(null);
-  /* v0.144 FRENDY: арты и названия заданий карты — для ПРИСТАВОК на поле и КАРТРИДЖЕЙ на полу.
-     Обложка рома / фото платформы — те же картинки, что в редакторе заданий (cartImgSrcOf). */
-  /* v0.144: арт/название картриджа из рюкзака (для окон печи и приставки) */
-  const frendyCartArtOf = useCallback((it: RubgItem): { src: string | null; title: string | null } | null => {
+  /* v0.144 FRENDY: арт/название картриджа из рюкзака (для окон печи и приставки).
+     v0.145: + РЕГИОН картриджа — берётся из ЗАДАНИЯ (TaskDef.cartRegion, тот же, что
+     проверяет движок) — для проверки «карик входит только в свою приставку». */
+  const frendyCartArtOf = useCallback((it: RubgItem): { src: string | null; title: string | null; region?: CartRegion | null } | null => {
     if (!s || !map || it.kind !== 'dendyCart') return null;
     const t = typeof it.taskIdx === 'number' ? (s.sessionTasks[it.taskIdx] ?? map.cells[it.taskIdx]?.task ?? null) : null;
     const rom = t ? st.roms.find((r) => r.id === t.romId) : undefined;
-    return { src: rom ? cartImgSrcOf(rom) : null, title: t?.title ?? null };
+    return { src: rom ? cartImgSrcOf(rom) : null, title: t?.title ?? null, region: t?.cartRegion ?? null };
   }, [s, map, st.roms]);
+  /* v0.144: арты и названия заданий карты — для ПРИСТАВОК на поле и КАРТРИДЖЕЙ на полу.
+     v0.145 ИСПРАВЛЕНО: ключ imgs — индекс ЗАДАНИЯ (картридж этого задания), а НЕ приставки:
+     раньше карта ключилась по ячейке-приставке с УСТАНОВЛЕННЫМ в ней картриджем — после
+     того как Френди раскидывал картриджи, на полу и в слоте показывались чужие обложки/📼.
+     consoleImgs — фото приставки ПО РЕГИОНУ её родного рома (Dendy/Famicom/NES). */
   const frendyTaskArt = useMemo(() => {
     const imgs: Record<string, string | null> = {};
+    const consoleImgs: Record<string, string | null> = {};
     const titles: Record<string, string | null> = {};
-    if (!isFrendy || !s || !map) return { imgs, titles };
+    if (!isFrendy || !s || !map) return { imgs, consoleImgs, titles };
     for (let i = 0; i < map.cells.length; i++) {
       if (map.cells[i].type !== 'task') continue;
-      const cartIdx = frendyCartTaskIdx(s, map, i);
-      if (cartIdx === null) { imgs[i] = null; titles[i] = null; continue; } // приставка ПУСТА
-      const tk = s.sessionTasks[cartIdx] ?? map.cells[cartIdx]?.task ?? null;
-      if (!tk) { imgs[i] = null; titles[i] = null; continue; }
-      const rom = st.roms.find((r) => r.id === tk.romId);
+      const tk = s.sessionTasks[i] ?? map.cells[i]?.task ?? null;
+      const rom = tk ? st.roms.find((r) => r.id === tk.romId) : undefined;
       imgs[i] = rom ? cartImgSrcOf(rom) : null;
-      titles[i] = tk.title;
+      titles[i] = tk?.title ?? null;
+      /* «железо» приставки — по РОДНОМУ заданию ячейки (при вставке чужого картриджа
+         приставка не меняется); без рома/региона — прежняя детерминированная картинка */
+      const native = map.cells[i]?.task ?? null;
+      const nativeRom = native ? st.roms.find((r) => r.id === native.romId) : undefined;
+      consoleImgs[i] = (nativeRom && frendyConsoleImgOfRegion(cartRegionOfRom(nativeRom.ext, nativeRom.fileName))) || frendyConsoleImg(i);
     }
-    return { imgs, titles };
+    return { imgs, consoleImgs, titles };
   }, [isFrendy, s, map, st.roms]);
   /* rAF-цикл читает useApp.getState() живьём — memo в его замыкании УСТАРЕЛ бы; держим ref */
   const frendyTaskArtRef = useRef(frendyTaskArt);
@@ -2671,6 +2690,7 @@ export default function GameScreen() {
           frendyConsoles: sess.frendyConsoles,
           taskCartImgs: frendyTaskArtRef.current.imgs,
           taskTitles: frendyTaskArtRef.current.titles,
+          consoleImgs: frendyTaskArtRef.current.consoleImgs, // v0.145: фото приставок по региону
           agents: agentsDraw, // v0.132: Альдер и Скаллер в эпилоге
           /* v0.134 ЭПИЛОГ: «место преступления очищено» — все ячейки скрыты, кроме печи
              (на ней лежит вся сцена с агентами); стрелки/номера/флаг/боссы/NPC тоже скрыты */
@@ -4428,7 +4448,7 @@ export default function GameScreen() {
         {/* ---------- v0.144 FRENDY: подсказка у ПРИСТАВКИ + окно «приставка + рюкзак» ---------- */}
         {isFrendy && nearConsole && !consoleOpen && !nearFurnace && s?.phase === 'playing' && mePlayer?.alive && !mePlayer.spect && (
           <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
-            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#8fd0ff] bg-[rgba(7,9,18,0.9)] border-2 border-[#8fd0ff]/50">🎮 ПРИСТАВКА — <b className="text-paper">E</b> · джойстик · клик</span>
+            <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#8fd0ff] bg-[rgba(7,9,18,0.9)] border-2 border-[#8fd0ff]/50">🎮 ПРИСТАВКА — войди в неё или кликни</span>
           </div>
         )}
         {/* ---------- v0.141 FRENDY: подсказка у ПРЕДМЕТА на земле (поднять) ---------- */}
@@ -4508,13 +4528,16 @@ export default function GameScreen() {
             />
           );
         })()}
-        {/* ---------- v0.144 FRENDY: ОКНО ПРИСТАВКИ — приставка + DIABLO-рюкзак ---------- */}
+        {/* ---------- v0.144 FRENDY: ОКНО ПРИСТАВКИ — приставка + DIABLO-рюкзак ----------
+            v0.145: фото и РЕГИОН приставки — по её родному ромы (NES/Dendy/Famicom) */}
         {isFrendy && consoleOpen && nearConsole && s && map && (() => {
           const idx = nearConsole.idx;
           const cartTask = frendyCartTaskIdx(s, map, idx);
           const busy = Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === idx);
           const cartDef = cartTask !== null ? (s.sessionTasks[cartTask] ?? map.cells[cartTask]?.task ?? null) : null;
           const cartRom = cartDef ? st.roms.find((r) => r.id === cartDef.romId) : undefined;
+          const nativeTask = map.cells[idx]?.task ?? null;
+          const nativeRom = nativeTask ? st.roms.find((r) => r.id === nativeTask.romId) : undefined;
           return (
             <FrendyConsoleModal
               onClose={() => setConsoleOpen(false)}
@@ -4525,6 +4548,10 @@ export default function GameScreen() {
               cartImgSrc={cartRom ? cartImgSrcOf(cartRom) : null}
               cartTitle={cartDef?.title ?? null}
               hpFull={(mePlayer?.hp ?? 100) >= 100}
+              consoleImgSrc={(nativeRom && frendyConsoleImgOfRegion(cartRegionOfRom(nativeRom.ext, nativeRom.fileName))) || frendyConsoleImg(idx)}
+              /* регион для ПРОВЕРКИ — тот же штамп, что у движка (TaskDef.cartRegion);
+                 фото приставки — по рому (работает и для старых карт) */
+              consoleRegion={nativeTask?.cartRegion ?? null}
               dispatches={{
                 insert: (itemId) => { if (me) dispatch({ t: 'frendyCartInsert', id: me, cellIdx: idx, itemId }); },
                 powerOn: () => { if (me) { dispatch({ t: 'frendyPowerOn', id: me, cellIdx: idx }); setConsoleOpen(false); } },
@@ -6422,6 +6449,16 @@ function InventoryModal({ onClose }: { onClose: () => void }) {
   /* RUBG: пояс/инвентарь и «Остановить воровство» */
   const rubgMap = map?.mode === 'rubg';
   const rubgInv = mePlayer?.items ?? [];
+  /* v0.145: ОБЛОЖКИ КАРТРИДЖЕЙ В ГЛАВНОМ РЮКЗАКЕ (Tab/кнопка) — тот же резолвер, что у
+     окон печи/приставки: обложка рома задания или фото платформы. Раньше здесь картридж
+     показывался 📼, хотя в редакторе и на полу была обложка. */
+  const frendyCartArtOfInv = isFrendyMode(map?.mode) && map && s
+    ? (it: RubgItem): { src: string | null; title: string | null } | null => {
+        const t = typeof it.taskIdx === 'number' ? (s.sessionTasks[it.taskIdx] ?? map.cells[it.taskIdx]?.task ?? null) : null;
+        const rom = t ? st.roms.find((r) => r.id === t.romId) : undefined;
+        return { src: rom ? cartImgSrcOf(rom) : null, title: t?.title ?? null };
+      }
+    : undefined;
   /* v0.140 FRENDY: СЖИГАНИЕ из инвентаря — живая кнопка только У ПЕЧИ (та же дистанция, что в движке)
      и (для микросхемы) только в СИЛЬНОМ огне. Позиция/печь из сессии — пока рюкзак открыт, фишка стоит. */
   const frendyInv = isFrendyMode(map?.mode) && map && s ? (() => {
@@ -6545,6 +6582,7 @@ function InventoryModal({ onClose }: { onClose: () => void }) {
               near={!!frendyInv?.near}
               strong={!!frendyInv?.strong}
               hpFull={(mePlayer?.hp ?? 100) >= 100}
+              cartArtOf={frendyCartArtOfInv}
               actions={{
                 onBurn: (itemId) => {
                   const it = rubgInv.find((x) => x.id === itemId);

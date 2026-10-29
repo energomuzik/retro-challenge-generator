@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FRENDY_INV_COLS, FRENDY_INV_ROWS, RUBG_ITEMS, rubgGridFits, rubgItemSize } from '../types';
+import { FRENDY_INV_COLS, FRENDY_INV_ROWS, RUBG_ITEMS, cartFitsConsole, rubgGridFits, rubgItemSize } from '../types';
+import type { CartRegion } from '../types';
 import { frendyConsoleImg } from '../consoleAssets'; // v0.144: фото приставок (Dendy/Famicom/NES)
 import type { RubgItem, RubgItemKind } from '../types';
 import { GhostBtn, Ic } from '../ui';
@@ -31,21 +32,40 @@ interface DragInfo { itemId: string; kind: RubgItemKind; from: 'grid' | 'tray'; 
    onFirstMove — например, снять таймер долгого нажатия. */
 function useInvDrag(onEnd: (info: DragInfo) => void, onFirstMove?: () => void) {
   const [drag, setDrag] = useState<DragInfo | null>(null);
+  /* v0.145: ОТМЕНА ПЕРЕТАСКИВАНИЯ при размонтировании окна (принудительное закрытие —
+     Френди ПОЙМАЛ и утащил, конец партии): «подвешенный» предмет не должен никуда
+     деваться — слушатели указателя снимаются, onEnd НЕ вызывается. Предмет ОСТАЁТСЯ
+     В РЮКЗАКЕ: движку ничего не отправлено (вставка/выброс диспатчатся только при
+     отпускании). Раньше отпускание мыши после закрытия окна решало «за окном → на
+     землю» (ref'ы уже пусты) — и картридж ПРОПАДАЛ у поимканного игрока. */
+  const cancelRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => { cancelRef.current?.(); }, []);
   const start = (e: React.PointerEvent, itemId: string, kind: RubgItemKind, from: 'grid' | 'tray') => {
     if (e.pointerType === 'mouse' && e.button !== 0) return; // перетаскивание — только ЛКМ (ПКМ — меню)
     e.preventDefault();
     const sx = e.clientX, sy = e.clientY;
     let moved = false;
+    let done = false;
     const move = (ev: PointerEvent) => {
       if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 6) { moved = true; onFirstMove?.(); }
       if (moved) setDrag({ itemId, kind, from, x: ev.clientX, y: ev.clientY, moved });
     };
     const up = (ev: PointerEvent) => {
+      done = true;
+      cancelRef.current = null;
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       window.removeEventListener('pointercancel', up);
       setDrag(null);
       if (moved) onEnd({ itemId, kind, from, x: ev.clientX, y: ev.clientY, moved: true });
+    };
+    cancelRef.current = () => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      setDrag(null);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -550,12 +570,22 @@ export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total
 /* подпись предмета на земле (HUD-подсказка «подними») */
 export const groundItemLabel = (kind: RubgItemKind): string => `${artFor(kind)} «${RUBG_ITEMS[kind].name}»`;
 
-/* ---------- v0.144: ОКНО ПРИСТАВКИ + РЮКЗАК (E у приставки) ----------
+/* ---------- v0.144: ОКНО ПРИСТАВКИ + РЮКЗАК (по клику/входу на приставку) ----------
    Слева — фотография приставки со слотом: перетащи КАРТРИДЖ из рюкзака НА ПРИСТАВКУ —
    он встанет в слот (диспатч frendyCartInsert). Потом жми КНОПКУ ПИТАНИЯ — запустится
    игра-задание, записанное на картридже (frendyPowerOn). Победа — картридж переедет
-   в рюкзак (его жгут в печи или вставляют в другую пустую приставку). */
-export function FrendyConsoleModal({ onClose, cellIdx, items, cartTaskIdx, busy, cartImgSrc, cartTitle, hpFull, dispatches }: {
+   в рюкзак (его жгут в печи или вставляют в другую пустую приставку).
+   v0.145: фото приставки — ЕЁ РЕГИОН (Dendy/Famicom/NES по рому задания); картридж
+   входит только в СВОЮ приставку: NES → только NES, Dendy → только Dendy,
+   Famicom → Dendy и Famicom («как в реальности»). */
+const REGION_LABEL: Record<CartRegion, string> = { dendy: 'DENDY', famicom: 'FAMICOM', nes: 'NES' };
+const regionWhy = (cart: CartRegion): string =>
+  cart === 'nes'
+    ? 'NES-картридж играет ТОЛЬКО на NES-приставке'
+    : cart === 'dendy'
+      ? 'картридж Dendy играет ТОЛЬКО на приставке Dendy'
+      : 'картридж Famicom играет только на Dendy и Famicom';
+export function FrendyConsoleModal({ onClose, cellIdx, items, cartTaskIdx, busy, cartImgSrc, cartTitle, hpFull, consoleImgSrc, consoleRegion, dispatches }: {
   onClose: () => void;
   cellIdx: number;                 // индекс ячейки-приставки
   items: RubgItem[];
@@ -564,13 +594,15 @@ export function FrendyConsoleModal({ onClose, cellIdx, items, cartTaskIdx, busy,
   cartImgSrc: string | null;       // арт вставленного картриджа (обложка)
   cartTitle: string | null;        // игра на вставленном картридже
   hpFull: boolean;
+  consoleImgSrc?: string | null;   // v0.145: фото приставки по региону её рома (fallback — по индексу)
+  consoleRegion?: CartRegion | null; // v0.145: регион приставки (для проверки картриджа)
   dispatches: {
     insert: (itemId: string) => void;   // frendyCartInsert (перетащили картридж на приставку)
     powerOn: () => void;                // frendyPowerOn (кнопка питания)
     use: (itemId: string) => void;
     drop: (itemId: string) => void;
     move: (itemId: string, gx: number, gy: number) => void;
-    cartArt: (it: RubgItem) => { src: string | null; title: string | null } | null; // арт/название картриджа из рюкзака
+    cartArt: (it: RubgItem) => { src: string | null; title: string | null; region?: CartRegion | null } | null; // арт/название/регион картриджа из рюкзака
   };
 }) {
   const slotRef = useRef<HTMLDivElement | null>(null);   // зона «на приставку» (сюда тащат картридж)
@@ -587,7 +619,8 @@ export function FrendyConsoleModal({ onClose, cellIdx, items, cartTaskIdx, busy,
     msgTimer.current = window.setTimeout(() => setSlotMsg(null), 3200);
   };
 
-  /* попытка вставить (drag на приставку): предпроверки — движок перепроверит у хоста */
+  /* попытка вставить (drag на приставку): предпроверки — движок перепроверит у хоста.
+     v0.145: ещё и РЕГИОН — карик входит только в СВОЮ приставку («как в реальности»). */
   const tryInsert = (itemId: string) => {
     const it = items.find((x) => x.id === itemId);
     if (!it) return;
@@ -595,6 +628,11 @@ export function FrendyConsoleModal({ onClose, cellIdx, items, cartTaskIdx, busy,
     if (typeof it.taskIdx !== 'number') { flashSlot('Это безымянный картридж — приставка играет только картриджи ЗАДАНИЙ'); return; }
     if (cartTaskIdx !== null) { flashSlot('В приставке УЖЕ ЕСТЬ картридж — сначала победи её задание'); return; }
     if (busy) { flashSlot('Приставку сейчас играет другой игрок'); return; }
+    const ca = dispatches.cartArt(it);
+    if (ca?.region && consoleRegion && !cartFitsConsole(ca.region, consoleRegion)) {
+      flashSlot(`Не подходит: ${regionWhy(ca.region)} — ищи приставку нужного региона`);
+      return;
+    }
     sfx.frendyStrong(); // щелчок «вставили» — тот же звук, что у Френди
     dispatches.insert(itemId);
   };
@@ -608,7 +646,7 @@ export function FrendyConsoleModal({ onClose, cellIdx, items, cartTaskIdx, busy,
     setSlotHot(pos.x >= r.left && pos.x <= r.right && pos.y >= r.top && pos.y <= r.bottom);
   };
 
-  const cartArtOf = (it: RubgItem): { src: string | null; title: string | null } | null => (
+  const cartArtOf = (it: RubgItem): { src: string | null; title: string | null; region?: CartRegion | null } | null => (
     it.kind === 'dendyCart' ? dispatches.cartArt(it) : null
   );
 
@@ -619,7 +657,7 @@ export function FrendyConsoleModal({ onClose, cellIdx, items, cartTaskIdx, busy,
       <div className="flex flex-col md:flex-row items-stretch justify-center gap-3 max-w-4xl w-full">
         {/* ---------- ОКНО 1: ПРИСТАВКА (сюда тащат картридж, тут кнопка питания) ---------- */}
         <div className="relative pixel-panel pixel-corners p-4 w-full md:w-[320px] shrink-0 text-center space-y-2.5">
-          <div className="font-display uppercase text-lg text-[#8fd0ff]">🎮 Приставка №{cellIdx + 1}</div>
+          <div className="font-display uppercase text-lg text-[#8fd0ff]">🎮 Приставка №{cellIdx + 1}{consoleRegion ? <span className="ml-1.5 font-pixel text-[9px] align-middle text-[#d8b95c]">· {REGION_LABEL[consoleRegion]}</span> : null}</div>
           <div
             ref={slotRef}
             className={`relative mx-auto h-[190px] w-[240px] border-2 border-[#3a3f5a] flex items-center justify-center ${slotHot ? 'furnace-hot' : ''}`}
@@ -629,7 +667,7 @@ export function FrendyConsoleModal({ onClose, cellIdx, items, cartTaskIdx, busy,
             }}
           >
             <img
-              src={frendyConsoleImg(cellIdx)}
+              src={consoleImgSrc ?? frendyConsoleImg(cellIdx)}
               alt="Приставка"
               draggable={false}
               className="absolute inset-0 w-full h-full object-contain p-2 pointer-events-none"
@@ -665,7 +703,7 @@ export function FrendyConsoleModal({ onClose, cellIdx, items, cartTaskIdx, busy,
               ? '🕹 Эту приставку сейчас ИГРАЕТ кто-то другой — дождись победы/поражения'
               : cartTaskIdx !== null
                 ? `В слоте: «${cartTitle ?? 'игра'}». Жми POWER ON — задание запустится в обычном окне (победа — картридж ВЕСЬ ТВОЙ)`
-                : 'Перетащи КАРТРИДЖ из рюкзака на приставку, затем жми POWER ON. Забрать картридж можно, только ПОБЕДИВ задание')}
+                : 'Перетащи КАРТРИДЖ из рюкзака на приставку, затем жми POWER ON. Картридж входит только в приставку СВОЕГО региона: NES → NES · Dendy → Dendy · Famicom → Dendy и Famicom. Забрать картридж можно, только ПОБЕДИВ задание')}
           </div>
         </div>
 

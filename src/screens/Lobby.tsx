@@ -10,6 +10,7 @@ import { HoldDeleteButton, rememberDeleted } from '../delGuard';
 import type { BossAnimDef, CustomChallenge, GameMap, MapMode, NpcAnimDef, SessionSnapshot, TokenDef } from '../types';
 import { mapModeModified, normResMode } from '../types';
 import { bossLibEntryOf, npcLibEntryOf, challengeSummaryLines, coinsStr, isSoloMode, PLAYER_COLORS, PLAYER_NAMES } from '../types';
+import { cartImgSrcOf, cartLabelOf } from '../cartridge'; // v0.145: галерея обложек ромов карты
 import { sfx } from '../sound';
 
 /* ---------- создание игры ---------- */
@@ -124,6 +125,83 @@ function LcdChip({ on, label, count, hex, title }: { on: boolean; label: string;
 const lcdRomExt = (rom?: { ext: string; fileName: string }): string | undefined =>
   rom ? (rom.ext === 'sega' ? (rom.fileName.split('.').pop() ?? '').toLowerCase() : rom.ext) : undefined;
 
+/* ---------- v0.145: ГАЛЕРЕЯ ОБЛОЖЕК КАРТЫ (кнопка в информации о карте) ----------
+   Все ромы, которые записаны на картриджах этой карты (задания ячеек + варианты),
+   показываются ОБЛОЖКАМИ — теми же картинками, что в редакторе сохранений/заданий
+   (своя обложка рома или фото картриджа платформы). Прокрутка колёсиком, размер
+   плиток — ползунком. Работает для ВСЕХ режимов — обложки добавляются в редакторе
+   сохранений независимо от режима партии. */
+function MapCoversModal({ map, onClose }: { map: GameMap; onClose: () => void }) {
+  const { roms } = useApp();
+  const [size, setSize] = useState(112);
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', esc);
+    return () => window.removeEventListener('keydown', esc);
+  }, [onClose]);
+  /* уникальные ромы карты: задания ячеек + варианты заданий (VERSUS/донаты) */
+  const ids: string[] = [];
+  for (const c of map.cells) {
+    if (c.type !== 'task') continue;
+    if (c.task?.romId && !ids.includes(c.task.romId)) ids.push(c.task.romId);
+    for (const v of c.taskVariants ?? []) if (v?.romId && !ids.includes(v.romId)) ids.push(v.romId);
+  }
+  const list = ids.map((id) => roms.find((r) => r.id === id)).filter((r): r is NonNullable<typeof r> => !!r);
+  return (
+    <div className="fixed inset-0 z-[95] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-[rgba(4,6,14,0.88)]" onClick={onClose} />
+      <div className="relative pixel-panel pixel-corners pop-in w-full max-w-4xl p-4 flex flex-col max-h-[86vh]">
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <span className="font-display uppercase tracking-wider text-paper text-sm">🖼 Картриджи карты «{map.name}» · {list.length}</span>
+          <span className="tick-label text-gold">колёсико мыши — прокрутка</span>
+          <div className="flex items-center gap-2 ml-auto">
+            <span className="tick-label text-faint shrink-0">размер плиток</span>
+            <input
+              type="range"
+              min={72}
+              max={224}
+              step={4}
+              value={size}
+              onChange={(e) => setSize(Number(e.target.value))}
+              className="w-28 accent-[var(--color-gold)] cursor-pointer"
+              title="Размер обложек: больше — виднее, меньше — больше помещается"
+            />
+            <button type="button" onClick={onClose} className="text-faint hover:text-coral cursor-pointer font-display text-[11px] uppercase">✕ Закрыть</button>
+          </div>
+        </div>
+        <div className="min-h-0 overflow-y-auto overflow-x-hidden pr-1">
+          {list.length === 0 ? (
+            <div className="pixel-corners border-[3px] border-dashed border-edge p-6 text-center text-dim text-sm">
+              На этой карте нет ни одного задания с ромом — обложек не покажется.
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {list.map((r) => {
+                const src = cartImgSrcOf(r);
+                return (
+                  <div key={r.id} className="border-2 border-edge bg-panel" style={{ width: size }} title={`${r.name} · ${cartLabelOf(r)}`}>
+                    <div className="flex items-center justify-center overflow-hidden bg-[#05070f]" style={{ height: Math.round(size * 0.82) }}>
+                      {src ? (
+                        <img src={src} alt={r.name} className="w-full h-full object-contain" draggable={false} />
+                      ) : (
+                        <span className="text-3xl">📼</span>
+                      )}
+                    </div>
+                    <div className="px-1 py-0.5">
+                      <div className="font-display text-[9px] uppercase text-paper truncate leading-tight">{r.name}</div>
+                      <div className="font-pixel text-[7px] text-faint truncate">{cartLabelOf(r)}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CreateScreen() {
   const { maps, roms, setScreen, toast, refresh } = useApp();
   /* Безкартовые карты (старые челленджи v0.36.0) в списке НЕ показываются —
@@ -138,6 +216,7 @@ export function CreateScreen() {
   const [fCons, setFCons] = useState<'all' | 'nes' | 'sega' | 'snes' | 'gb' | 'gba' | 'a26' | 'pce'>('all');
   const [fExtra, setFExtra] = useState<'all' | 'quiz' | 'bonus' | 'trap'>('all');
   const [sortBy, setSortBy] = useState<'new' | 'name' | 'mode'>('new');
+  const [coversMap, setCoversMap] = useState<GameMap | null>(null); // v0.145: галерея обложек ромов карты
 
   // сводка по карте: что на ней есть — LCD-индикация ВСЕХ платформ ромов заданий (v0.73)
   const mapFacts = (m: GameMap) => {
@@ -358,10 +437,14 @@ export function CreateScreen() {
             </div>
           </div>
         )}
-        {/* «ОТКРЫТЬ КОМНАТУ» — ВВЕРХУ списка и ЛИПКАЯ: при длинном списке не надо скроллить вниз */}
+        {/* «ОТКРЫТЬ КОМНАТУ» — ВВЕРХУ списка и ЛИПКАЯ: при длинном списке не надо скроллить вниз.
+            v0.145: полупрозрачная ТЁМНАЯ ПОЛОСА на всю ширину строки УБРАНА — при прокрутке
+            она выглядела как чёрная тень за кнопкой; фон теперь ТОЛЬКО под самой кнопкой. */}
         {ready.length > 0 && (
-          <div className="sticky top-0 z-20 -mx-2 px-2 py-2 bg-[rgba(7,9,18,0.92)] backdrop-blur-sm flex justify-end">
-            <PxBtn big color="gold" disabled={!sel} onClick={create}>{Ic.dice(18)} Открыть комнату</PxBtn>
+          <div className="sticky top-0 z-20 -mx-2 px-2 py-2 flex justify-end pointer-events-none">
+            <span className="pixel-corners border-2 border-edge bg-[rgba(7,9,18,0.95)] p-1.5 pointer-events-auto inline-flex shadow-[0_4px_18px_rgba(0,0,0,0.55)]">
+              <PxBtn big color="gold" disabled={!sel} onClick={create}>{Ic.dice(18)} Открыть комнату</PxBtn>
+            </span>
           </div>
         )}
         <div className="grid gap-4"> {/* ОДНА игра на всю ширину строки (без деления на две плитки) */}
@@ -375,7 +458,9 @@ export function CreateScreen() {
                 <span className="font-display uppercase text-paper text-lg">{m.name}</span>
                 <span className="flex items-center gap-1.5 flex-wrap">
                   {m.customName && <span className="font-pixel text-[7px] px-1.5 py-0.5 border-2 border-[#ff8b3f]/60 text-[#ff8b3f] shrink-0" title={`Свой режим: ${m.customName}`}>СВОЙ: {m.customName}</span>}
-                  <span className={`font-pixel text-[7px] px-1.5 py-0.5 border-2 shrink-0 ${modeChip[mapFacts(m).mode].cls}`}>{modeChip[mapFacts(m).mode].label}</span>
+                  {/* v0.145: РЕЖИМ КАРТЫ КРУПНЕЕ (заказчик: «плохо выделяется среди всех отображений»):
+                      был пиксельный шрифт 7px — теперь крупная плашка 11px с той же раскраской режима */}
+                  <span className={`font-display text-[11px] uppercase tracking-wider px-2.5 py-1 border-2 shrink-0 ${modeChip[mapFacts(m).mode].cls}`}>{modeChip[mapFacts(m).mode].label}</span>
                 </span>
               </div>
               <div className="tick-label text-faint mt-2">{(() => { const f = mapFacts(m); return `${f.cells} ячеек на маршруте`; })()}{m.tileGrid ? ` · плиточный режим (${m.tileGrid.tiles.length} карт-локаций)` : ''}</div>
@@ -430,10 +515,20 @@ export function CreateScreen() {
                 <span
                   role="button"
                   tabIndex={0}
+                  onClick={(e) => { e.stopPropagation(); setCoversMap(m); sfx.click(); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); setCoversMap(m); } }}
+                  title="Показать все обложки картриджей этой карты (все ромы заданий) — прокрутка колёсиком, размер — ползунком"
+                  className="ml-auto btn-ghost pixel-corners px-3 py-1.5 text-[10px] font-display uppercase inline-flex items-center gap-1.5 cursor-pointer hover:text-gold"
+                >
+                  {Ic.cart(12)} Обложки
+                </span>
+                <span
+                  role="button"
+                  tabIndex={0}
                   onClick={(e) => { e.stopPropagation(); exportOne(m); }}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); exportOne(m); } }}
                   title="Сохранить игру в файл: передайте его другу (соцсеть/мессенджер) — тот откроет игру кнопкой «Загрузить игру» и сам станет хостом"
-                  className="ml-auto btn-ghost pixel-corners px-3 py-1.5 text-[10px] font-display uppercase inline-flex items-center gap-1.5 cursor-pointer hover:text-gold"
+                  className="btn-ghost pixel-corners px-3 py-1.5 text-[10px] font-display uppercase inline-flex items-center gap-1.5 cursor-pointer hover:text-gold"
                 >
                   {expBusy === m.id ? 'Собираю…' : <>{Ic.save(12)} Сохранить в файл</>}
                 </span>
@@ -456,6 +551,7 @@ export function CreateScreen() {
             </div>
           )}
         </div>
+        {coversMap && <MapCoversModal map={coversMap} onClose={() => setCoversMap(null)} />}
       </div>
     </div>
   );
