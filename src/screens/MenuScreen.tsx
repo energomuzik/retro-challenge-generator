@@ -4,6 +4,36 @@ import type { Screen } from '../store';
 import { Ic } from '../ui';
 import { sfx } from '../sound';
 import { VERSION } from '../version';
+import { QR_LINKS_LEFT, QR_LINKS_RIGHT, type QrLink } from '../qrLinks';
+
+/* v0.149: ПЛАШКА QR-КОДА (заказчик: «по бокам панелей — по две с каждой стороны; под каждым
+   кваркодом слово „ссылка“, нажатие переводит туда же, куда и кваркод»): белая плашка с
+   кодом + подпись сервиса НАД кодом + кликабельное слово «Ссылка» ПОД кодом (открывает тот
+   же адрес в новой вкладке). Компакт: ls = боковые панели на широких экранах, sm = полоса
+   под кнопками на узких. */
+function QrTile({ l, compact }: { l: QrLink; compact?: boolean }) {
+  return (
+    <a
+      href={l.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={() => sfx.coin()}
+      className="group flex flex-col items-center gap-1 select-none"
+      title={`${l.label} — ${l.url}`}
+    >
+      <span className="font-pixel text-[7px] text-faint tracking-wider group-hover:text-dim transition-colors">{l.label}</span>
+      <img
+        src={l.img}
+        alt={`QR ${l.label}`}
+        className={`${compact ? 'w-[72px]' : 'w-[92px] lg:w-[104px]'} rounded-md p-1 bg-white border-2 border-[#313c72] shadow-[0_4px_14px_rgba(0,0,0,0.45)] transition-transform group-hover:scale-105 group-hover:border-edge2`}
+        draggable={false}
+      />
+      <span className="font-display uppercase tracking-widest text-[10px] text-dim underline underline-offset-2 decoration-dotted group-hover:text-paper transition-colors">
+        Ссылка
+      </span>
+    </a>
+  );
+}
 
 const MENU: { key: string; label: string; screen: Screen; desc: string; color: string; icon: (s?: number) => React.ReactNode }[] = [
   // v0.86: пункт переименован в «ПОМОЩЬ - ОБУЧЕНИЕ». v0.80: он же — ПЕРВАЯ строка меню (раньше четвёртая): новые игроки
@@ -78,8 +108,16 @@ export default function MenuScreen() {
           </p>
         </div>
 
-        {/* меню — сетка 2 колонки; «Опции» последним пунктом на всю ширину */}
+        {/* меню — сетка 2 колонки; «Опции» последним пунктом на всю ширину.
+            v0.149: по бокам панелей — QR-коды: слева YouTube + VK Видео, справа донаты
+            (CloudTips + DonatePay); на узких экранах — полоса из 4 кодов под кнопками. */}
         <div className="mt-5 sm:mt-7 flex-1 min-h-0 overflow-y-auto">
+          <div className="flex items-stretch gap-4 lg:gap-6">
+            {/* левые QR — YouTube + VK Видео (широкие экраны) */}
+            <div className="hidden lg:flex flex-col justify-center gap-5 shrink-0 w-[128px]">
+              {QR_LINKS_LEFT.map((l) => <QrTile key={l.key} l={l} />)}
+            </div>
+            <div className="flex-1 min-w-0">
           <div className="grid sm:grid-cols-2 gap-2.5">
             {MENU.map((m, i) => (
               <button
@@ -101,6 +139,16 @@ export default function MenuScreen() {
                 {sel === i && <span className="font-pixel text-[9px] blink-hard" style={{ color: m.color }}>▶</span>}
               </button>
             ))}
+          </div>
+            {/* v0.149: полоса QR-кодов под кнопками на узких экранах (все 4 подряд) */}
+            <div className="lg:hidden mt-3 flex items-start justify-center gap-4 flex-wrap">
+              {[...QR_LINKS_LEFT, ...QR_LINKS_RIGHT].map((l) => <QrTile key={l.key} l={l} compact />)}
+            </div>
+            </div>
+            {/* правые QR — донаты CloudTips + DonatePay (широкие экраны) */}
+            <div className="hidden lg:flex flex-col justify-center gap-5 shrink-0 w-[128px]">
+              {QR_LINKS_RIGHT.map((l) => <QrTile key={l.key} l={l} />)}
+            </div>
           </div>
         </div>
 
