@@ -586,18 +586,19 @@ input[type="range"] { accent-color: var(--color-gold); }
   0%, 100% { transform: translateY(0) scale(1); opacity: 0.9; }
   50% { transform: translateY(-14px) scale(1.16); opacity: 1; }
 }
-/* v0.141 DIABLO-ИНВЕНТАРЬ: предмет «не влез в рюкзак» — отскок над землёй, как в Diablo 1
-   (взлетает и падает обратно), тряска предмета, который не удалось положить в клетку */
-.frendy-pickup-bounce {
-  animation: frendyPickupBounce 0.9s cubic-bezier(0.35, 0.6, 0.6, 1) forwards;
+/* v0.148 ПОДНЯТЫЙ ПРЕДМЕТ ЛЕТИТ К КНОПКЕ «ИНВЕНТАРЬ» (вверху экрана): копия предмета
+   вылетает из точки на земле и садится в кнопку — «предмет попал в инвентарь».
+   (--fly-dx/--fly-dy — вектор до кнопки, считаются в момент подъёма). */
+.frendy-pickup-fly {
+  transform: translate(-50%, -50%);
+  animation: frendyPickupFly 0.72s cubic-bezier(0.3, 0.5, 0.45, 1) forwards;
   pointer-events: none;
 }
-@keyframes frendyPickupBounce {
-  0% { transform: translate(-50%, 0) scale(0.7); opacity: 0; }
-  18% { transform: translate(-50%, -52px) scale(1.15); opacity: 1; }
-  55% { transform: translate(-50%, -8px) scale(1); opacity: 1; }
-  78% { transform: translate(-50%, -22px) scale(0.96); opacity: 0.9; }
-  100% { transform: translate(-50%, 4px) scale(0.85); opacity: 0; }
+@keyframes frendyPickupFly {
+  0% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  16% { transform: translate(calc(-50% + var(--fly-dx) * 0.08), calc(-50% + var(--fly-dy) * 0.08 - 26px)) scale(1.12); opacity: 1; }
+  72% { opacity: 1; }
+  100% { transform: translate(calc(-50% + var(--fly-dx)), calc(-50% + var(--fly-dy))) scale(0.28); opacity: 0; }
 }
 .frendy-item-shake {
   animation: frendyItemShake 0.4s ease-in-out;

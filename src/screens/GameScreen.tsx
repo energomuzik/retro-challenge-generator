@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useApp, getRomData, useBlobImage } from '../store';
 import { dispatch, streamBus, type StreamPacket } from '../useGame';
 import { CELL, cellAtPoint, cellCenter, drawBoard, drawRubgOverlay, fitView, mapSize, plateMetrics, plateNumAt, plateRectOf, smoothPxPerFrame, jumpFrameFactor, DEF_MOVE_SPEED, clampMoveSpeed } from '../render';
@@ -1070,7 +1070,14 @@ export default function GameScreen() {
      ВСЕГДА проигрывал; теперь подъём живёт на СВОЕЙ клавише и работает даже рядом с печью/
      приставкой/NPC/Альдером, а их окна по-прежнему открываются E/лицевыми кнопками/кликом.
      В рюкзаке нет места — движок откажет: предмет ОСТАНЕТСЯ на земле, клиент покажет «отскок». */
-  const [pickupBounce, setPickupBounce] = useState<{ key: number; kind: RubgItemKind } | null>(null);
+  /* v0.148: АНИМАЦИИ ПОДЪЁМА (заказчик: «если предмет не помещается — пусть подпрыгивает и падает
+     на землю обратно именно тот предмет, что лежит на земле; а если помещается — предмет летит
+     к кнопке ИНВЕНТАРЬ вверху экрана, мол — попал в инвентарь»):
+     • НЕ влез — chipBounceRef: отскок рисует СА отрисовка мира (render.ts, chipBounce) — прыгает
+       именно тот предмет, что лежит на земле (центрэкранной анимации больше нет);
+     • влез — pickupFly: DOM-копия предмета летит от точки на земле к кнопке «Инвентарь» (вверху). */
+  const chipBounceRef = useRef<{ id: string; ts: number } | null>(null); // часы rAF/performance.now — читает rAF-цикл отрисовки
+  const [pickupFly, setPickupFly] = useState<{ key: number; sx: number; sy: number; dx: number; dy: number; node: ReactNode } | null>(null);
   /* v0.144 FRENDY: арт/название картриджа из рюкзака (для окон печи и приставки).
      v0.145: + РЕГИОН картриджа — берётся из ЗАДАНИЯ (TaskDef.cartRegion, тот же, что
      проверяет движок) — для проверки «карик входит только в свою приставку». */
@@ -1107,33 +1114,63 @@ export default function GameScreen() {
   /* rAF-цикл читает useApp.getState() живьём — memo в его замыкании УСТАРЕЛ бы; держим ref */
   const frendyTaskArtRef = useRef(frendyTaskArt);
   frendyTaskArtRef.current = frendyTaskArt;
-  const pickTryRef = useRef<{ id: string; at: number } | null>(null);
+  const pickTryRef = useRef<{ id: string; at: number; x: number; y: number; kind: RubgItemKind; taskIdx?: number } | null>(null);
   const tryPickup = () => {
     if (!isFrendy || !me || !nearItem || s?.phase !== 'playing') return;
     if (dlgOpenIdRef.current || cutActiveRef.current || furnOpen || invOpen || taskWinRef.current) return;
-    pickTryRef.current = { id: nearItem.id, at: Date.now() };
+    /* v0.148: taskIdx картриджа берём из предмета на земле (для полёта с ОБЛОЖКОЙ к кнопке «Инвентарь») */
+    const chipTaskIdx = s.frendy?.chips.find((c) => c.id === nearItem.id)?.taskIdx;
+    pickTryRef.current = { id: nearItem.id, at: Date.now(), x: nearItem.x, y: nearItem.y, kind: nearItem.kind, taskIdx: typeof chipTaskIdx === 'number' ? chipTaskIdx : undefined };
     sfx.click();
     dispatch({ t: 'frendyPickup', id: me });
   };
   const tryPickupRef = useRef(tryPickup);
   tryPickupRef.current = tryPickup;
-  /* следим за попыткой: предмет остался лежать рядом → движок отказал (нет места) — отскок + тост */
+  /* следим за попыткой (v0.148): предмет остался лежать рядом → движок отказал (нет места) —
+     САМ ПРЕДМЕТ НА ЗЕМЛЕ подпрыгивает (chipBounceRef → render.ts) + тост.
+     Предмет исчез → он ПОДНЯТ: копия летит к кнопке «Инвентарь» вверху экрана. */
   useEffect(() => {
     const tr = pickTryRef.current;
     if (!tr) return;
     const still = s?.frendy?.chips.find((c) => c.id === tr.id);
-    if (!still) { pickTryRef.current = null; return; } // подобран (мной или кем-то)
+    if (!still) {
+      pickTryRef.current = null;
+      if (Date.now() - tr.at > 1400) return; // подобрал КТО-ТО ДРУГОЙ (или поздний апдейт) — без анимации
+      /* ПОДНЯТ — полёт предмета к кнопке «Инвентарь» (экранные координаты из мира) */
+      try {
+        const cv = canvasRef.current;
+        if (!cv) return;
+        const rect = cv.getBoundingClientRect();
+        const v = viewRef.current;
+        const sx = rect.left + rect.width / 2 + (tr.x - v.x) * v.zoom;
+        const sy = rect.top + rect.height / 2 + (tr.y - v.y) * v.zoom;
+        const btn = document.getElementById('frendy-inv-btn');
+        const br = btn ? btn.getBoundingClientRect() : null;
+        const tx = br ? br.left + br.width / 2 : rect.left + rect.width / 2;
+        const ty = br ? br.top + br.height / 2 : rect.top + 26;
+        const art = tr.kind === 'dendyCart'
+          ? (typeof tr.taskIdx === 'number' && frendyTaskArtRef.current.imgs[tr.taskIdx]
+            ? <img src={frendyTaskArtRef.current.imgs[tr.taskIdx]!} alt="" style={{ height: 30, filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.8))' }} />
+            : <span style={{ fontSize: 30, filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.8))' }}>📼</span>)
+          : tr.kind === 'frendyChip'
+            ? <ChipArt px={26} />
+            : <span style={{ fontSize: 30, filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.8))' }}>{RUBG_ITEMS[tr.kind]?.icon ?? '📦'}</span>;
+        setPickupFly({ key: Date.now(), sx, sy, dx: tx - sx, dy: ty - sy, node: art });
+      } catch { /* координаты не взялись — просто без полёта */ }
+      return;
+    }
     if (Date.now() - tr.at > 650) {
       pickTryRef.current = null;
-      setPickupBounce({ key: Date.now(), kind: still.kind ?? 'frendyChip' });
+      chipBounceRef.current = { id: tr.id, ts: performance.now() };
+      window.setTimeout(() => { if (chipBounceRef.current?.id === tr.id) chipBounceRef.current = null; }, 950);
       useApp.getState().toast('🎒 В рюкзаке НЕТ МЕСТА — предмет не влезает! Освободите сетку', 'err');
     }
   }, [s]);
   useEffect(() => {
-    if (!pickupBounce) return;
-    const t = window.setTimeout(() => setPickupBounce(null), 950);
+    if (!pickupFly) return;
+    const t = window.setTimeout(() => setPickupFly(null), 780);
     return () => window.clearTimeout(t);
-  }, [pickupBounce]);
+  }, [pickupFly]);
   /* клавиша подъёма (по умолчанию F — v0.147; у печи/приставки НЕ гасим: своя клавиша,
      конфликтов с E больше нет) */
   useEffect(() => {
@@ -2691,6 +2728,7 @@ export default function GameScreen() {
           npcPin,
           /* v0.123 FRENDY: предметы на поле + Френди (fxTs переводим из часов Date.now хоста в rAF-часы клиента) */
           frendyChips: sess.frendy?.chips ?? null,
+          chipBounce: chipBounceRef.current, // v0.148: отскок «не влез в рюкзак» — прыгает сам предмет на земле
           /* v0.144 FRENDY: ПРИСТАВКИ вместо ячеек + арты картриджей */
           frendyMode: isFrendy,
           frendyConsoles: sess.frendyConsoles,
@@ -3711,9 +3749,10 @@ export default function GameScreen() {
           )}
           {myTurn && streaming && <span className="font-pixel text-[7px] text-coral blink-hard">LIVE</span>}
           {/* v0.107: кнопка «🛡 Иммунитеты» убрана — иммунитеты переехали в «Инвентарь» */}
-          <GhostBtn small onClick={() => { setInvOpen(true); sfx.click(); }}>
+          {/* v0.148: id=frendy-inv-btn — цель полёта поднятого предмета (анимация «попал в инвентарь») */}
+          <GhostBtn small onClick={() => { setInvOpen(true); sfx.click(); }}><span id="frendy-inv-btn" className="inline-flex items-center gap-1">
             {Ic.grid(12)} Инвентарь{invCount > 0 ? ` · ${invCount}` : ''}{incomingTrades.length > 0 ? ' 💼' : ''}{isBogach && myImmunes.length > 0 ? ` 🛡${myImmunes.length}` : ''}
-          </GhostBtn>
+          </span></GhostBtn>
           {/* КАРТА МИРА — доступна и в режиме комнат (v0.50.0): неоткрытые плитки скрывает туман исследования */}
           <GhostBtn small onClick={() => { setPeekMap(false); setWorldZoom(1); worldPanRef.current = { x: 0, y: 0 }; setViewMode((m) => (m === 'world' ? 'follow' : 'world')); }}>
             {Ic.map(12)} {viewMode === 'world' ? 'К игроку' : 'Карта мира'}
@@ -4467,12 +4506,11 @@ export default function GameScreen() {
             </span>
           </div>
         )}
-        {/* ---------- v0.141: отскок предмета «НЕ ВЛЕЗ В РЮКЗАК» (как в Diablo 1 — падает обратно на землю) ---------- */}
-        {pickupBounce && (
-          <div key={pickupBounce.key} className="frendy-pickup-bounce absolute bottom-40 left-1/2 z-30">
-            <span className="block" style={{ fontSize: 42, filter: 'drop-shadow(0 4px 8px rgba(0,0,0,0.8))' }}>
-              {pickupBounce.kind === 'dendyCart' ? '📼' : pickupBounce.kind === 'coffee' ? '☕' : pickupBounce.kind === 'energetic' ? '🥤' : pickupBounce.kind === 'medkit' ? '🧰' : pickupBounce.kind === 'flask' ? '🥃' : <ChipArt px={40} />}
-            </span>
+        {/* ---------- v0.148: ПОЛЁТ ПОДНЯТОГО ПРЕДМЕТА к кнопке «Инвентарь» (вверху экрана) —
+            «попал в инвентарь»; отскок «НЕ ВЛЕЗ В РЮКЗАК» теперь рисует сам мир (прыгает предмет на земле) ---------- */}
+        {pickupFly && (
+          <div key={pickupFly.key} className="frendy-pickup-fly fixed z-30 pointer-events-none" style={{ left: pickupFly.sx, top: pickupFly.sy, ['--fly-dx' as string]: `${pickupFly.dx}px`, ['--fly-dy' as string]: `${pickupFly.dy}px` }}>
+            {pickupFly.node}
           </div>
         )}
         {/* ---------- v0.132 ЭПИЛОГ «СЕКРЕТНЫЕ МАТЕРИАЛЫ» ---------- */}

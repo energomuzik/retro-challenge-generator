@@ -1774,7 +1774,10 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
        переключаемся. v0.130: новая цель — БЛИЖАЙШАЯ (а не первая по списку) — хваткий;
        v0.130: «у всех задания» — ждёт всего 4 с (кто-нибудь кончит) и возвращается,
        лог не спамим */
-    let tgt = s.players.find((p) => p.id === b.targetId && p.alive && !p.spect && !busy(p.id)) ?? null;
+    /* v0.148: цель-РАСПЛАТА (punish — сожёгший микросхему) остаётся целью даже под щитом
+       задания (taskSafeUntil): щит спасает от ОБЫЧНОЙ охоты, но не от мести за сжигание.
+       Активное задание (qJobs) защищает и от расплаты. */
+    let tgt = s.players.find((p) => p.id === b.targetId && p.alive && !p.spect && (!busy(p.id) || (b.punish && !s.qJobs?.[p.id]))) ?? null;
     if (!tgt) {
       let bestD = Infinity;
       for (const p of s.players) {
@@ -1819,14 +1822,20 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
        растворился, 'catch' — схватить и утащить на приставку (50/50). Кофе (поимка невозможна) —
        всегда 'hit'. В ЯРОСТИ/УЛЬТРА плана нет — бьёт и таскает одновременно, как было. */
     const normalMode = !furious && !ultra;
-    if (normalMode && dist < FRENDY_HIT_RANGE && !b.plan) b.plan = immune ? 'hit' : (Math.random() < 0.5 ? 'hit' : 'catch');
+    /* v0.148: у РАСПЛАТЫ жребия нет — план всегда 'catch' (ловить и утащить); кофе всё
+       равно превращает план в 'hit' — поимка невозможна, Френди шлёпнет один раз и уйдёт. */
+    if (normalMode && dist < FRENDY_HIT_RANGE && !b.plan) b.plan = immune ? 'hit' : (b.punish ? 'catch' : (Math.random() < 0.5 ? 'hit' : 'catch'));
     if (normalMode && immune) b.plan = 'hit'; // кофе выпит по пути — ловить нечего, бьёт один раз и уходит
     /* ПОИМКА: продержал жертву в лапах — телепорт на задание + кража микросхемы/картриджа
-       (в обычном режиме — только по плану 'catch'; в ярости/ультра — как всегда) */
-    const wantCatch = !normalMode || b.plan === 'catch';
-    if (wantCatch && !immune && !busy(tgt.id) && dist < FRENDY_CATCH_RANGE) b.holdMs += 400;
+       (в обычном режиме — только по плану 'catch'; в ярости/ультра — как всегда;
+       v0.148: у расплаты (punish) — всегда) */
+    const wantCatch = b.punish ? true : (!normalMode || b.plan === 'catch');
+    /* v0.148: щит задания (taskSafeUntil) для РАСПЛАТЫ не помеха — месть сильнее щита;
+       активное задание (qJobs) защищает и тут */
+    const tgtCatchable = !s.qJobs?.[tgt.id] && (b.punish || !((f.taskSafeUntil?.[tgt.id] ?? 0) > now));
+    if (wantCatch && !immune && tgtCatchable && dist < FRENDY_CATCH_RANGE) b.holdMs += 400;
     else b.holdMs = Math.max(0, b.holdMs - 400);
-    if (wantCatch && !immune && !busy(tgt.id) && b.holdMs >= FRENDY_CATCH_HOLD) {
+    if (wantCatch && !immune && tgtCatchable && b.holdMs >= FRENDY_CATCH_HOLD) {
       b.fx = 'catch'; b.fxTs = now;
       f.fx = { kind: 'catch', who: tgt.id, ts: now }; // v0.130: fx на уровне состояния — босс ниже обнулится, а звук/вспышка поимки клиенты ДОЛЖНЫ увидеть
       f.caught = f.caught ?? {}; // v0.124: счётчик поимок — попадёт в титры (сколько раз Френди кого ловил)
@@ -3722,47 +3731,22 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           f.furyUntil = nowB + frendyFuryMs();
           log(`😈 ФРЕНДИ В ЯРОСТИ на ${Math.round(frendyFuryMs() / 60000)} минуты — гонится за целью НЕ ОСТАНАВЛИВАЯСЬ! Осталось сожжечь: ${f.total - f.burned}.`);
         }
-        /* v0.147 МГНОВЕННАЯ РАССТРАВА ЗА СЖИГАНИЕ (заказчик: «если игрок сжигает микросхему в печи,
-           Френди сразу телепортируется к игроку и пытается его телепортировать к игре, в любом
-           режиме — простом или ярости; чтобы игрок сразу не смог все микросхемы сжечь»):
-           Френди МГНОВЕННО появляется на горящем (fx 'catch' — окна печи/рюкзака закрываются сами,
-           как при обычной поимке) и тащит его к СЛУЧАЙНОЙ ПРИСТАВКЕ С КАРТРИДЖЕМ — задание
-           стартует принудительно (тот же механизм, что у поимки: телепорт tp:true);
-           свободной приставки с картриджем нет — злобно БЬЁТ на месте (энергетик держит удар);
-           ярый Френди остаётся охотиться со места расправы, спокойный — растворяется.
-           В любом режиме агрессии — и в обычном, и в ярости. */
+        /* v0.148 РАССТРАВА ЗА СЖИГАНИЕ — БЕЗ АВТОМАТИЧЕСКОГО ТЕЛЕПОРТА (заказчик: «автоматически
+           тебя не должно телепортировать к заданию, когда кидаешь в огонь; надо так, чтобы Френди
+           телепортировался к игроку, и если тот задержался — тогда его телепортирует. Не
+           автоматически без Френди, а с Френди и с небольшой задержкой, как было раньше при
+           ярости»): Френди МГНОВЕННО телепортируется к горящему (fx 'catch' — окна печи/рюкзака
+           закрываются сами, как при обычной поимке) и ОХОТИТСЯ именно на него: план всегда
+           'catch' (punish:true — жребий «удар ИЛИ поимка» выключен). Дальше работает ОБЫЧНАЯ
+           поимка: подержал жертву в лапах FRENDY_CATCH_HOLD — утащил на ПРИСТАВКУ С КАРТРИДЖЕМ
+           и включил задание (tp:true); убежал — Френди гонится, как в обычной охоте (в обычном
+           режиме до конца охоты растворится, в ярости — не отстанет никогда). Кофе по-прежнему
+           спасает от ПОИМКИ (Френди сможет только шлёпнуть), энергетик — от ударов. */
         if (!s.qJobs?.[p.id]) { // жертва УЖЕ в задании — расправы нет (маловероятно: печь не приставка)
           const ppB = playerPx(s, map, p.id) ?? pp;
-          f.boss = { x: ppB.x, y: ppB.y, targetId: p.id, sinceTs: nowB, lastHitAt: 0, holdMs: 0, fx: 'spawn', fxTs: nowB };
+          f.boss = { x: ppB.x, y: ppB.y, targetId: p.id, sinceTs: nowB, lastHitAt: 0, holdMs: 0, fx: 'spawn', fxTs: nowB, punish: true };
           f.fx = { kind: 'catch', who: p.id, ts: nowB };
-          f.caught = f.caught ?? {};
-          f.caught[p.id] = (f.caught[p.id] ?? 0) + 1;
-          const consolesBusyR = (ci: number) => Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === ci);
-          const armedR = map.cells.map((c, i) => ({ c, i })).filter(({ i }) => map.cells[i].type === 'task' && frendyCartTaskIdx(s, map, i) !== null && !consolesBusyR(i));
-          s.journeyPos = s.journeyPos ?? {};
-          if (armedR.length) {
-            const pickR = armedR[Math.floor(Math.random() * armedR.length)].i;
-            const rrR = cellRectOf(map, pickR);
-            if (rrR) s.journeyPos[p.id] = { x: Math.round(rrR.x + rrR.w / 2), y: Math.round(rrR.y + rrR.h / 2), ts: nowB, mv: false, tp: true };
-            s.qJobs = s.qJobs ?? {};
-            s.qJobs[p.id] = { cellIdx: pickR, startedAt: nowB };
-            log(`😈 ФРЕНДИ ТУТ ЖЕ ЗДЕСЬ! Сжигать микросхемы безнаказанно не выйдет — схватил ${p.name} и тащит к ПРИСТАВКЕ №${pickR + 1} («${cellTaskOf(s, map, pickR)?.title ?? ''}») — пройди задание, чтобы вырваться!`);
-          } else {
-            const dmgR = frendyParams(f).dmg;
-            const energR = (f.energeticUntil?.[p.id] ?? 0) > nowB;
-            if (energR) log(`😈 ФРЕНДИ ТУТ ЖЕ ЗДЕСЬ! Свободной приставки с картриджем нет, он бьёт ${p.name}… но ЭНЕРГЕТИК держит удар — БЕЗ УРОНА!`);
-            else {
-              p.hp = Math.max(0, (p.hp ?? RUBG_HP_MAX) - dmgR);
-              log(`😈 ФРЕНДИ ТУТ ЖЕ ЗДЕСЬ! Свободной приставки с картриджем нет — он злобно бьёт ${p.name}: −${dmgR}% HP`);
-            }
-            checkElim();
-          }
-          if ((f.furyUntil ?? 0) > nowB || map.frendyAggr === 'rage') {
-            if (f.boss) { f.boss.fx = 'attack'; f.boss.fxTs = nowB; } // ярый остаётся охотиться с места расправы
-          } else {
-            f.boss = null;
-            f.nextSpawnAt = nowB + frendyRespawnMs(f);
-          }
+          log(`😈 ФРЕНДИ ТУТ ЖЕ ЗДЕСЬ! Сжигать микросхемы безнаказанно не выйдет — он охотится на ${p.name} ПРЯМО СЕЙЧАС: задержишься рядом — УТАЩИТ НА ПРИСТАВКУ! Беги!`);
         }
       }
       break;
@@ -3974,16 +3958,42 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           log(`🛡 ${p.name}: Френди НЕ ТРОНЕТ ещё ${Math.round(FRENDY_TASK_GRACE_MS / 1000)} с — заслуженный отдых после задания`);
         }
         if (a.win) {
-          /* v0.146: награда за победу — ИНОГДА ЭНЕРГЕТИК (заказчик): 15% энергетик (иммунитет
-             к УДАРАМ Френди 20 с — v0.147), иначе как было — аптечка/кофе */
-          const roll = Math.random();
-          const kind: RubgItemKind = roll < 0.15 ? 'energetic' : roll < 0.6 ? 'medkit' : 'coffee';
-          rubgGiveItem(p, kind);
-          log(`🏆 ${p.name} ПРОШЁЛ задание${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : ''}: награда ${RUBG_ITEMS[kind].icon} ${RUBG_ITEMS[kind].name}${kind === 'coffee' ? ' — иммунитет к ПОИМКЕ Френди на 5 минут (активируй в инвентаре!)' : kind === 'energetic' ? ' — иммунитет к УДАРАМ Френди на 20 секунд (v0.147, активируй в инвентаре!)' : ' — лечит +25% HP'}`);
+          /* v0.148 АНТИ-ФАРМ ПОВТОРНЫХ ПОБЕД (заказчик: «если вставить побеждённый картридж
+             повторно и пройти задание заново, при победе можно выиграть только аптечку, и с
+             маленьким шансом — даже если картридж вставил Френди; а то игрок насобирает
+             предметов, вставляя один и тот же картридж и проходя одну и ту же игру»): индекс
+             задания с побеждённого картриджа запоминается в f.wonTasks ПЕРВОЙ же победой;
+             ВСЕ повторные победы ТОГО ЖЕ задания (неважно, кто вставил картридж — игрок или
+             Френди) вместо обычной награды дают только МАЛЫЙ ШАНС на аптечку (20%).
+             Сам картридж по-прежнему выпрыгивает из приставки — иначе партия может остаться
+             без топлива для печи и застрять. */
+          const wonTask = frendyCartTaskIdx(s, map, a.cellIdx);
+          const fw = s.frendy;
+          const repeatWin = wonTask !== null && !!fw && (fw.wonTasks ?? []).includes(wonTask);
+          if (wonTask !== null && fw) {
+            fw.wonTasks = fw.wonTasks ?? [];
+            if (!fw.wonTasks.includes(wonTask)) fw.wonTasks.push(wonTask);
+          }
+          if (repeatWin) {
+            /* v0.146: обычная награда за победу — иногда энергетик (15%), иначе аптечка/кофе.
+               v0.148: на ПОВТОРНОЙ победе врут только аптечка с малым шансом (20%) — фарм
+               предметов на одной и той же игре закрыт. */
+            if (Math.random() < 0.2) {
+              rubgGiveItem(p, 'medkit');
+              log(`🏆 ${p.name} ПРОШЁЛ задание${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : ''} ПОВТОРНО: это задание УЖЕ ПОБЕЖДАЛИ, из награды выпала только 🧰 АПТЕЧКА (повезло!)`);
+            } else {
+              log(`🏆 ${p.name} ПРОШЁЛ задание${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : ''} ПОВТОРНО: за уже побеждённое задание предметов БОЛЬШЕ НЕ ДАЮТ (фарм закрыт!)`);
+            }
+          } else {
+            const roll = Math.random();
+            const kind: RubgItemKind = roll < 0.15 ? 'energetic' : roll < 0.6 ? 'medkit' : 'coffee';
+            rubgGiveItem(p, kind);
+            log(`🏆 ${p.name} ПРОШЁЛ задание${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : ''}: награда ${RUBG_ITEMS[kind].icon} ${RUBG_ITEMS[kind].name}${kind === 'coffee' ? ' — иммунитет к ПОИМКЕ Френди на 5 минут (активируй в инвентаре!)' : kind === 'energetic' ? ' — иммунитет к УДАРАМ Френди на 20 секунд (v0.147, активируй в инвентаре!)' : ' — лечит +25% HP'}`);
+          }
           /* v0.144: ПРИСТАВКА ПОБЕЖДЕНА — вставленный в неё КАРТРИДЖ ПЕРЕХОДИТ В РЮКЗАК
              победителя (его и жгут в печи, либо вставляют в другую пустую приставку);
-             приставка ПУСТЕЕТ. Ячейки больше не ломаются — «сломанных ячеек» нет. */
-          const wonTask = frendyCartTaskIdx(s, map, a.cellIdx);
+             приставка ПУСТЕЕТ. Ячейки больше не ломаются — «сломанных ячеек» нет.
+             v0.148: картридж выпрыгивает и при ПОВТОРНОЙ победе (wonTask уже посчитан выше). */
           if (wonTask !== null) {
             s.frendyConsoles = s.frendyConsoles ?? {};
             s.frendyConsoles[a.cellIdx] = null; // приставка пуста — можно вставить любой картридж

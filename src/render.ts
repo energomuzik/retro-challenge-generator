@@ -448,7 +448,10 @@ export interface BoardDrawOpts {
      зона-триггер — пунктирный прямоугольник с плашкой «ТРИГГЕР»; active — выделенная */
   cutViz?: { pts: { x: number; y: number }[]; zone: { x: number; y: number; w: number; h: number } | null; color: string; active: boolean }[];
   /* v0.123 FRENDY: предметы НА ПОЛЕ (микросхемы/выброшенное) и супер-босс Френди (позиция сглажена клиентом) */
-  frendyChips?: { x: number; y: number; kind?: string; taskIdx?: number }[] | null; // v0.144: у картриджей — taskIdx задания
+  frendyChips?: { id: string; x: number; y: number; kind?: string; taskIdx?: number }[] | null; // v0.144: у картриджей — taskIdx задания; v0.148: id нужен отскоку «не влез в рюкзак»
+  /* v0.148: ОТСКОК «НЕ ВЛЕЗ В РЮКЗАК» — подпрыгивает сам предмет на земле (id + момент начала,
+     часы rAF/performance.now — те же, что o.time); в Diablo 1 вещь взлетает и падает обратно */
+  chipBounce?: { id: string; ts: number } | null;
   /* v0.144 FRENDY: ПРИСТАВКИ ВМЕСТО ЯЧЕЕК — режим, сессия и арты картриджей */
   frendyMode?: boolean;                                // режим карты FRENDY — ячейки задания рисуются ПРИСТАВКАМИ
   frendyConsoles?: Record<string, number | null>;      // какой картридж вставлен (нет ключа — «свой»)
@@ -1869,9 +1872,18 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
 
   /* v0.123 FRENDY: предметы НА ПОЛЕ (под фишками) и ФРЕНДИ (поверх всех — он поверх мира) */
   if (o.frendyChips) {
+    const bnc = o.chipBounce ?? null; // v0.148: отскок «не влез в рюкзак» — прыгает сам предмет
+    const bncAge = bnc ? o.time - bnc.ts : Infinity;
     for (const c of o.frendyChips) {
       const cartArt = c.kind === 'dendyCart' && typeof c.taskIdx === 'number' ? (o.taskCartImgs ? o.taskCartImgs[c.taskIdx] ?? null : null) : null;
-      drawFrendyChip(ctx, c.x, c.y, o.time, c.kind, cartArt);
+      /* кривая отскока: большой прыжок вверх-вниз, потом два затухающих — предмет «падает обратно на землю» */
+      let by = 0;
+      if (bnc && c.id === bnc.id && bncAge >= 0 && bncAge < 900) {
+        if (bncAge < 450) by = -Math.sin((bncAge / 450) * Math.PI) * 74;
+        else if (bncAge < 700) by = -Math.sin(((bncAge - 450) / 250) * Math.PI) * 26;
+        else by = -Math.sin(((bncAge - 700) / 200) * Math.PI) * 10;
+      }
+      drawFrendyChip(ctx, c.x, c.y + by, o.time, c.kind, cartArt);
     }
   }
   if (o.frendyBoss) {
