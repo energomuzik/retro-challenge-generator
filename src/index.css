@@ -301,12 +301,14 @@ canvas { image-rendering: pixelated; }
 .btn-ghost:active { transform: translateY(1px); }
 .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 
+/* v0.150: панели меню больше НЕ СКАЧУТ при наведении (заказчик: «сделай так, чтобы
+   панели не скакали при наведении на панель») — transform: translateX(10px) УБРАН:
+   подсветка осталась (цветной кант слева + градиент), но панель стоит на месте. */
 .menu-row {
-  transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s;
+  transition: background 0.12s ease, border-color 0.12s;
   border-left: 5px solid transparent;
 }
 .menu-row:hover, .menu-row.active {
-  transform: translateX(10px);
   border-left-color: var(--rowc, var(--color-gold));
   background: linear-gradient(90deg, rgba(255,207,63,0.10), rgba(0,0,0,0));
 }
