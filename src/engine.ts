@@ -1,4 +1,4 @@
-import type { CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
+import type { BgEv, CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
 import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_ENERGETIC_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_BURN_SHIELD_MS, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, cartFitsConsole, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, rubgItemSize, rubgGridFits, rubgGridFirstFit, FRENDY_INV_COLS, FRENDY_INV_ROWS, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
@@ -85,6 +85,7 @@ export type Action =
   | { t: 'qImmuneOn'; id: string; immId: string } // v0.104 БОГАЧ: игрок АКТИВИРОВАЛ иммунитет торговца (до старта задания) — пошли минуты срока
   | { t: 'qCardAck'; id: string } // QUEST: игрок подтвердил выпавшую карточку бонуса/ловушки
   | { t: 'dialogPick'; id: string; npcId: string; nodeId: string; optIdx: number } // QUEST: выбор игрока в диалоге NPC (награда/флаг/переход/концовка)
+  | { t: 'bgSwitch'; id: string; npcId: string; nodeId: string } // v0.151: диалог ДОШЁЛ до реплики с событием «смена карты» — хост включает КАРТУ B (или возвращает A) у ВСЕХ
   | { t: 'npcClaim'; id: string; npcId: string; questId: string } // QUEST: сдача квеста NPC — награда + снятие стен
   | { t: 'npcBuy'; id: string; npcId: string; offerId: string } // QUEST: быстрая покупка одного товара (делегирует в npcTrade) — совместимость
   | { t: 'npcTrade'; id: string; npcId: string; buys: { offerId: string; qty: number }[]; sells: string[] } // QUEST v0.51: СДЕЛКА с торговцем — купить товары (со скидками за квесты) и/или продать вещи из рюкзака (в кассу торговца), одним действием
@@ -229,6 +230,64 @@ export function cellRectOf(map: GameMap, idx: number) {
     return { x: c.cx - w / 2, y: c.cy - h / 2, w, h };
   }
   return { x: c.x * CELL_PX, y: c.y * CELL_PX, w: (c.w || 1) * CELL_PX, h: (c.h || 1) * CELL_PX };
+}
+
+/* ---------- v0.151: МЕХАНИКА «КАРТА A / КАРТА B» (события «смена карты») ----------
+   Фон карты и фон каждой плитки/панели загружаются В ДВУХ вариантах (A — по умолчанию,
+   B — «наступил вечер / что-то произошло / агенты на месте»). Переключение — СОБЫТИЕМ:
+   • узел диалога NPC с bgEv (клиент сообщает действием bgSwitch, хост проверяет узел);
+   • сдача квеста NPC с наградой-событием (например, квест «победить босса»);
+   • FRENDY — автоматом при приходе Салли и Молдера (эпилог): печь + панель/карта B.
+   Состояние — s.bgB (в сессии): map — вся карта, tiles — id карт-плиток, plates — номера
+   плиток (plateSize). Пишет ТОЛЬКО хост — у всех игроков фон меняется синхронно. */
+
+/** id карты-плитки (плиточный режим), содержащей точку (px поля); нет — null */
+export function bgTileAt(map: GameMap, x: number, y: number): string | null {
+  const tg = map.tileGrid;
+  if (!tg) return null;
+  const t = tg.tiles.find((t) => x >= t.col * tg.w && x < (t.col + 1) * tg.w && y >= t.row * tg.h && y < (t.row + 1) * tg.h);
+  return t ? t.id : null;
+}
+
+/** номер плитки (plateSize), содержащей точку (px поля; ключи plateBgs с 1); нет — null */
+export function bgPlateAt(map: GameMap, x: number, y: number): number | null {
+  const ps = map.plateSize;
+  if (!ps || map.tileGrid) return null;
+  const fw = map.mw ?? map.cols * CELL_PX;
+  const cols = Math.ceil(fw / ps);
+  const c = Math.floor(x / ps), r = Math.floor(y / ps);
+  if (c < 0 || r < 0) return null;
+  return r * cols + c + 1;
+}
+
+/** Применить событие «смена карты»: меняет s.bgB и возвращает ТЕКСТ ДЛЯ ЛОГА (или null —
+   если менять нечего: значение уже стоит). here без точки/плитки — фолбэк на всю карту. */
+export function applyBgEv(s: GameSession, map: GameMap, ev: BgEv, at?: { x: number; y: number }): string | null {
+  const toB = ev === 'mapB' || ev === 'hereB';
+  const b = (s.bgB = s.bgB ?? {});
+  /* вся карта — явно, а также фолбэк для here на карте без плиток/панелей */
+  if (ev.startsWith('map') || (!map.tileGrid && !map.plateSize)) {
+    if (!!b.map === toB) return null;
+    b.map = toB;
+    return toB ? '🌃 ФОН КАРТЫ СМЕНИЛСЯ: НАСТУПИЛА КАРТА B' : '🌄 ФОН КАРТЫ ВЕРНУЛСЯ: СНОВА КАРТА A';
+  }
+  if (map.tileGrid && at) {
+    const id = bgTileAt(map, at.x, at.y);
+    if (id) {
+      if (!!b.tiles?.[id] === toB) return null;
+      b.tiles = { ...(b.tiles ?? {}), [id]: toB };
+      return toB ? '🌃 ФОН ПАНЕЛИ СМЕНИЛСЯ НА КАРТУ B' : '🌄 ФОН ПАНЕЛИ ВЕРНУЛСЯ НА КАРТУ A';
+    }
+  }
+  if (map.plateSize && at) {
+    const n = bgPlateAt(map, at.x, at.y);
+    if (n) {
+      if (!!b.plates?.[n] === toB) return null;
+      b.plates = { ...(b.plates ?? {}), [n]: toB };
+      return toB ? `🌃 ФОН ПЛИТКИ №${n} СМЕНИЛСЯ НА КАРТУ B` : `🌄 ФОН ПЛИТКИ №${n} ВЕРНУЛСЯ НА КАРТУ A`;
+    }
+  }
+  return null;
 }
 
 /* НЕВИДИМЫЕ СТЕНЫ (JOURNEY): точка (центр фишки) внутри стены?
@@ -3582,6 +3641,20 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       s.pendingCard = null;
       s.moving = null;
       s.phase = 'epilogue';
+      /* v0.151: МЕСТО ПРЕСТУПЛЕНИЯ В РЕАЛЬНОМ МИРЕ — агенты пришли не в пиксельный кошмар.
+         Если у панели (карты-плитки) С ПЕЧЬЮ загружена КАРТА B — она включается сама;
+         если загружена КАРТА B ВСЕЙ КАРТЫ — тоже. Во всех картах FRENDY, без триггеров. */
+      const fiB = map.cells.findIndex((c) => c.type === 'furnace');
+      if (fiB >= 0) {
+        const frB = cellRectOf(map, fiB);
+        if (frB) {
+          let bgChanged = false;
+          if (map.bgB) { s.bgB = s.bgB ?? {}; s.bgB.map = true; bgChanged = true; }
+          const tidB = bgTileAt(map, frB.x + frB.w / 2, frB.y + frB.h / 2);
+          if (tidB) { s.bgB = s.bgB ?? {}; s.bgB.tiles = { ...(s.bgB.tiles ?? {}), [tidB]: true }; bgChanged = true; }
+          if (bgChanged) log('🌇 САЛЛИ И МОЛДЕР НА МЕСТЕ: пиксельный кошмар сменился КАРТОЙ B — «реальные развалины» в стиле сериала.');
+        }
+      }
       log('🚪 ВСЕ ИГРОКИ ВЫБРАЛИСЬ ИЗ ЗАПАДНИ — фишки покинули проклятую карту…');
       log('🕵️ На место происшествия прибыли АГЕНТЫ МОЛДЕР и САЛЛИ (ФБР, неофициально). «Тайные материалы» продолжаются…');
       break;
@@ -4306,6 +4379,18 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       checkElim();
       break;
     }
+    case 'bgSwitch': {
+      /* v0.151 СОБЫТИЕ «СМЕНА КАРТЫ» из редактора диалогов: диалог игрока дошёл до узла
+         с bgEv — фон меняется У ВСЕХ (это событие мира). Хост проверяет, что узел реально
+         существует и несёт событие, и применяет (точка — где стоит NPC: его панель/плитка). */
+      if (s.phase !== 'playing') break;
+      const npcB = (map.npcs ?? []).find((x) => x.id === a.npcId);
+      const nodeB = npcB?.dialog?.nodes.find((n) => n.id === a.nodeId);
+      if (!npcB || !nodeB?.bgEv) break;
+      const msgB = applyBgEv(s, map, nodeB.bgEv, { x: npcB.x, y: npcB.y });
+      if (msgB) log(`${msgB} (событие диалога)`);
+      break;
+    }
     case 'plateSeen': {
       /* v0.53 СИНХРОНИЗАЦИЯ ОТКРЫТЫХ КОМНАТ: открытое одним игроком — открыто всем.
          Хост просто объединяет номера плиток; туман карты мира рисуется по объединённому
@@ -4486,6 +4571,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         else { p.coinsLeft = Math.max(0, (p.coinsLeft ?? 0) - n); log(`🪙 ${p.name} принёс NPC ${coinsStr(n)} — капитал ${coinsStr(p.coinsLeft)}`); }
       }
       giveReward(p, q.reward, `квест «${q.title}» сдан`);
+      /* v0.151: награда-СОБЫТИЕ «смена карты» — сдача квеста (например, «победить босса»)
+         включает КАРТУ B (или возвращает A): вся карта или панель, где стоит NPC */
+      if (q.reward.bgEv) {
+        const msgQ = applyBgEv(s, map, q.reward.bgEv, { x: npc.x, y: npc.y });
+        if (msgQ) log(`${msgQ} (квест «${q.title}») `);
+      }
       /* Снятие стен: выполненный квест убирает назначенные ему стены — путь открыт ВСЕМ */
       if (q.removeWalls?.length) {
         const ids = (map.walls ?? []).map((w) => w.id).filter((id): id is string => !!id && q.removeWalls!.includes(id));

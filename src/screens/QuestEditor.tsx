@@ -318,6 +318,16 @@ export default function QuestEditor() {
                             <option value="">🔑 нет</option>
                             {DOOR_KEYS.map((k) => <option key={k.id} value={k.id}>🔑 {k.name}</option>)}
                           </select>
+                          {/* v0.151: награда-СОБЫТИЕ «смена карты» — при сдаче квеста фон меняется у ВСЕХ:
+                              например, квест «победить босса» включает КАРТУ B (вечер/развалины/«что-то произошло»).
+                              Сама КАРТА B загружается в редакторе карт, панель «Фон» → «КАРТА B (событие)» */}
+                          <select className="field-in px-1 py-0.5 text-[10px]" title="Событие «смена карты» при сдаче квеста: фон ВСЕЙ карты или ПАНЕЛИ, где стоит NPC, сменится на КАРТУ B (или вернётся КАРТА A) — у ВСЕХ игроков. Карта B загружается в редакторе карт, панель «Фон» → «КАРТА B (событие)»" value={q.reward.bgEv ?? ''} onChange={(ev) => updQuest(selIdx, q.id, { reward: { ...q.reward, bgEv: (ev.target.value || undefined) as NonNullable<typeof q.reward>['bgEv'] } })}>
+                            <option value="">🗺 фон: нет</option>
+                            <option value="mapB">🗺 вся карта → B</option>
+                            <option value="mapA">🗺 вся карта → A</option>
+                            <option value="hereB">🗺 панель NPC → B</option>
+                            <option value="hereA">🗺 панель NPC → A</option>
+                          </select>
                         </div>
                         {(map.walls ?? []).filter((w) => w.id).length > 0 && (
                           <div className="space-y-1">

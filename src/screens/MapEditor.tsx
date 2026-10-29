@@ -528,6 +528,11 @@ export default function MapEditor() {
   const tileDropRef = useRef<{ col: number; row: number } | null>(null);
   const tileClickGuard = useRef(0); // ms-метка конца перетаскивания: click сразу после него — хвост жеста, не выбор
   const [bgScope, setBgScope] = useState<'plate' | 'all'>('plate'); // куда ложится НОВЫЙ фон: «на эту плитку» (своя локация) или «на всю карту»
+  /* v0.151: ВАРИАНТ ФОНА — «КАРТА A» (показывается в игре по умолчанию) или «КАРТА B»
+     (альтернативный фон — вечер/развалины/«что-то произошло»; в игре появляется ТОЛЬКО
+     после СОБЫТИЯ: смена карты в редакторе диалогов, награда квеста NPC, а во FRENDY —
+     приход Салли и Молдера к печи). A и B — отдельные картинки, bgMode общий */
+  const [bgVar, setBgVar] = useState<'A' | 'B'>('A');
   const [extract, setExtract] = useState<{ file: File; src: string; name: string; busy: boolean; bgMode: 'auto' | 'custom'; bg: string; foundBg: string; thr: number; minSize: number; mergeGap: number; keepText: boolean; oneSize: boolean; tiles: TileImg[] } | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1767,14 +1772,32 @@ export default function MapEditor() {
     if (map.tileGrid && bgScope === 'plate') {
       const t = activeTile ?? map.tileGrid.tiles[0];
       if (!t) return;
-      setTileBg(t.id, { bg: url, bgMode: 'stretch' });
-      sfx.coin();
-      toast(`Фон ${verb} на КАРТУ-ПЛИТКУ №${map.tileGrid.tiles.findIndex((x) => x.id === t.id) + 1} — остальные карты не тронуты`, 'ok');
+      if (bgVar === 'B') {
+        const prev = (map.tileBgs ?? {})[t.id];
+        setTileBg(t.id, { ...(prev ?? {}), bgB: url, bgMode: prev?.bgMode ?? 'stretch' });
+        sfx.coin();
+        toast(`КАРТА B ${verb} для КАРТЫ-ПЛИТКИ №${map.tileGrid.tiles.findIndex((x) => x.id === t.id) + 1} — в игре появится после события (FRENDY: приход агентов / триггер в диалогах)`, 'ok');
+      } else {
+        setTileBg(t.id, { bg: url, bgMode: 'stretch' });
+        sfx.coin();
+        toast(`Фон ${verb} на КАРТУ-ПЛИТКУ №${map.tileGrid.tiles.findIndex((x) => x.id === t.id) + 1} — остальные карты не тронуты`, 'ok');
+      }
     } else if (map.plateSize && bgScope === 'plate') {
       const n = curPlateIdx + 1;
-      setPlateBg(n, { bg: url, bgMode: 'stretch' });
+      if (bgVar === 'B') {
+        const prev = (map.plateBgs ?? {})[n];
+        setPlateBg(n, { ...(prev ?? {}), bgB: url, bgMode: prev?.bgMode ?? 'stretch' });
+        sfx.coin();
+        toast(`КАРТА B ${verb} для ПЛИТКИ ${n} — в игре появится после события (триггер в диалогах/квестах)`, 'ok');
+      } else {
+        setPlateBg(n, { bg: url, bgMode: 'stretch' });
+        sfx.coin();
+        toast(`Фон ${verb} на ПЛИТКУ ${n} — остальные плитки не тронуты`, 'ok');
+      }
+    } else if (bgVar === 'B') {
+      updMap({ bgB: url, bgMode: map.bgMode ?? 'stretch' } as Partial<GameMap>);
       sfx.coin();
-      toast(`Фон ${verb} на ПЛИТКУ ${n} — остальные плитки не тронуты`, 'ok');
+      toast(`КАРТА B всей карты ${verb} — в игре появится после события (FRENDY: приход агентов / триггер в диалогах/квестах)`, 'ok');
     } else {
       updMap({ bg: url, bgMode: 'stretch' } as Partial<GameMap>);
       sfx.coin();
@@ -3780,6 +3803,13 @@ export default function MapEditor() {
             <>
               <div>
                 <div className="tick-label mb-2">{map.tileGrid ? 'Фон: карта-плитка / вся карта' : map.plateSize ? 'Фон: плитка / вся карта' : 'Общий фон карты'}</div>
+                {/* v0.151: ВАРИАНТ ФОНА — КАРТА A (показывается в игре ПО УМОЛЧАНИЮ) и
+                    КАРТА B (включается только СОБЫТИЕМ — смена карты в диалогах, награда
+                    квеста NPC, а во FRENDY — приход Салли и Молдера к печи) */}
+                <div className="flex gap-1.5 mb-1.5">
+                  <button onClick={() => { setBgVar('A'); sfx.hover(); }} title="КАРТА A — обычный фон, показывается в игре ПО УМОЛЧАНИЮ" className={`flex-1 py-1 border-2 cursor-pointer font-display text-[9px] uppercase ${bgVar === 'A' ? 'border-teal text-teal bg-teal/10' : 'border-edge text-faint hover:text-dim'}`}>КАРТА A</button>
+                  <button onClick={() => { setBgVar('B'); sfx.hover(); }} title="КАРТА B — альтернативный фон (вечер, развалины, «что-то произошло»). В игре НЕ показывается, пока не сработает СОБЫТИЕ: смена карты в редакторе диалогов, награда квеста NPC, а во FRENDY — приход Салли и Молдера к печи" className={`flex-1 py-1 border-2 cursor-pointer font-display text-[9px] uppercase ${bgVar === 'B' ? 'border-magma text-magma bg-magma/10' : 'border-edge text-faint hover:text-dim'}`}>КАРТА B (событие)</button>
+                </div>
                 {/* КУДА ЛОЖИТСЯ НОВЫЙ ФОН — выбор появляется при разбивке на плитки ИЛИ
                     в плиточном режиме: «На эту плитку» = у каждой плитки своя картинка
                     (другая локация), «На всю карту» = одна картинка на всё поле сразу */}
@@ -3797,36 +3827,68 @@ export default function MapEditor() {
                   </>
                 )}
                 {bgIsTile ? (
-                  tileBgCur ? (
+                  tileBgCur && (bgVar === 'A' ? tileBgCur.bg : tileBgCur.bgB) ? (
                     <div className="space-y-1.5">
-                      <img src={tileBgCur.bg} alt="фон карты-плитки" className="w-full border-2 border-teal/60 object-cover h-20" />
+                      <img src={(bgVar === 'A' ? tileBgCur.bg : tileBgCur.bgB) as string} alt={bgVar === 'A' ? 'фон карты-плитки' : 'КАРТА B карты-плитки'} className={`w-full border-2 object-cover h-20 ${bgVar === 'A' ? 'border-teal/60' : 'border-magma/70'}`} />
                       <div className="flex gap-1.5">
                         <GhostBtn small className="flex-1" onClick={() => { bgRef.current?.click(); }}>Заменить</GhostBtn>
-                        <GhostBtn small className="flex-1" onClick={() => { setTileBg(activeTile!.id, undefined); sfx.fail(); }}>Убрать</GhostBtn>
+                        <GhostBtn small className="flex-1" onClick={() => {
+                          /* v0.151: «Убрать» снимает ТОЛЬКО выбранный вариант — второй остаётся */
+                          if (bgVar === 'A') { const nb = { ...tileBgCur, bg: undefined }; setTileBg(activeTile!.id, nb.bgB ? nb : undefined); }
+                          else { const nb = { ...tileBgCur, bgB: undefined }; setTileBg(activeTile!.id, nb.bg ? nb : undefined); }
+                          sfx.fail();
+                        }}>Убрать</GhostBtn>
                       </div>
                       <div className="flex gap-1.5 text-[10px]">
                         <button onClick={() => setTileBg(activeTile!.id, { ...tileBgCur, bgMode: 'stretch' })} className={`flex-1 py-1 border-2 cursor-pointer ${tileBgCur.bgMode !== 'real' ? 'border-gold text-gold' : 'border-edge text-faint'}`}>растянуть</button>
                         <button onClick={() => setTileBg(activeTile!.id, { ...tileBgCur, bgMode: 'real' })} className={`flex-1 py-1 border-2 cursor-pointer ${tileBgCur.bgMode === 'real' ? 'border-gold text-gold' : 'border-edge text-faint'}`}>1:1</button>
                       </div>
+                      {bgVar === 'B' && (
+                        <p className="text-[9px] text-magma leading-tight border-2 border-magma/40 px-2 py-1">КАРТА B НЕ показывается в игре сама — её включит СОБЫТИЕ: смена карты (редактор диалогов), награда квеста NPC, а во FRENDY — приход Салли и Молдера.</p>
+                      )}
                     </div>
                   ) : (
-                    <GhostBtn small className="w-full" onClick={() => { bgRef.current?.click(); }}>{Ic.plus(12)} Загрузить фон карты № {activeTileNum}</GhostBtn>
+                    <GhostBtn small className="w-full" onClick={() => { bgRef.current?.click(); }}>{Ic.plus(12)} {bgVar === 'B' ? `Загрузить КАРТУ B карты № ${activeTileNum} (событие)` : `Загрузить фон карты № ${activeTileNum}`}</GhostBtn>
                   )
                 ) : bgIsPlate ? (
-                  plateBgCur ? (
+                  plateBgCur && (bgVar === 'A' ? plateBgCur.bg : plateBgCur.bgB) ? (
                     <div className="space-y-1.5">
-                      <img src={plateBgCur.bg} alt="фон плитки" className="w-full border-2 border-sky/60 object-cover h-20" />
+                      <img src={(bgVar === 'A' ? plateBgCur.bg : plateBgCur.bgB) as string} alt={bgVar === 'A' ? 'фон плитки' : 'КАРТА B плитки'} className={`w-full border-2 object-cover h-20 ${bgVar === 'A' ? 'border-sky/60' : 'border-magma/70'}`} />
                       <div className="flex gap-1.5">
                         <GhostBtn small className="flex-1" onClick={() => { bgRef.current?.click(); }}>Заменить</GhostBtn>
-                        <GhostBtn small className="flex-1" onClick={() => { setPlateBg(curPlateNum, undefined); sfx.fail(); }}>Убрать</GhostBtn>
+                        <GhostBtn small className="flex-1" onClick={() => {
+                          if (bgVar === 'A') { const nb = { ...plateBgCur, bg: undefined }; setPlateBg(curPlateNum, nb.bgB ? nb : undefined); }
+                          else { const nb = { ...plateBgCur, bgB: undefined }; setPlateBg(curPlateNum, nb.bg ? nb : undefined); }
+                          sfx.fail();
+                        }}>Убрать</GhostBtn>
                       </div>
                       <div className="flex gap-1.5 text-[10px]">
                         <button onClick={() => setPlateBg(curPlateNum, { ...plateBgCur, bgMode: 'stretch' })} className={`flex-1 py-1 border-2 cursor-pointer ${plateBgCur.bgMode !== 'real' ? 'border-gold text-gold' : 'border-edge text-faint'}`}>растянуть</button>
                         <button onClick={() => setPlateBg(curPlateNum, { ...plateBgCur, bgMode: 'real' })} className={`flex-1 py-1 border-2 cursor-pointer ${plateBgCur.bgMode === 'real' ? 'border-gold text-gold' : 'border-edge text-faint'}`}>1:1</button>
                       </div>
+                      {bgVar === 'B' && (
+                        <p className="text-[9px] text-magma leading-tight border-2 border-magma/40 px-2 py-1">КАРТА B НЕ показывается в игре сама — её включит СОБЫТИЕ: смена карты (редактор диалогов) или награда квеста NPC.</p>
+                      )}
                     </div>
                   ) : (
-                    <GhostBtn small className="w-full" onClick={() => { bgRef.current?.click(); }}>{Ic.plus(12)} Загрузить фон плитки {curPlateNum}</GhostBtn>
+                    <GhostBtn small className="w-full" onClick={() => { bgRef.current?.click(); }}>{Ic.plus(12)} {bgVar === 'B' ? `Загрузить КАРТУ B плитки ${curPlateNum} (событие)` : `Загрузить фон плитки ${curPlateNum}`}</GhostBtn>
+                  )
+                ) : bgVar === 'B' ? (
+                  map.bgB ? (
+                    <div className="space-y-1.5">
+                      <img src={map.bgB} alt="КАРТА B всей карты" className="w-full border-2 border-magma/70 object-cover h-20" />
+                      <div className="flex gap-1.5">
+                        <GhostBtn small className="flex-1" onClick={() => { bgRef.current?.click(); }}>Заменить</GhostBtn>
+                        <GhostBtn small className="flex-1" onClick={() => { updMap({ bgB: undefined } as Partial<GameMap>); sfx.fail(); }}>Убрать</GhostBtn>
+                      </div>
+                      <div className="flex gap-1.5 text-[10px]">
+                        <button onClick={() => updMap({ bgMode: 'stretch' })} className={`flex-1 py-1 border-2 cursor-pointer ${map.bgMode !== 'real' ? 'border-gold text-gold' : 'border-edge text-faint'}`}>растянуть</button>
+                        <button onClick={() => updMap({ bgMode: 'real' })} className={`flex-1 py-1 border-2 cursor-pointer ${map.bgMode === 'real' ? 'border-gold text-gold' : 'border-edge text-faint'}`}>1:1</button>
+                      </div>
+                      <p className="text-[9px] text-magma leading-tight border-2 border-magma/40 px-2 py-1">КАРТА B НЕ показывается в игре сама — её включит СОБЫТИЕ: смена карты (редактор диалогов), награда квеста NPC, а во FRENDY — приход Салли и Молдера.</p>
+                    </div>
+                  ) : (
+                    <GhostBtn small className="w-full" onClick={() => { bgRef.current?.click(); }}>{Ic.plus(12)} Загрузить КАРТУ B всей карты (событие)</GhostBtn>
                   )
                 ) : map.bg ? (
                   <div className="space-y-1.5">
@@ -3847,7 +3909,7 @@ export default function MapEditor() {
                   {(bgIsPlate || bgIsTile)
                     ? 'Свой фон ложится ТОЛЬКО на выбранную плитку — соседние не тронуты: каждой плитке можно дать свою «локацию». Одна картинка на всё поле — переключатель «На всю карту» выше. '
                     : ''}
-                  Фон лежит ВНУТРИ карты и уедет игрокам сам. Большая картинка сожмётся до 2000px.
+                  Фон лежит ВНУТРИ карты и уедет игрокам сам. Большая картинка сожмётся до 2000px. {/* v0.151 */}КАРТА B — второй слот того же фона: в игре по умолчанию показывается КАРТА A, а КАРТА B появляется после СОБЫТИЯ «смена карты» (узел диалога / награда квеста NPC / приход агентов во FRENDY).
                 </p>
                 {bgIsTile && map.bg && (
                   <div className="mt-1 border-2 border-gold/40 px-2 py-1.5 space-y-1">

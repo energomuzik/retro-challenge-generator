@@ -300,6 +300,31 @@ export function DialogTreeEditor({ dialog, endings, onChange, posStore, onPosSto
             )}
           </div>
 
+          {/* v0.151: СОБЫТИЕ «СМЕНА КАРТЫ» — когда диалог дойдёт до этой реплики, фон
+              меняется у ВСЕХ игроков (событие мира). КАРТА B загружается в редакторе
+              карт, панель «Фон» → «КАРТА B (событие)». «Эта панель» — плитка/карта-плитка,
+              где стоит NPC. Во FRENDY фон у печи включается сам — триггер не нужен. */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="tick-label text-teal shrink-0" title="Событие мира: фон карты или панели меняется, когда диалог доходит до этой реплики — например, «наступил вечер» или «что-то произошло». Карта B заранее загружается в редакторе карт.">🗺 Смена карты при этой реплике:</span>
+            {([
+              ['none', 'нет'],
+              ['mapB', 'вся карта → B'],
+              ['mapA', 'вся карта → A'],
+              ['hereB', 'эта панель → B'],
+              ['hereA', 'эта панель → A'],
+            ] as [string, string][]).map(([v, label]) => (
+              <button
+                key={v}
+                onClick={() => { sfx.hover(); updNode(selNode.id, { bgEv: v === 'none' ? undefined : (v as DialogNode['bgEv']) }); }}
+                className={`px-1.5 py-0.5 border-2 font-display text-[9px] uppercase cursor-pointer transition-colors ${(selNode.bgEv ?? 'none') === v ? 'border-teal text-teal bg-teal/10' : 'border-edge text-faint hover:text-dim'}`}
+                title={v === 'none' ? 'События нет — реплика ничего не меняет' : v.startsWith('map') ? 'Сменить/вернуть фон ВСЕЙ карты, когда диалог дойдёт до этой реплики' : 'Сменить/вернуть фон ПАНЕЛИ (плитки), где стоит NPC, когда диалог дойдёт до этой реплики'}
+              >{label}</button>
+            ))}
+          </div>
+          {selNode.bgEv && (
+            <p className="text-[8.5px] text-teal leading-tight">Фон сменится У ВСЕХ игроков в момент, когда диалог дойдёт до этой реплики. «Эта панель» = плитка/карта-плитка, где стоит NPC (если фон панели не задан — сменится вся карта). {selNode.bgEv.endsWith('A') ? 'Возвращает обычную КАРТУ A.' : 'Показывает КАРТУ B (загрузите её в редакторе карт: панель «Фон» → «КАРТА B (событие)»).'} Во FRENDY этот триггер не нужен — фон у печи включается сам, когда приходят Салли и Молдер.</p>
+          )}
+
           {/* v0.96: ОЗВУЧКА РЕПЛИКИ — mp3/flac с компьютера автора; вшивается в узел,
               уезжает всем игрокам вместе с картой, на сервер ничего не грузится */}
           <div className="flex items-center gap-1.5 flex-wrap">

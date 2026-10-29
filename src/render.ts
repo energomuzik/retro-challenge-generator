@@ -415,6 +415,10 @@ export interface BoardDrawOpts {
   /* РЕЖИМ КОМНАТ (АЙЗЕК): прямоугольник текущей плитки-комнаты (px поля).
    Передаётся только из игры при включённом roomMode; в редакторе не передаётся.
    Всё за пределами прямоугольника скрывается темнотой + светящаяся граница комнаты. */
+  /* v0.151: АКТИВНЫЙ ФОН «КАРТА B» (события «смена карты», пишет хост в сессии):
+   map — вся карта показывает карту B; tiles — id карт-плиток с картой B; plates —
+   номера плиток (plateSize) с картой B. Не передаётся из редактора — там всегда A */
+  bgB?: { map?: boolean; tiles?: Record<string, boolean>; plates?: Record<number, boolean> };
   room?: { x: number; y: number; w: number; h: number } | null;
   /* ТУМАН ИССЛЕДОВАНИЯ (карта мира в режиме комнат, v0.50.0): номера ОТКРЫТЫХ плиток.
    Передаётся из игры только в общем плане/заглядывании карты мира: все плитки, НЕ вошедшие
@@ -844,29 +848,36 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   ctx.lineWidth = 2;
   ctx.strokeRect(-12, -12, b.w + 24, b.h + 24);
 
-  // ОБЩИЙ ФОН КАРТЫ (редактор в стиле Tiled): растянут на поле или 1:1
-  if (map.bg) {
-    const img = getImage(map.bg);
-    if (img) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(0, 0, b.w, b.h);
-      ctx.clip();
-      ctx.imageSmoothingEnabled = true;
-      if (map.bgMode === 'real') ctx.drawImage(img, 0, 0);
-      else ctx.drawImage(img, 0, 0, b.w, b.h);
-      ctx.restore();
+  // ОБЩИЙ ФОН КАРТЫ (редактор в стиле Tiled): растянут на поле или 1:1.
+  // v0.151: когда событие сменило фон (o.bgB.map) и у карты есть КАРТА B — рисуем её.
+  {
+    const bgUrl = o.bgB?.map && map.bgB ? map.bgB : map.bg;
+    if (bgUrl) {
+      const img = getImage(bgUrl);
+      if (img) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, b.w, b.h);
+        ctx.clip();
+        ctx.imageSmoothingEnabled = true;
+        if (map.bgMode === 'real') ctx.drawImage(img, 0, 0);
+        else ctx.drawImage(img, 0, 0, b.w, b.h);
+        ctx.restore();
+      }
     }
   }
 
   // СВОИ ФОНЫ КАРТ-ПЛИТОК (плиточный режим карт): у каждой карты-плитки своя
   // «локация». Рисуется ПОВЕРХ общего фона карты, ТОЛЬКО в пределах своей плитки.
+  // v0.151: событие «смена карты» (o.bgB.tiles[t.id]) показывает КАРТУ B этой плитки.
   if (map.tileGrid && map.tileBgs) {
     const tg = map.tileGrid;
     for (const t of tg.tiles) {
       const pb = map.tileBgs[t.id];
-      if (!pb || !pb.bg) continue;
-      const img = getImage(pb.bg);
+      if (!pb) continue;
+      const url = o.bgB?.tiles?.[t.id] && pb.bgB ? pb.bgB : pb.bg;
+      if (!url) continue;
+      const img = getImage(url);
       if (!img) continue;
       const px = t.col * tg.w, py = t.row * tg.h;
       ctx.save();
@@ -882,6 +893,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
 
   // СВОИ ФОНЫ ПЛИТОК: у каждой плитки может быть своя картинка («другая локация»).
   // Рисуется ПОВЕРХ общего фона карты, ТОЛЬКО в пределах своей плитки.
+  // v0.151: событие «смена карты» (o.bgB.plates[num]) показывает КАРТУ B этой плитки.
   if (map.plateSize && map.plateBgs) {
     const ps = map.plateSize;
     const cols = Math.ceil(b.w / ps);
@@ -889,8 +901,10 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const pb = map.plateBgs[r * cols + c + 1]; // ключ — номер плитки как в навигаторе (с 1)
-        if (!pb || !pb.bg) continue;
-        const img = getImage(pb.bg);
+        if (!pb) continue;
+        const url = o.bgB?.plates?.[r * cols + c + 1] && pb.bgB ? pb.bgB : pb.bg;
+        if (!url) continue;
+        const img = getImage(url);
         if (!img) continue;
         const px = c * ps, py = r * ps;
         const pw = Math.min(ps, b.w - px), ph = Math.min(ps, b.h - py); // краевая плитка может быть неполной

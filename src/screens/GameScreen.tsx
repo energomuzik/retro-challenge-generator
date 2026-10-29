@@ -958,6 +958,21 @@ export default function GameScreen() {
       a.play().catch(() => { /* диалог открыт кликом — автоплей уже разрешён; на всякий случай молчим */ });
     }
   }, [dlgNpcId, dlgNode, map]);
+  /* v0.151: СОБЫТИЕ «СМЕНА КАРТЫ» на узле диалога — когда диалог дошёл до реплики с
+     событием, сообщаем хосту (фон меняется У ВСЕХ). Стартовая реплика тоже несёт событие;
+     повторные показы того же узла не спамят (dedupe по npc/узлу за открытый диалог). */
+  const dlgBgFor = useRef('');
+  useEffect(() => {
+    if (!dlgNpcId || !map) return;
+    const n = (map.npcs ?? []).find((x) => x.id === dlgNpcId);
+    const dlg = n?.dialog;
+    const node = dlg ? dlg.nodes.find((x) => x.id === (dlgNode ?? dlg.root)) : null;
+    if (!node?.bgEv) return;
+    const key = `${dlgNpcId}/${node.id}`;
+    if (dlgBgFor.current === key) return;
+    dlgBgFor.current = key;
+    dispatch({ t: 'bgSwitch', id: me, npcId: dlgNpcId, nodeId: node.id });
+  }, [dlgNpcId, dlgNode, map, me]);
   /* клавиша E — поговорить с NPC в радиусе; ESC — закрыть диалог / пропуск кат-сцены
      (v0.62: НЕ мгновенно — нажатие плавно показывает подсказку, ПРОДОЛЖИТЕЛЬНОЕ
      удержание пропускает; см. CUT_ESC_HOLD_MS) */
@@ -2714,6 +2729,9 @@ export default function GameScreen() {
           hiddenTiles, // v0.124: туман неоткрытых карт-плиток (карта мира/заглядывание)
           /* v0.55: снятые квестами стены — двери (стены с key) с них не рисуются */
           wallsRemoved: sess.wallsRemoved,
+          /* v0.151: АКТИВНЫЙ ФОН «КАРТА B» — события «смена карты» (диалоги/квесты NPC,
+             эпилог FRENDY); фон B рисуется там, где включён, у ВСЕХ игроков */
+          bgB: sess.bgB,
           /* ПАТРУЛИРОВАНИЕ (v0.52): боссы и NPC с маршрутом рисуются в текущей точке —
              позиция считается формулой от синхронного старта партии (без сети) */
           patrolBase: sess.startedAt || 0,
