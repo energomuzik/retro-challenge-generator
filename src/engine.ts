@@ -642,10 +642,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         if (frendyMode && (p.items?.length ?? 0) > 0 && s.frendy) {
           const ppD = s.journeyPos?.[p.id];
           for (const it of p.items ?? []) {
+            /* v0.147: вещи не должны ложиться на приставки/печь — выталкиваем на землю */
+            const spD = frendyPushOffSolid(Math.max(12, (ppD?.x ?? 100) + (Math.random() * 56 - 28)), Math.max(12, (ppD?.y ?? 100) + (Math.random() * 56 - 28)));
             s.frendy.chips.push({
               id: 'fc' + Math.random().toString(36).slice(2, 9),
-              x: Math.round(Math.max(12, (ppD?.x ?? 100) + (Math.random() * 56 - 28))),
-              y: Math.round(Math.max(12, (ppD?.y ?? 100) + (Math.random() * 56 - 28))),
+              x: Math.round(spD.x),
+              y: Math.round(spD.y),
               kind: it.kind, taskIdx: it.taskIdx,
             });
           }
@@ -1238,7 +1240,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const spot = rubgGridFirstFit(inv, kind);
       if (spot) { it.gx = spot.gx; it.gy = spot.gy; inv.push(it); return it; }
       const pp = s.journeyPos?.[p.id];
-      const gp = pp ? { x: pp.x + (Math.random() * 44 - 22), y: pp.y + (Math.random() * 44 - 22) } : (frendyFreeSpot([]) ?? { x: 100, y: 100 });
+      /* v0.147: награда при полном рюкзаке больше не падает ВНУТРИ приставки/печи (главный
+         сценарий — после победы у приставки) — выталкивается на ближайшую свободную землю */
+      const gp = pp ? frendyPushOffSolid(pp.x + (Math.random() * 44 - 22), pp.y + (Math.random() * 44 - 22)) : (frendyFreeSpot([]) ?? { x: 100, y: 100 });
       s.frendy.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round(Math.max(12, gp.x)), y: Math.round(Math.max(12, gp.y)), kind, taskIdx });
       log(`🎒 Рюкзак ${p.name} ПОЛОН — «${RUBG_ITEMS[kind].name}» ${RUBG_ITEMS[kind].icon} падает на землю рядом (освободите место и поднимите)`);
       return it;
@@ -1504,7 +1508,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const keep: { x: number; y: number; w: number; h: number }[] = [];
     for (let i = 0; i < map.cells.length; i++) {
       const c = map.cells[i];
-      if (c.type === 'furnace' || c.type === 'start') { const r = cellRectOf(map, i); if (r) keep.push(r); }
+      /* v0.147: не спавнить предметы и не вышвыривать жертву и НА ПРИСТАВКИ — там предмет не виден под фото консоли и его не поднять */
+      if (c.type === 'furnace' || c.type === 'start' || c.type === 'task') { const r = cellRectOf(map, i); if (r) keep.push(r); }
     }
     for (let t = 0; t < 60; t++) {
       const x = 32 + Math.random() * Math.max(1, W - 64);
@@ -1515,6 +1520,42 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       return { x, y };
     }
     return null;
+  };
+  /** v0.147: ВЫТАЛКИВАНИЕ ПРЕДМЕТА С ПРИСТАВКИ/ПЕЧИ (заказчик: «если микросхема или картридж
+      или другой предмет попадет на приставку — он перемещается за пределы ячейки, потому что
+      его не поднять»): точка на клетке ПРИСТАВКИ (task) или ПЕЧИ (furnace) сдвигается к ближайшей
+      свободной земле — 8 направлений × растущий отступ от края ячейки, вне стен и ВНЕ других
+      приставок/печей. Точка не на интерактивной клетке — возвращается как была. */
+  const frendyPushOffSolid = (x: number, y: number): { x: number; y: number } => {
+    const W = map.mw ?? map.cols * CELL_PX;
+    const H = map.mh ?? map.rows * CELL_PX;
+    for (let i = 0; i < map.cells.length; i++) {
+      const c = map.cells[i];
+      if (c.type !== 'task' && c.type !== 'furnace') continue;
+      const r = cellRectOf(map, i);
+      if (!r) continue;
+      if (!(x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)) continue;
+      const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+      const dirs: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+      for (const off of [10, 24, 40, 60, 84]) {
+        for (const [dx, dy] of dirs) {
+          const nx = Math.round(cx + dx * (r.w / 2 + off));
+          const ny = Math.round(cy + dy * (r.h / 2 + off));
+          if (nx < 12 || ny < 12 || nx > W - 12 || ny > H - 12) continue;
+          if (pointInWall(map, nx, ny)) continue;
+          let hit = false; // не дать вылететь В ДРУГУЮ приставку/печь
+          for (let j = 0; j < map.cells.length; j++) {
+            const c2 = map.cells[j];
+            if (c2.type !== 'task' && c2.type !== 'furnace') continue;
+            const r2 = cellRectOf(map, j);
+            if (r2 && nx >= r2.x && nx < r2.x + r2.w && ny >= r2.y && ny < r2.y + r2.h) { hit = true; break; }
+          }
+          if (!hit) return { x: nx, y: ny };
+        }
+      }
+      return { x: Math.round(cx + r.w / 2 + 12), y: Math.round(cy) }; // крайний случай — правый край клетки
+    }
+    return { x, y };
   };
   /** Разбросать N микросхем по карте (для старта партии). */
   const frendySpawnChips = (n: number): FrendyChipState[] => {
@@ -1844,7 +1885,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
             s.frendyConsoles[pick] = cart.taskIdx!;
             if (displaced !== null && displaced !== cart.taskIdx) {
               const rr = cellRectOf(map, pick);
-              f.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round((rr ? rr.x + rr.w / 2 : W / 2) + (Math.random() * 40 - 20)), y: Math.round((rr ? rr.y + rr.h / 2 : H / 2) + (Math.random() * 40 - 20)), kind: 'dendyCart', taskIdx: displaced });
+              /* v0.147: вытесненный картридж падал с ЦЕНТРА приставки ±20 px — ПРЯМО ВНУТРИ неё;
+                 теперь выталкивается за край на землю */
+              const drop0 = rr ? { x: rr.x + rr.w / 2 + (Math.random() * 40 - 20), y: rr.y + rr.h / 2 + (Math.random() * 40 - 20) } : { x: W / 2, y: H / 2 };
+              const drop = frendyPushOffSolid(drop0.x, drop0.y);
+              f.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round(drop.x), y: Math.round(drop.y), kind: 'dendyCart', taskIdx: displaced });
               log(`😈 ФРЕНДИ вырвал у ${tgt.name} КАРТРИДЖ «${cartTitle}» 📼 и вставил его в ПРИСТАВКУ №${pick + 1} ВМЕСТО старого — тот выпал на землю рядом!`);
             } else {
               log(`😈 ФРЕНДИ вырвал у ${tgt.name} КАРТРИДЖ «${cartTitle}» 📼 и ВСТАВИЛ его в ПРИСТАВКУ №${pick + 1} — задание снова можно играть!`);
@@ -3659,8 +3704,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!((f.strongUntil ?? 0) > nowB)) { log(`🔥 Огонь СЛАБЫЙ — микросхема не загорается! Сначала бросьте в печь КАРТРИДЖ Dendy 📼 (дают за победу над заданием ячейки)`); break; }
       inv.splice(burnIdx, 1);
       f.burned++;
-      f.taskSafeUntil = f.taskSafeUntil ?? {}; // v0.143: щит жара — 6 с после сожжённой микросхемы
-      f.taskSafeUntil[p.id] = nowB + FRENDY_BURN_SHIELD_MS;
+      /* v0.147: щит жара 6 с на сожжённую МИКРОСХЕМУ больше НЕ ВЫДАЁТСЯ — Френди приходит
+         СРАЗУ (расправа ниже); за бросок КАРТРИДЖА щит остался — «кинуть два картриджа
+         и чип» по-прежнему успевается */
       log(`🔥 ${p.name} СЖИГАЕТ микросхему Френди! (${f.burned}/${f.total})`);
       if (f.burned >= f.total) {
         f.won = true;
@@ -3675,7 +3721,48 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         if (frendyRageOn('chip')) {
           f.furyUntil = nowB + frendyFuryMs();
           log(`😈 ФРЕНДИ В ЯРОСТИ на ${Math.round(frendyFuryMs() / 60000)} минуты — гонится за целью НЕ ОСТАНАВЛИВАЯСЬ! Осталось сожжечь: ${f.total - f.burned}.`);
-          if (!f.boss) f.nextSpawnAt = Math.min(f.nextSpawnAt, nowB + 1500); // разбудить сразу — «не спит, когда всё горит»
+        }
+        /* v0.147 МГНОВЕННАЯ РАССТРАВА ЗА СЖИГАНИЕ (заказчик: «если игрок сжигает микросхему в печи,
+           Френди сразу телепортируется к игроку и пытается его телепортировать к игре, в любом
+           режиме — простом или ярости; чтобы игрок сразу не смог все микросхемы сжечь»):
+           Френди МГНОВЕННО появляется на горящем (fx 'catch' — окна печи/рюкзака закрываются сами,
+           как при обычной поимке) и тащит его к СЛУЧАЙНОЙ ПРИСТАВКЕ С КАРТРИДЖЕМ — задание
+           стартует принудительно (тот же механизм, что у поимки: телепорт tp:true);
+           свободной приставки с картриджем нет — злобно БЬЁТ на месте (энергетик держит удар);
+           ярый Френди остаётся охотиться со места расправы, спокойный — растворяется.
+           В любом режиме агрессии — и в обычном, и в ярости. */
+        if (!s.qJobs?.[p.id]) { // жертва УЖЕ в задании — расправы нет (маловероятно: печь не приставка)
+          const ppB = playerPx(s, map, p.id) ?? pp;
+          f.boss = { x: ppB.x, y: ppB.y, targetId: p.id, sinceTs: nowB, lastHitAt: 0, holdMs: 0, fx: 'spawn', fxTs: nowB };
+          f.fx = { kind: 'catch', who: p.id, ts: nowB };
+          f.caught = f.caught ?? {};
+          f.caught[p.id] = (f.caught[p.id] ?? 0) + 1;
+          const consolesBusyR = (ci: number) => Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === ci);
+          const armedR = map.cells.map((c, i) => ({ c, i })).filter(({ i }) => map.cells[i].type === 'task' && frendyCartTaskIdx(s, map, i) !== null && !consolesBusyR(i));
+          s.journeyPos = s.journeyPos ?? {};
+          if (armedR.length) {
+            const pickR = armedR[Math.floor(Math.random() * armedR.length)].i;
+            const rrR = cellRectOf(map, pickR);
+            if (rrR) s.journeyPos[p.id] = { x: Math.round(rrR.x + rrR.w / 2), y: Math.round(rrR.y + rrR.h / 2), ts: nowB, mv: false, tp: true };
+            s.qJobs = s.qJobs ?? {};
+            s.qJobs[p.id] = { cellIdx: pickR, startedAt: nowB };
+            log(`😈 ФРЕНДИ ТУТ ЖЕ ЗДЕСЬ! Сжигать микросхемы безнаказанно не выйдет — схватил ${p.name} и тащит к ПРИСТАВКЕ №${pickR + 1} («${cellTaskOf(s, map, pickR)?.title ?? ''}») — пройди задание, чтобы вырваться!`);
+          } else {
+            const dmgR = frendyParams(f).dmg;
+            const energR = (f.energeticUntil?.[p.id] ?? 0) > nowB;
+            if (energR) log(`😈 ФРЕНДИ ТУТ ЖЕ ЗДЕСЬ! Свободной приставки с картриджем нет, он бьёт ${p.name}… но ЭНЕРГЕТИК держит удар — БЕЗ УРОНА!`);
+            else {
+              p.hp = Math.max(0, (p.hp ?? RUBG_HP_MAX) - dmgR);
+              log(`😈 ФРЕНДИ ТУТ ЖЕ ЗДЕСЬ! Свободной приставки с картриджем нет — он злобно бьёт ${p.name}: −${dmgR}% HP`);
+            }
+            checkElim();
+          }
+          if ((f.furyUntil ?? 0) > nowB || map.frendyAggr === 'rage') {
+            if (f.boss) { f.boss.fx = 'attack'; f.boss.fxTs = nowB; } // ярый остаётся охотиться с места расправы
+          } else {
+            f.boss = null;
+            f.nextSpawnAt = nowB + frendyRespawnMs(f);
+          }
         }
       }
       break;
@@ -3785,7 +3872,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (ii < 0) break;
       const [it] = inv.splice(ii, 1);
       const pp = s.journeyPos?.[p.id];
-      const spot = pp ? { x: pp.x + (Math.random() * 44 - 22), y: pp.y + (Math.random() * 44 - 22) } : (frendyFreeSpot([]) ?? { x: 100, y: 100 });
+      /* v0.147: выброс за окно не должен класть предмет на приставку/печь */
+      const spot = pp ? frendyPushOffSolid(pp.x + (Math.random() * 44 - 22), pp.y + (Math.random() * 44 - 22)) : (frendyFreeSpot([]) ?? { x: 100, y: 100 });
       s.frendy.chips.push({ id: 'fc' + Math.random().toString(36).slice(2, 9), x: Math.round(Math.max(12, spot.x)), y: Math.round(Math.max(12, spot.y)), kind: it.kind, taskIdx: it.taskIdx });
       log(`✋ ${p.name} выбросил «${RUBG_ITEMS[it.kind].name}» ${RUBG_ITEMS[it.kind].icon} — лежит на земле, подберёт любой`);
       break;
@@ -3887,11 +3975,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         }
         if (a.win) {
           /* v0.146: награда за победу — ИНОГДА ЭНЕРГЕТИК (заказчик): 15% энергетик (иммунитет
-             к УДАРАМ Френди 3 мин), иначе как было — аптечка/кофе */
+             к УДАРАМ Френди 20 с — v0.147), иначе как было — аптечка/кофе */
           const roll = Math.random();
           const kind: RubgItemKind = roll < 0.15 ? 'energetic' : roll < 0.6 ? 'medkit' : 'coffee';
           rubgGiveItem(p, kind);
-          log(`🏆 ${p.name} ПРОШЁЛ задание${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : ''}: награда ${RUBG_ITEMS[kind].icon} ${RUBG_ITEMS[kind].name}${kind === 'coffee' ? ' — иммунитет к ПОИМКЕ Френди на 5 минут (активируй в инвентаре!)' : kind === 'energetic' ? ' — иммунитет к УДАРАМ Френди на 3 минуты (активируй в инвентаре!)' : ' — лечит +25% HP'}`);
+          log(`🏆 ${p.name} ПРОШЁЛ задание${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : ''}: награда ${RUBG_ITEMS[kind].icon} ${RUBG_ITEMS[kind].name}${kind === 'coffee' ? ' — иммунитет к ПОИМКЕ Френди на 5 минут (активируй в инвентаре!)' : kind === 'energetic' ? ' — иммунитет к УДАРАМ Френди на 20 секунд (v0.147, активируй в инвентаре!)' : ' — лечит +25% HP'}`);
           /* v0.144: ПРИСТАВКА ПОБЕЖДЕНА — вставленный в неё КАРТРИДЖ ПЕРЕХОДИТ В РЮКЗАК
              победителя (его и жгут в печи, либо вставляют в другую пустую приставку);
              приставка ПУСТЕЕТ. Ячейки больше не ломаются — «сломанных ячеек» нет. */

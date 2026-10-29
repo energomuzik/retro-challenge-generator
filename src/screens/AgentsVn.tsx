@@ -31,9 +31,11 @@ export function VnText({ text, speed = 28, className }: { text: string; speed?: 
    Портреты: СКАЛЛЕР слева, АЛЬДЕР справа (как заказано); реплика печатается
    «машинкой», озвучка (flac заказчика) играет у каждого локально при смене реплики.
    Листает ТОЛЬКО хост (его фишка — Скаллер): кнопка «Далее» / клик по экрану /
-   E, Space, Enter; «Пропустить» — сразу финал.
+   E, Space, Enter.
    v0.135: ДЖОЙСТИК — следующая реплика по лицевой кнопке (A/Xbox = крест/PS и любые
-   лицевые A/B/X/Y, плюс назначенные под A/B в раскладках) — край-триггер, как у печи. */
+   лицевые A/B/X/Y, плюс назначенные под A/B в раскладках) — край-триггер, как у печи.
+   v0.147: КНОПКА «ПРОПУСТИТЬ ✕» УДАЛЕНА ПО ЗАКАЗУ — разговор Салли и Молдера смотрится
+   от начала до конца; листается только по одной реплике. */
 export function AgentsVn({ idx, isHost, onNext }: { idx: number; isHost: boolean; onNext: (all?: boolean) => void }) {
   const safeIdx = Math.max(0, Math.min(idx, EPI_SCRIPT.length - 1));
   const ln: EpiLine = EPI_SCRIPT[safeIdx];
@@ -145,13 +147,7 @@ export function AgentsVn({ idx, isHost, onNext }: { idx: number; isHost: boolean
         <div className="flex items-center justify-between mt-2">
           <span className="font-pixel text-[9px] text-faint uppercase tracking-wider">Тайные материалы · реплика {safeIdx + 1} из {EPI_SCRIPT.length}</span>
           {isHost ? (
-            <span className="flex items-center gap-3">
-              <button
-                onClick={(e) => { e.stopPropagation(); onNext(true); }}
-                className="text-[10px] font-display uppercase px-2 py-1 border-2 border-edge text-faint hover:text-paper hover:border-teal cursor-pointer"
-              >Пропустить ✕</button>
-              <span className="text-gold text-sm blink-hard">▼ Далее: E · A · клик</span>
-            </span>
+            <span className="text-gold text-sm blink-hard">▼ Далее: E · A · клик</span>
           ) : (
             <span className="font-pixel text-[9px] text-faint uppercase">разговор ведёт хост…</span>
           )}

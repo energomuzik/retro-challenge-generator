@@ -16,7 +16,7 @@ import {
   PAD_ACTIONS, SEGA_ACTIONS,
   NES_TO_RETRO, SEGA_TO_RETRO,
   FAMILY_ACTIONS, FAMILY_KEYS_FIELD, FAMILY_KEY_KIND, FAMILY_RETRO, FAMILY_HINT,
-  padFamilyOf, consoleLabel, consoleAspect,
+  padFamilyOf, consoleLabel, consoleAspect, PICKUP_KEY_DEFAULT, PICKUP_PAD_DEFAULT,
 } from '../input';
 import { saveSessionSnapshot } from './Lobby';
 import QuizOverlay from './QuizOverlay';
@@ -384,6 +384,9 @@ export default function GameScreen() {
     window.addEventListener(PREFS_EVENT, bump);
     return () => window.removeEventListener(PREFS_EVENT, bump);
   }, []);
+  /* v0.147: БУКВА КЛАВИШИ ПОДЪЁМА для HUD-подсказки (по умолчанию F) — живая:
+     меняется сразу после переназначения в «Управлении» (PREFS_EVENT → prefsTick) */
+  const pickupKeyLbl = useMemo(() => (loadEmuPrefs().pickupKey ?? PICKUP_KEY_DEFAULT).toUpperCase(), [prefsTick]);
   const remapSpec = useMemo(() => {
     const p = loadEmuPrefs();
     const spec: { idx: number; key: string }[] = [];
@@ -801,6 +804,8 @@ export default function GameScreen() {
     }
     return best;
   }, [isFrendy, s, mePlayer, myJourneyPos?.x, myJourneyPos?.y]);
+  const nearItemRef = useRef(nearItem); // v0.147: живое «предмет рядом» для интервалов печи/приставки (не пересоздавать их на каждый чих)
+  nearItemRef.current = nearItem;
   /* v0.132 ЭПИЛОГ: АЛЬДЕР рядом со СКАЛЛЕР (E — «поговорить») */
   const epiNearAlder = useMemo(() => {
     if (!epiMode || !epi || epi.stage === 'talk' || epi.stage === 'done' || !map || !myJourneyPos) return false;
@@ -1008,13 +1013,14 @@ export default function GameScreen() {
     const init = new Set<number>();
     collectPadButtons(init);
     furnPadPrevRef.current = init; // уже зажатое в момент подхода — не открывает
+    const pickPad = loadEmuPrefs().pickupPad ?? PICKUP_PAD_DEFAULT; // v0.147: X/□ у печи занят подъёмом, только если предмет рядом
     const iv = window.setInterval(() => {
       const cur = new Set<number>();
       collectPadButtons(cur);
       let fresh = false;
       for (const b of cur) if (!furnPadPrevRef.current.has(b)) { fresh = true; break; }
       furnPadPrevRef.current = cur;
-      if (fresh) { sfx.click(); setFurnOpen(true); }
+      if (fresh && !(nearItemRef.current && cur.has(pickPad))) { sfx.click(); setFurnOpen(true); }
     }, 66);
     return () => window.clearInterval(iv);
   }, [isFrendy, !!nearFurnace, furnOpen, s?.phase]);
@@ -1026,13 +1032,14 @@ export default function GameScreen() {
     const init = new Set<number>();
     collectPadButtons(init);
     consPadPrevRef.current = init; // уже зажатое в момент подхода — не открывает
+    const pickPad = loadEmuPrefs().pickupPad ?? PICKUP_PAD_DEFAULT; // v0.147: X/□ у приставки занят подъёмом, только если предмет рядом
     const iv = window.setInterval(() => {
       const cur = new Set<number>();
       collectPadButtons(cur);
       let fresh = false;
       for (const b of cur) if (!consPadPrevRef.current.has(b)) { fresh = true; break; }
       consPadPrevRef.current = cur;
-      if (fresh) { sfx.click(); setConsoleOpen(true); }
+      if (fresh && !(nearItemRef.current && cur.has(pickPad))) { sfx.click(); setConsoleOpen(true); }
     }, 66);
     return () => window.clearInterval(iv);
   }, [isFrendy, !!nearConsole, consoleOpen, s?.phase]);
@@ -1057,9 +1064,12 @@ export default function GameScreen() {
   }, [epiMode, !!epiNearAlder, epi?.stage]);
 
   /* ---------- v0.141 FRENDY: ПОДНЯТЬ ПРЕДМЕТ (Diablo-рюкзак) ----------
-     E (настраивается в «Управлении» — «Поднять предмет»), кнопка джойстика (по умолчанию L1/LB)
-     или клик по предмету на карте. В рюкзаке нет места — движок откажет: предмет ОСТАНЕТСЯ
-     на земле, клиент покажет «отскок» и подсказку (как в Diablo 1). */
+     v0.147: клавиша подъёма — F (по умолчанию; была E), кнопка джойстика — X/□ (W3C 2, была L1/LB);
+     обе переназначаются в «Управлении» — «Поднять предмет». ГЛАВНОЕ: раньше обработчики ВЫХОДИЛИ
+     при nearFurnace/nearConsole/nearNpc («у интерактива своя клавиша») — потому у приставки предмет
+     ВСЕГДА проигрывал; теперь подъём живёт на СВОЕЙ клавише и работает даже рядом с печью/
+     приставкой/NPC/Альдером, а их окна по-прежнему открываются E/лицевыми кнопками/кликом.
+     В рюкзаке нет места — движок откажет: предмет ОСТАНЕТСЯ на земле, клиент покажет «отскок». */
   const [pickupBounce, setPickupBounce] = useState<{ key: number; kind: RubgItemKind } | null>(null);
   /* v0.144 FRENDY: арт/название картриджа из рюкзака (для окон печи и приставки).
      v0.145: + РЕГИОН картриджа — берётся из ЗАДАНИЯ (TaskDef.cartRegion, тот же, что
@@ -1124,13 +1134,13 @@ export default function GameScreen() {
     const t = window.setTimeout(() => setPickupBounce(null), 950);
     return () => window.clearTimeout(t);
   }, [pickupBounce]);
-  /* клавиша подъёма (по умолчанию E; у диалога/печи/Альдера приоритет — как и было) */
+  /* клавиша подъёма (по умолчанию F — v0.147; у печи/приставки НЕ гасим: своя клавиша,
+     конфликтов с E больше нет) */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!isFrendy || !nearItem || s?.phase !== 'playing') return;
-      if (nearNpc || nearFurnace || nearConsole || epiNearAlder) return; // у интерактива — его клавиша
       const prefs = loadEmuPrefs();
-      if (e.key.toLowerCase() !== (prefs.pickupKey ?? 'e').toLowerCase()) return;
+      if (e.key.toLowerCase() !== (prefs.pickupKey ?? PICKUP_KEY_DEFAULT).toLowerCase()) return;
       const tgt = e.target as HTMLElement | null;
       if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
       e.preventDefault();
@@ -1138,24 +1148,24 @@ export default function GameScreen() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isFrendy, !!nearItem, s?.phase, !!nearNpc, !!nearFurnace, !!nearConsole, epiNearAlder]);
-  /* кнопка джойстика подъёма (по умолчанию L1/LB = W3C 4) — край-триггер */
+  }, [isFrendy, !!nearItem, s?.phase]);
+  /* кнопка джойстика подъёма (по умолчанию X/□ = W3C 2 — v0.147; край-триггер).
+     v0.147: гард «не у печи/приставки» снят — подъём работает и рядом с ними */
   const pickPadPrevRef = useRef(false);
   useEffect(() => {
     if (!isFrendy || !nearItem || s?.phase !== 'playing') return;
-    if (nearNpc || nearFurnace || nearConsole || epiNearAlder) return;
     const init = new Set<number>();
     collectPadButtons(init);
-    pickPadPrevRef.current = init.has(loadEmuPrefs().pickupPad ?? 4);
+    pickPadPrevRef.current = init.has(loadEmuPrefs().pickupPad ?? PICKUP_PAD_DEFAULT);
     const iv = window.setInterval(() => {
       const cur = new Set<number>();
       collectPadButtons(cur);
-      const now = cur.has(loadEmuPrefs().pickupPad ?? 4);
+      const now = cur.has(loadEmuPrefs().pickupPad ?? PICKUP_PAD_DEFAULT);
       if (now && !pickPadPrevRef.current) tryPickupRef.current();
       pickPadPrevRef.current = now;
     }, 66);
     return () => window.clearInterval(iv);
-  }, [isFrendy, !!nearItem, s?.phase, !!nearNpc, !!nearFurnace, !!nearConsole, epiNearAlder]);
+  }, [isFrendy, !!nearItem, s?.phase]);
 
   /* ---------- v0.141: КЛАВИША «ИНВЕНТАРЬ» (по умолчанию Tab) и кнопка джойстика (Y/треугольник) ----------
      Tab открывает/закрывает ИНВЕНТАРЬ; когда открыто ОКНО ПЕЧИ — Tab (и джойстик) закрывают его. */
@@ -4453,7 +4463,7 @@ export default function GameScreen() {
         {isFrendy && nearItem && !furnOpen && !invOpen && s?.phase === 'playing' && !dlgNpcId && (
           <div className="absolute bottom-28 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
             <span className="hud-chip pixel-corners px-3 py-1.5 font-display text-[11px] text-[#d8b95c] bg-[rgba(7,9,18,0.9)] border-2 border-[#a0843c]/50">
-              ✋ ПОДНЯТЬ {nearItem.kind === 'frendyChip' ? <>МИКРОСХЕМУ <ChipArt px={12} className="inline-block align-[-2px]" /></> : nearItem.kind === 'dendyCart' ? '📼 КАРТРИДЖ' : `«${RUBG_ITEMS[nearItem.kind].name}»`} — <b className="text-paper">E</b> · джойстик · клик
+              ✋ ПОДНЯТЬ {nearItem.kind === 'frendyChip' ? <>МИКРОСХЕМУ <ChipArt px={12} className="inline-block align-[-2px]" /></> : nearItem.kind === 'dendyCart' ? '📼 КАРТРИДЖ' : `«${RUBG_ITEMS[nearItem.kind].name}»`} — <b className="text-paper">{pickupKeyLbl}</b> · джойстик · клик{/* v0.147: клавиша живая — была захардкожена E, хотя подъём перенастраивается */}
             </span>
           </div>
         )}
@@ -4769,10 +4779,11 @@ export default function GameScreen() {
           <div className="grid md:grid-cols-[220px_1fr] gap-4">
             <div className="space-y-3">
               <img
-                src={taskImg ?? cartridgeArt(task.title, romName, ch.cellIdx)}
+                src={taskImg ?? (taskRom ? cartImgSrcOf(taskRom) : null) ?? cartridgeArt(task.title, romName, ch.cellIdx)}
                 alt={task.title}
                 className="w-full border-[3px] border-edge object-cover"
               />
+              {/* v0.147: цепочка картинки — СПЕЦ.картинка из редактора заданий → ОБЛОЖКА рома → рисованая заглушка (заказчик: «если к картриджу приложена обложка — пусть отображается она; если спец.картинка сохранена — приоритет к ней»; раньше обложка рома тут вообще не показывалась) */}
               <div className="min-w-0">
                 <TaskDesc text={task.desc} label="Задание" />
               </div>
@@ -5427,10 +5438,11 @@ export default function GameScreen() {
                   <div className="grid md:grid-cols-[220px_1fr] gap-4 mt-2">
                     <div className="space-y-3 min-w-0">
                       <img
-                        src={qTaskImg ?? cartridgeArt(myQTask.title, qName, myQJob.cellIdx)}
+                        src={qTaskImg ?? (qRomDef ? cartImgSrcOf(qRomDef) : null) ?? cartridgeArt(myQTask.title, qName, myQJob.cellIdx)}
                         alt={myQTask.title}
                         className="w-full border-[3px] border-edge object-cover"
                       />
+                      {/* v0.147: та же цепочка — спец.картинка → обложка рома → заглушка */}
                       {myQTask.desc && <TaskDesc text={myQTask.desc} label="Задание" />}
                       <div className="tick-label text-faint">Ром: {qName} · {consoleLabel(qRomDef?.ext)}</div>
                       {/* «Глянуть карту мира» — снова доступна в режиме комнат: неоткрытое скрывает туман */}
@@ -5619,10 +5631,11 @@ export default function GameScreen() {
                   {/* левая колонка: картинка, задание, кнопки */}
                   <div className="space-y-3 min-w-0">
                     <img
-                      src={rTaskImg ?? cartridgeArt(myRubgTask.title, rName, myJob.cellIdx)}
+                      src={rTaskImg ?? (rRomDef ? cartImgSrcOf(rRomDef) : null) ?? cartridgeArt(myRubgTask.title, rName, myJob.cellIdx)}
                       alt={myRubgTask.title}
                       className="w-full border-[3px] border-edge object-cover"
                     />
+                    {/* v0.147: та же цепочка — спец.картинка → обложка рома → заглушка */}
                     {myRubgTask.desc && <TaskDesc text={myRubgTask.desc} label="Задание" />}
                     <div className="tick-label text-faint">Ром: {rName} · {consoleLabel(rRomDef?.ext)}</div>
                     {/* «Глянуть карту мира» — снова доступна в режиме комнат: неоткрытое скрывает туман */}

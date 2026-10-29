@@ -375,11 +375,14 @@ const PREFS_KEY = 'retropolia-emu-prefs';
 export const PREFS_EVENT = 'retropolia-prefs-changed';
 /* v0.107: клавиша «Быстрой загрузки» по умолчанию — F6 (вне раскладок всех консолей) */
 export const QUICK_KEY_DEFAULT = 'f6';
-/* v0.141: глобальные кнопки на поле — инвентарь (Tab / Y-треугольник) и подъём предмета (E / L1-LB) */
+/* v0.141: глобальные кнопки на поле — инвентарь (Tab / Y-треугольник) и подъём предмета (F / X-□ с v0.147) */
 export const INV_KEY_DEFAULT = 'tab';
 export const INV_PAD_DEFAULT = 3;
-export const PICKUP_KEY_DEFAULT = 'e';
-export const PICKUP_PAD_DEFAULT = 4;
+/* v0.147: подъём предмета — ОТДЕЛЬНАЯ кнопка F (была E — конфликтовала с открытием
+   печи/приставки: «если рядом и приставка, и предмет — выбирается всегда приставка»);
+   кнопка джойстика — W3C 2 (X/□ Xbox/PS, была 4 = L1/LB). Переназначается в «Управлении». */
+export const PICKUP_KEY_DEFAULT = 'f';
+export const PICKUP_PAD_DEFAULT = 2;
 
 /* Самовосстановление раскладки: ОДИН физический индекс = ОДНО действие.
    Если в сохранённых настройках несколько действий висят на одной кнопке
@@ -412,7 +415,7 @@ export function loadEmuPrefs(): EmuPrefs {
     quickPad: undefined,
     invKey: INV_KEY_DEFAULT, // v0.141: Tab — открыть/закрыть инвентарь
     invPad: INV_PAD_DEFAULT,
-    pickupKey: PICKUP_KEY_DEFAULT, // v0.141: E — поднять предмет (FRENDY)
+    pickupKey: PICKUP_KEY_DEFAULT, // v0.147: F — поднять предмет (FRENDY; была E — конфликт с печью/приставкой)
     pickupPad: PICKUP_PAD_DEFAULT,
   };
   try {
