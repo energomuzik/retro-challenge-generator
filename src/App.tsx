@@ -107,6 +107,26 @@ export default function App() {
     return () => document.removeEventListener('contextmenu', off);
   }, []);
 
+  /* v0.156: НЕ ПЕРВИЧНЫЕ КНОПКИ МЫШИ НЕ АКТИВИРУЮТ НИЧЕГО (заказчик: «в редакторе заданий,
+     если крутить роликом мыши, открывается окошко с загрузкой картинки; возможно, это ошибка
+     управления джойстиком»). РОЛИК — это СРЕДНЯЯ кнопка: его нажатие/дребезг при прокрутке шлёт
+     click с button=1, и браузеры, активирующие <label> любой кнопкой, форвардят его на спрятанный
+     input[type=file] внутри label — выскакивает окно выбора картинки. Заслон-перехват на document
+     (capture, ДО React): click ЛЮБОЙ не-левой кнопки (ролик=1, боковые 3/4) гасится целиком —
+     не доходит ни до label, ни до кнопок, ни до React. Левые клики (button=0, включая клавиатурную
+     активацию Enter/Space), auxclick, drag&drop и контекстное меню — работают как раньше.
+     Дубль защиты — кнопки выбора файлов (ImgPickBtn, CoverPickBtn, CoverCropBtn) активируются
+     только e.button === 0. */
+  useEffect(() => {
+    const on = (e: MouseEvent) => {
+      if (e.button === 0) return; // левая кнопка и клавиатурная активация — как раньше
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    document.addEventListener('click', on, true);
+    return () => document.removeEventListener('click', on, true);
+  }, []);
+
   useEffect(() => {
     const on = (e: GamepadEvent) => useApp.getState().toast(`Джойстик подключён: ${e.gamepad.id.slice(0, 40)}`, 'ok');
     const off = () => useApp.getState().toast('Джойстик отключён', 'info');

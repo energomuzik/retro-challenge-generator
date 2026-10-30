@@ -433,7 +433,9 @@ export async function storeRomCover(rom: RomDef, cover: string | null): Promise<
   await idbPut('roms', next.id, next);
 }
 
-/* кнопка 📷 со скрытым input file — загрузить/заменить обложку картриджа */
+/* кнопка 📷 со скрытым input file — загрузить/заменить обложку картриджа.
+   v0.156: активация ТОЛЬКО левым кликом (e.button===0) — нажатие/дребезг РОЛИКА
+   (средняя кнопка) больше не может открыть «выбор файла» ни в каком браузере. */
 export function CoverPickBtn({ onPick, title, className = '' }: { onPick: (file: File) => void; title?: string; className?: string }) {
   const ref = useRef<HTMLInputElement>(null);
   return (
@@ -442,7 +444,8 @@ export function CoverPickBtn({ onPick, title, className = '' }: { onPick: (file:
         type="button"
         className={`cursor-pointer hover:text-gold ${className}`}
         title={title ?? 'Загрузить/заменить обложку картриджа'}
-        onClick={(e) => { e.stopPropagation(); e.preventDefault(); ref.current?.click(); }}
+        onClick={(e) => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); ref.current?.click(); }}
+        onAuxClick={(e) => e.preventDefault()}
       >
         📷
       </button>
@@ -470,7 +473,8 @@ export function CoverCropBtn({ onPick, title, className = '' }: { onPick: (file:
         type="button"
         className={`cursor-pointer hover:text-gold ${className}`}
         title={title ?? '✂ Вырезать картридж из картинки (вырезатель тайлов, как в редакторе карт)'}
-        onClick={(e) => { e.stopPropagation(); e.preventDefault(); ref.current?.click(); }}
+        onClick={(e) => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); ref.current?.click(); }}
+        onAuxClick={(e) => e.preventDefault()}
       >
         ✂
       </button>

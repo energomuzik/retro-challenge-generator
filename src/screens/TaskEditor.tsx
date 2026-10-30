@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useApp } from '../store';
 import { Coin, Field, GhostBtn, Ic, Modal, Panel, PxBtn, Stepper, Toggle } from '../ui';
 import { cellAtPoint, drawBoard, fitView } from '../render';
@@ -44,6 +45,36 @@ const effListFor = (cellType: CellType | undefined) =>
   cellType === 'trap' ? EFFECTS.filter((ef) => !TRAP_NO_EFFECTS.includes(ef.key)) : EFFECTS;
 const effResolve = (cellType: CellType | undefined, cur: EffectType): EffectType =>
   effListFor(cellType).some((ef) => ef.key === cur) ? cur : 'jail';
+
+/* v0.156: КНОПКА «ЗАГРУЗИТЬ КАРТИНКУ» — БЕЗ label-ОБЁРТКИ. Раньше input[type=file] лежал
+   ВНУТРИ <label> — браузер форвардит активацию label на инпут ЛЮБОЙ кнопкой мыши:
+   нажатие/дребезг КОЛЁСИКА (средняя кнопка, button=1) открывал окно выбора картинки
+   (заказчик: «если крутить роликом мыши, открывается окошко с загрузкой картинки»).
+   Кнопка <button type=button> активируется ТОЛЬКО левым кликом, input вынесен наружу;
+   onAuxClick страховка гасит не первичные клики. Глобальный заслон — в App.tsx. */
+function ImgPickBtn({ onFiles, children }: { onFiles: (files: FileList | null) => void; children?: ReactNode }) {
+  const ref = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <button
+        type="button"
+        className="btn-ghost pixel-corners px-3 py-2 text-[11px] uppercase font-display cursor-pointer inline-flex items-center gap-2"
+        onClick={(e) => { if (e.button !== 0) return; sfx.click(); ref.current?.click(); }}
+        onAuxClick={(e) => e.preventDefault()}
+      >
+        {children ?? <>{Ic.upload(13)} Загрузить</>}
+      </button>
+      <input
+        ref={ref}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => { onFiles(e.target.files); e.target.value = ''; }}
+      />
+    </>
+  );
+}
 
 export const effectLabel = (e: CardEffect): string => {
   const meta = EFFECTS.find((x) => x.key === e.type);
@@ -735,7 +766,14 @@ export default function TaskEditor() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex flex-col lg:flex-row">
+      {/* v0.156: НА ТЕЛЕФОНЕ ГЛАВНАЯ ОБЛАСТЬ СТАНОВИТСЯ СТРАНИЦЕЙ (scroll), а не обрезанной колонкой:
+         раньше правая панель (форма задания, ~2600px) не помещалась в высоту экрана, overflow-y-auto
+         у неё ничего не давал (высота = контенту, shrink-0), а окно не скроллилось — кнопка
+         «Сохранить задание» оставалась за нижней границей и задание было НЕ СОХРАНИТЬ (заказчик:
+         «с телефона правая панель застревает внизу и её не промотать вниз»). Теперь контейнер
+         скроллится целиком (панели и канва идут лентой), канва фиксированной высоты 38vh.
+         На компьютере (lg+) раскладка ряд — как была: канва lg:flex-1, панели — свои колонки. */}
+      <div className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-y-auto lg:overflow-visible">
         {/* левая панель ромов — только когда редактируется ячейка-задание */}
         {cell?.type === 'task' && (
           <div className="w-full lg:w-[264px] shrink-0 border-t-[3px] lg:border-t-0 lg:border-r-[3px] border-edge bg-[rgba(11,14,28,0.85)] overflow-y-auto p-3 max-h-[38vh] lg:max-h-none">
@@ -852,7 +890,7 @@ export default function TaskEditor() {
             )}
           </div>
         )}
-        <div className="flex-1 min-w-0 relative">
+        <div className="h-[38vh] shrink-0 lg:h-auto lg:flex-1 min-w-0 relative">
           <canvas
             ref={canvasRef}
             className="w-full h-full block select-none"
@@ -962,10 +1000,7 @@ export default function TaskEditor() {
                   </Field>
                   <Field label="Картинка ячейки (видно на карте)">
                     <div className="flex items-center gap-2">
-                      <label className="btn-ghost pixel-corners px-3 py-2 text-[11px] uppercase font-display cursor-pointer inline-flex items-center gap-2">
-                        {Ic.upload(13)} Загрузить
-                        <input type="file" accept="image/*" className="hidden" onChange={(e) => { void onImg(setVImg)(e.target.files); e.target.value = ''; }} />
-                      </label>
+                      <ImgPickBtn onFiles={(files) => void onImg(setVImg)(files)} />
                       {vImg && <img src={vImg} alt="" className="h-10 w-10 object-cover border-2 border-edge" />}
                       {vImg && <GhostBtn small onClick={() => setVImg('')}>{Ic.trash(12)}</GhostBtn>}
                     </div>
@@ -1078,10 +1113,7 @@ export default function TaskEditor() {
                     </Field>
                     <Field label="Картинка ячейки (необязательно)">
                       <div className="flex items-center gap-2">
-                        <label className="btn-ghost pixel-corners px-3 py-2 text-[11px] uppercase font-display cursor-pointer inline-flex items-center gap-2">
-                          {Ic.upload(13)} Загрузить
-                          <input type="file" accept="image/*" className="hidden" onChange={(e) => { void onImg(setFImg)(e.target.files); e.target.value = ''; }} />
-                        </label>
+                        <ImgPickBtn onFiles={(files) => void onImg(setFImg)(files)} />
                         {fImg && <img src={fImg} alt="" className="h-10 w-16 object-cover border-2 border-edge" />}
                       </div>
                     </Field>
@@ -1358,10 +1390,7 @@ export default function TaskEditor() {
                       </Field>
                       <Field label="Картинка карточки (необязательно)">
                         <div className="flex items-center gap-2">
-                          <label className="btn-ghost pixel-corners px-3 py-2 text-[11px] uppercase font-display cursor-pointer inline-flex items-center gap-2">
-                            {Ic.upload(13)} Загрузить
-                            <input type="file" accept="image/*" className="hidden" onChange={(e) => { void onImg(setCImg)(e.target.files); e.target.value = ''; }} />
-                          </label>
+                          <ImgPickBtn onFiles={(files) => void onImg(setCImg)(files)} />
                           {cImg && <img src={cImg} alt="" className="h-10 w-14 object-cover border-2 border-edge" />}
                         </div>
                       </Field>
