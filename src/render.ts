@@ -473,6 +473,11 @@ export interface BoardDrawOpts {
      кроме одной (индекс ячейки печи). Стрелки/номера/флаг старта/боссы/NPC тоже скрыты.
      Ячейки в данных остаются (логика не тронута) — их просто не видно игрокам. */
   keepCellOnly?: number | null;
+  /* v0.154 FRENDY: НЕ РИСОВАТЬ стрелки-маршруты между ячейками (золотую дорогу, белый
+     пунктир порядка, коралловый «ПЕРЕХОД») — в игре игрок ходит свободно, мимо ячеек,
+     и линии только путают. Ставится из GameScreen (isFrendy); в редакторе карт план
+     со стрелками остаётся как был. */
+  noCellLinks?: boolean;
 }
 
 function px(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, pattern: string[], color: string) {
@@ -622,11 +627,16 @@ const drawFrendyConsole = (
 };
 
 /* v0.123 FRENDY: МИКРОСХЕМА на поле — зелёная плата с ножками и мигающим светодиодом.
-   Чужой предмет (kind) — рисуем эмодзи вещи. */
+   Чужой предмет (kind, кроме 'frendyChip' — v0.154) — рисуем эмодзи вещи. */
 const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, time: number, kind?: string, cartImg?: string | null) => {
   ctx.save();
   ctx.translate(cx, cy);
-  if (kind) {
+  /* v0.154: выброшенная МИКРОСХЕМА (kind === 'frendyChip') рисуется ТОЙ ЖЕ ЗЕЛЁНОЙ
+     ПИКСЕЛЬНОЙ МИКРОСХЕМОЙ, что и «родные» чипы на карте и что в рюкзаке (ChipArt):
+     раньше выброшенная рисовалась иконкой каталога 🔩 — она похожа на КОСТЬ и смотрелась
+     тускло-мелкой («прозрачной»). Остальные выброшенные предметы — та же иконка каталога,
+     что и в рюкзаке, но КРУПНЕЕ (14px → 20px): на полу читается чётко, не «прозрачно». */
+  if (kind && kind !== 'frendyChip') {
     /* v0.143: выброшенная вещь — иконка БЕЗ ОБОДКА (заказчик): мягкая тень на земле +
        значок ИЗ ТОГО ЖЕ КАТАЛОГА (RUBG_ITEMS.icon), что и в инвентаре — картинки
        на полу и в рюкзаке теперь совпадают один в один */
@@ -646,7 +656,7 @@ const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, t
         return;
       }
     }
-    ctx.font = '14px serif';
+    ctx.font = '20px serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(RUBG_ITEMS[kind as keyof typeof RUBG_ITEMS]?.icon ?? '📦', 0, 1);
@@ -1143,8 +1153,10 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   const N = map.cells.length;
   /* наконечники явных стрелок, рисуемые ПОВЕРХ ячеек отдельным проходом (заполняется ниже) */
   const topHeads: { x: number; y: number; ux: number; uy: number; hl: number; hw: number; col: string }[] = [];
-  /* v0.134 ЭПИЛОГ: keepCellOnly — стрелки между ячейками не рисуем (место преступления очищено) */
-  if (N > 1 && o.keepCellOnly == null) {
+  /* v0.134 ЭПИЛОГ: keepCellOnly — стрелки между ячейками не рисуем (место преступления очищено)
+     v0.154 FRENDY: noCellLinks — то же только для стрелок: во время игры линии между
+     приставками не нужны (игрок не ходит по ячейкам) — убраны по заказу */
+  if (N > 1 && o.keepCellOnly == null && !o.noCellLinks) {
     // Стрелки: ЗОЛОТАЯ — явная «дорога» (у безномерной — куда шагает фишка, у
     // пронумерованной — прыжок при остановке); белый ПУНКТИР — авто-порядок у
     // пронумерованных; КОРАЛЛОВАЯ с подписью «ПЕРЕХОД» — вторая стрелка-прыжок.

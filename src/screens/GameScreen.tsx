@@ -2063,7 +2063,11 @@ export default function GameScreen() {
               const jqRun = me && sess.qJobs ? sess.qJobs[me] : undefined;
               const rjRun = me && sess.rubg?.jobs ? sess.rubg.jobs[me] : undefined;
               const taskWinOpen = (jqRun !== undefined && !!cellTaskOf(sess, m, jqRun.cellIdx)) || (rjRun !== undefined && !!cellTaskOf(sess, m, rjRun.cellIdx));
-              const epiWalkUi = sess.phase === 'epilogue' && isFrendy && me === hostId && epi?.stage !== 'talk'; // v0.132: в эпилоге хост ведёт Скаллер (в разговоре стоит)
+              /* v0.154: стадию эпилога читаем ИЗ ЖИВОЙ сессии (sess.frendy.epi) — раньше здесь
+                 была epi из замыкания rAF-цикла, а цикл не пересоздаётся при смене стадии:
+                 «в разговоре стоим» никогда не срабатывало, и хост водил Салли прямо
+                 посреди диалога с Молдером. */
+              const epiWalkUi = sess.phase === 'epilogue' && isFrendy && me === hostId && sess.frendy?.epi?.stage !== 'talk'; // v0.132: в эпилоге хост ведёт Скаллер (в разговоре стоит)
               const canWalk = (sess.phase === 'playing' || epiWalkUi) && !sess.moving && !sess.challenge && !sess.pendingCard && !sess.quiz && !sess.awaitPost && !fxList.some((f) => f.gate) && !(sess.qCards && me && sess.qCards[me]) && !taskWinOpen && !bossDragRef.current && !cutActiveRef.current; // v0.54: во время оттаскивания боссом ходить нельзя · v0.56: в кат-сцене мир замер · v0.59: при выполнении задания фишка стоит · v0.65: при несении тоже · v0.132: в эпилоге ходит хост (Скаллер)
               /* v0.65: КИНО-ПОЛОСЫ ЗАХВАТА — УБИРАЮТСЯ, когда открылось задание босса
                  (управление вернули) или по страховочному таймеру (задание не начнётся) */
@@ -2798,6 +2802,10 @@ export default function GameScreen() {
           chipBounce: chipBounceRef.current, // v0.148: отскок «не влез в рюкзак» — прыгает сам предмет на земле
           /* v0.144 FRENDY: ПРИСТАВКИ вместо ячеек + арты картриджей */
           frendyMode: isFrendy,
+          /* v0.154 FRENDY: стрелки-маршруты между ячейками в игре НЕ РИСУЮТСЯ — игрок
+             ходит свободно (это не ретрополия), линии между приставками только путают.
+             В редакторе карт план со стрелками остаётся (там они нужны автору). */
+          noCellLinks: isFrendy,
           frendyConsoles: sess.frendyConsoles,
           taskCartImgs: frendyTaskArtRef.current.imgs,
           taskTitles: frendyTaskArtRef.current.titles,
