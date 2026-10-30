@@ -3655,16 +3655,21 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       s.phase = 'epilogue';
       /* v0.151: МЕСТО ПРЕСТУПЛЕНИЯ В РЕАЛЬНОМ МИРЕ — агенты пришли не в пиксельный кошмар.
          Если у панели (карты-плитки) С ПЕЧЬЮ загружена КАРТА B — она включается сама;
-         если загружена КАРТА B ВСЕЙ КАРТЫ — тоже. Во всех картах FRENDY, без триггеров. */
+         если загружена КАРТА B ВСЕЙ КАРТЫ — тоже. Во всех картах FRENDY, без триггеров.
+         v0.153 ФИКС: КАРТА B для СТЕН включалась только если загружен фон B ВСЕЙ карты
+         (map.bgB) — если автор загрузил КАРТУ B только ПАНЕЛИ с печью (главный сценарий
+         FRENDY), стены оставались от карты A, а стены B не включались. Теперь вариант B
+         для стен включается и когда у карты есть СВОИ СТЕНЫ B (map.wallsB): момент
+         «Салли и Молдер на месте» — это и есть событие «смена карты» во FRENDY. */
       const fiB = map.cells.findIndex((c) => c.type === 'furnace');
       if (fiB >= 0) {
         const frB = cellRectOf(map, fiB);
         if (frB) {
           let bgChanged = false;
-          if (map.bgB) { s.bgB = s.bgB ?? {}; s.bgB.map = true; bgChanged = true; }
+          if (map.bgB || (map.wallsB && map.wallsB.length > 0)) { s.bgB = s.bgB ?? {}; s.bgB.map = true; bgChanged = true; }
           const tidB = bgTileAt(map, frB.x + frB.w / 2, frB.y + frB.h / 2);
           if (tidB) { s.bgB = s.bgB ?? {}; s.bgB.tiles = { ...(s.bgB.tiles ?? {}), [tidB]: true }; bgChanged = true; }
-          if (bgChanged) log('🌇 САЛЛИ И МОЛДЕР НА МЕСТЕ: пиксельный кошмар сменился КАРТОЙ B — «реальные развалины» в стиле сериала.');
+          if (bgChanged) log(`🌇 САЛЛИ И МОЛДЕР НА МЕСТЕ: пиксельный кошмар сменился КАРТОЙ B — «реальные развалины» в стиле сериала.${map.wallsB?.length ? ' Стены перестроены по КАРТЕ B.' : ''}`);
         }
       }
       log('🚪 ВСЕ ИГРОКИ ВЫБРАЛИСЬ ИЗ ЗАПАДНИ — фишки покинули проклятую карту…');

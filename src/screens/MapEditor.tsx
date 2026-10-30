@@ -2614,7 +2614,11 @@ export default function MapEditor() {
       // клик по существующей стене — выбрать и тянуть; иначе рисуем НОВУЮ протягиванием
       const wi = wallAtPoint(m, w.x, w.y);
       if (wi >= 0) {
-        const wl = (m.walls ?? [])[wi];
+        /* v0.153 ФИКС «ОТСКОКА» СТЕНЫ: wallAtPoint ищет в списке ВЫБРАННОГО варианта
+           (КАРТА B — map.wallsB), а точку захвата раньше брали ВСЕГДА из m.walls (КАРТА A).
+           В варианте B смещение считалось от ЧУЖОЙ стены (или undefined → NaN), и стена B
+           при первом же движении мыши «отскакивала» не туда, где курсор. */
+        const wl = wallListOf(m)[wi];
         objDragRef.current = { kind: 'wall', idx: wi, dx: w.x - wl.x, dy: w.y - wl.y, moved: false };
         setSelWall(wi);
         setSelCell(null);
@@ -2753,7 +2757,9 @@ export default function MapEditor() {
           updCut(od.idx, { pts: cut.pts.map((pp, i) => (i === od.ptIdx ? { x: Math.round(w.x), y: Math.round(w.y) } : pp)) });
         }
       }
-      else if (od.kind === 'wall') updWall(od.idx, { x: Math.round(w.x - od.dx), y: Math.round(w.y - od.dy) }); // стены — без привязки к сетке
+      /* v0.153: страховка — координата с NaN (устаревший захват после смены варианта/
+         удаления стены) стену НЕ двигает, иначе она «улетает» с карты навсегда */
+      else if (od.kind === 'wall') { const nwx = Math.round(w.x - od.dx), nwy = Math.round(w.y - od.dy); if (Number.isFinite(nwx) && Number.isFinite(nwy)) updWall(od.idx, { x: nwx, y: nwy }); } // стены — без привязки к сетке
       else if (od.kind === 'portal') updPortal(od.idx, { x: Math.round(w.x - od.dx), y: Math.round(w.y - od.dy) }); // порталы — без привязки к сетке (точка перехода остаётся на месте)
       else updStamp(od.idx, { x: Math.round(p.x), y: Math.round(p.y) });
       return;
@@ -4497,7 +4503,7 @@ export default function MapEditor() {
                     </div>
                     <p className="text-[10px] text-faint leading-tight">
                       {bgVar === 'B'
-                        ? <><span className="text-magma">РЕДАКТИРУЮТСЯ СТЕНЫ КАРТЫ B</span> (на канве — оранжевые): в игре работают только после СОБЫТИЯ «смена карты» — фон ВСЕЙ карты → КАРТА B; стены A при этом ПЕРЕСТАЮТ действовать. Смена фон ПАНЕЛИ (плитки/карты-плитки) стены не трогает. Для смены одной панели стены не нужны.</>
+                        ? <><span className="text-magma">РЕДАКТИРУЮТСЯ СТЕНЫ КАРТЫ B</span> (на канве — оранжевые): в игре работают только после СОБЫТИЯ «смена карты» — фон ВСЕЙ карты → КАРТА B (или автоматически во FRENDY, когда приходят Салли и Молдер); стены A при этом ПЕРЕСТАЮТ действовать. Событие «эта панель → B» и смена фон ПАНЕЛИ (плитки/карты-плитки) стены не трогают. Для смены одной панели стены не нужны.</>
                         : 'Зоны, куда фишка НЕ может зайти («невидимые стены» в играх). Ходить изначально можно ВЕЗДЕ — стены только исключения. Инструмент «Стена»: протяните прямоугольник по полю. Обычные стены в игре НЕ рисуются; стена с ЗАМКОМ (дверь) — видна цветной зоной и открывается ключом того же цвета.'}
                     </p>
                     {bgVar === 'B' && (map.wallsB ?? []).length === 0 && (
@@ -6114,7 +6120,7 @@ export default function MapEditor() {
       {/* v0.97: окно переименования стены/двери — открывается ДВОЙНЫМ КЛИКОМ по стене на карте */}
       {wallRename && (
         <Modal
-          title={(map?.walls ?? [])[wallRename.idx]?.key ? 'Переименовать дверь' : 'Переименовать стену'}
+          title={(bgVar === 'B' ? (map?.wallsB ?? [])[wallRename.idx] : (map?.walls ?? [])[wallRename.idx])?.key ? 'Переименовать дверь' : 'Переименовать стену'}
           icon="✏"
           onClose={() => setWallRename(null)}
           w="max-w-md"

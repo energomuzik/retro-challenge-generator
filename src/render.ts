@@ -1962,7 +1962,9 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       if (seen.has(n)) continue; // открытая комната видна
       if (o.hubPlate === n) continue; // хаб виден ВСЕГДА (v0.53)
       const r = plateRectOf(map, n);
-      ctx.fillStyle = 'rgba(3,4,9,0.97)';
+      /* v0.153: туман карты мира ПОЛНОСТЬЮ НЕПРОЗРАЧНЫЙ (заказчик: «остальные плитки
+         карты должны быть чёрными») — сквозь 97% раньше чуть просвечивало поле */
+      ctx.fillStyle = '#030409';
       ctx.fillRect(r.x - 1, r.y - 1, r.w + 2, r.h + 2);
       ctx.strokeStyle = 'rgba(167,139,250,0.22)'; // тусклая рамка «здесь есть комната»
       ctx.lineWidth = 1.5 / Math.max(0.05, view.zoom);
@@ -1999,7 +2001,9 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     for (const tile of tg.tiles) {
       if (!hideSet.has(tile.id)) continue;
       const tr = { x: tile.col * tg.w, y: tile.row * tg.h, w: tg.w, h: tg.h };
-      ctx.fillStyle = 'rgba(3,4,9,0.97)';
+      /* v0.153: туман карты мира ПОЛНОСТЬЮ НЕПРОЗРАЧНЫЙ (заказчик: «остальные плитки
+         карты должны быть чёрными») — сквозь 97% раньше чуть просвечивало поле */
+      ctx.fillStyle = '#030409';
       ctx.fillRect(tr.x - 1, tr.y - 1, tr.w + 2, tr.h + 2);
       ctx.strokeStyle = 'rgba(255,107,53,0.22)'; // тусклая рамка «здесь есть карта-плитка»
       ctx.lineWidth = 1.5 / Math.max(0.05, view.zoom);

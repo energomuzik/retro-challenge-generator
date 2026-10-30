@@ -2725,15 +2725,25 @@ export default function GameScreen() {
         }
         /* v0.124: ТУМАН НЕОТКРЫТЫХ КАРТ-ПЛИТОК на карте мира (опция карты «скрывать не открытые»
            или FRENDY — чтобы не разглядеть микросхемы заранее). Открытой считается плитка, куда
-           ДОШЁЛ хоть один игрок (по позициям фишек каждый кадр); однажды открытая — не гаснет. */
+           ДОШЁЛ хоть один игрок (по позициям фишек каждый кадр); однажды открытая — не гаснет.
+           v0.153 ЧЕСТНЫЙ ТУМАН ВО FRENDY (заказчик: «если разведать все карты, то сразу видно
+           кто где находится и действует, и где Френди — это не честно»): разведанное больше
+           НЕ НАКАПЛИВАЕТСЯ — на карте мира видна ТОЛЬКО плитка, где стоит сам игрок,
+           все остальные плитки чёрные. Подсматривать за чужими в реальном времени нельзя. */
         let hiddenTiles: string[] | null = null;
         if (m.tileGrid && (m.hideUnopenedTiles || isFrendy) && (viewMode === 'world' || peekMap)) {
           const tgF = m.tileGrid;
-          for (const tok of tokens) {
-            const tt = tileAt(tgF, tok.x, tok.y);
-            if (tt) visitedTilesRef.current.add(tt.id);
+          if (isFrendy) {
+            const myPtW = dispRef.current[me];
+            const myTileW = myPtW ? tileAt(tgF, myPtW.x, myPtW.y) : null;
+            hiddenTiles = tgF.tiles.map((t2) => t2.id).filter((id) => id !== myTileW?.id);
+          } else {
+            for (const tok of tokens) {
+              const tt = tileAt(tgF, tok.x, tok.y);
+              if (tt) visitedTilesRef.current.add(tt.id);
+            }
+            hiddenTiles = tgF.tiles.map((t2) => t2.id).filter((id) => !visitedTilesRef.current.has(id));
           }
-          hiddenTiles = tgF.tiles.map((t2) => t2.id).filter((id) => !visitedTilesRef.current.has(id));
         }
         drawBoard(ctx, m, {
           view: v, width: w, height: h,
@@ -2754,12 +2764,17 @@ export default function GameScreen() {
              ТУМАН ИССЛЕДОВАНИЯ: на карте мира (общий план/заглядывание) НЕОТКРЫТЫЕ
              плитки тоже скрыты темнотой — видны только посещённые комнаты.
              v0.53: туман ОБЩИЙ для команды (мои плитки + s.openPlates), а ХАБ-плитка
-             видна на карте мира ВСЕГДА (m.hubPlate — туман её не скрывает). */
+             видна на карте мира ВСЕГДА (m.hubPlate — туман её не скрывает).
+             v0.153 ВО FRENDY — только СВОЯ плитка: на карте мира видна комната, где
+             стоит сам игрок, остальные чёрные (хаб-исключение тоже отключено —
+             подсмотреть, кто где и что делает, нельзя). */
           room: roomsOn && roomNumRef.current ? plateRectOf(m, roomNumRef.current) : null,
           visitedPlates: roomsMap && (viewMode === 'world' || peekMap)
-            ? [...new Set([...visitedPlatesRef.current, ...(sess.openPlates ?? [])])]
+            ? (isFrendy
+              ? (() => { const myPtP = dispRef.current[me]; const pn = myPtP ? plateNumAt(m, myPtP.x, myPtP.y) : null; return pn ? [pn] : []; })()
+              : [...new Set([...visitedPlatesRef.current, ...(sess.openPlates ?? [])])])
             : null,
-          hubPlate: roomsMap ? (m.hubPlate ?? null) : null,
+          hubPlate: roomsMap && !isFrendy ? (m.hubPlate ?? null) : null,
           hiddenTiles, // v0.124: туман неоткрытых карт-плиток (карта мира/заглядывание)
           /* v0.55: снятые квестами стены — двери (стены с key) с них не рисуются */
           wallsRemoved: sess.wallsRemoved,
