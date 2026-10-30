@@ -49,7 +49,7 @@ export interface TileMoveSpec {
 export function tileContentShift(
   m: GameMap, w: number, h: number, a: TileMoveSpec, b?: TileMoveSpec,
 ): {
-  cells: CellDef[]; stamps: Stamp[]; walls: WallRect[]; portals: PortalZone[];
+  cells: CellDef[]; stamps: Stamp[]; walls: WallRect[]; wallsB: WallRect[]; portals: PortalZone[];
   anims: PlacedAnim[]; bosses: PlacedBoss[]; npcs: PlacedNpc[]; cutscenes: CutsceneDef[];
 } {
   const inRect = (x: number, y: number, r: { col: number; row: number }) =>
@@ -88,6 +88,7 @@ export function tileContentShift(
   });
   const stamps = (m.stamps ?? []).map(shiftPt);
   const walls = (m.walls ?? []).map(shiftByCenter);
+  const wallsB = (m.wallsB ?? []).map(shiftByCenter); // v0.152: стены КАРТЫ B переезжают ВМЕСТЕ с плитками так же
   // порталы: зона переезжает по своему центру, точка перехода — по своей позиции (независимо)
   const portals = (m.portals ?? []).map((p) => {
     const zc = moved(p.x + p.w / 2, p.y + p.h / 2);
@@ -105,7 +106,7 @@ export function tileContentShift(
     const zone = c.zone ? shiftByCenter(c.zone) : undefined;
     return pts.every((p, i) => p === (c.pts ?? [])[i]) && zone === c.zone ? c : { ...c, pts, zone };
   });
-  return { cells, stamps, walls, portals, anims, bosses, npcs, cutscenes };
+  return { cells, stamps, walls, wallsB, portals, anims, bosses, npcs, cutscenes };
 }
 
 /* Ячейка под точкой (координаты поля в px); возвращает индекс или -1 */
@@ -417,7 +418,8 @@ export interface BoardDrawOpts {
    Всё за пределами прямоугольника скрывается темнотой + светящаяся граница комнаты. */
   /* v0.151: АКТИВНЫЙ ФОН «КАРТА B» (события «смена карты», пишет хост в сессии):
    map — вся карта показывает карту B; tiles — id карт-плиток с картой B; plates —
-   номера плиток (plateSize) с картой B. Не передаётся из редактора — там всегда A */
+   номера плиток (plateSize) с картой B. С v0.152 редактор тоже передаёт bgB —
+   ПРЕДПРОСМОТР варианта, который сейчас выбран переключателем «КАРТА A / КАРТА B» */
   bgB?: { map?: boolean; tiles?: Record<string, boolean>; plates?: Record<number, boolean> };
   room?: { x: number; y: number; w: number; h: number } | null;
   /* ТУМАН ИССЛЕДОВАНИЯ (карта мира в режиме комнат, v0.50.0): номера ОТКРЫТЫХ плиток.
@@ -1089,7 +1091,9 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   // v0.55 ДВЕРИ (цветные ключи): стены с key в игре ВИДНЫ — цветная зона с пунктирной
   // рамкой и замком; фишка с ключом того же цвета проходит сквозь (стена «открыта»).
   // Снятые квестом стены (wallsRemoved) не рисуются вовсе.
-  for (const w of map.walls ?? []) {
+  // v0.152: когда СОБЫТИЕ включило КАРТУ B всей карты (o.bgB.map) и у неё есть свои
+  // стены — двери рисуются из списка КАРТЫ B (стены A перестали действовать).
+  for (const w of (o.bgB?.map && map.wallsB ? map.wallsB : (map.walls ?? []))) {
     if (!w.key) continue; // обычные невидимые стены по-прежнему НЕ рисуются
     if (w.id && o.wallsRemoved?.includes(w.id)) continue;
     const pulse = 0.5 + 0.5 * Math.sin(o.time / 460 + w.x * 0.013 + w.y * 0.007);

@@ -53,8 +53,11 @@ type BoardDrawAgents = { who: AgentWho; x: number; y: number; img: HTMLImageElem
 /* НЕВИДИМЫЕ СТЕНЫ (JOURNEY): точка (центр фишки) внутри прямоугольника стены?
    Стены в игре НЕ рисуются — фишка просто не проходит сквозь них, скользя по краю. */
 /* v0.55: у стены может быть key (ДВЕРЬ цвета) — с ключом того же цвета она открыта */
-const inWall = (m: GameMap, x: number, y: number, removed?: string[], keys?: string[]): boolean => {
-  for (const w of m.walls ?? []) {
+/* v0.152: mapB — СОБЫТИЕ включило КАРТУ B всей карты: стены берутся из map.wallsB
+   (стены карты A перестают действовать); у карты B своих стен нет — действуют обычные */
+const wallsActive = (m: GameMap, mapB?: boolean) => (mapB && m.wallsB ? m.wallsB : (m.walls ?? []));
+const inWall = (m: GameMap, x: number, y: number, removed?: string[], keys?: string[], mapB?: boolean): boolean => {
+  for (const w of wallsActive(m, mapB)) {
     if (w.id && removed?.includes(w.id)) continue; // снята квестом
     if (w.key && keys?.includes(w.key)) continue; // дверь открыта ключом
     if (x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h) return true;
@@ -74,8 +77,8 @@ const inWall = (m: GameMap, x: number, y: number, removed?: string[], keys?: str
    нельзя, а внутрь — можно). Теперь блокируется пересечение стены с коробкой вокруг
    центра: радиус считается от размера спрайта фишки (34px → ~14px, 64px → ~27px),
    скольжение по стене сохранено (оси X и Y проверяются отдельно). */
-const inWallBox = (m: GameMap, x: number, y: number, r: number, removed?: string[], keys?: string[]): boolean => {
-  for (const w of m.walls ?? []) {
+const inWallBox = (m: GameMap, x: number, y: number, r: number, removed?: string[], keys?: string[], mapB?: boolean): boolean => {
+  for (const w of wallsActive(m, mapB)) {
     if (w.id && removed?.includes(w.id)) continue; // снята квестом
     if (w.key && keys?.includes(w.key)) continue; // дверь открыта ключом
     if (x + r > w.x && x - r < w.x + w.w && y + r > w.y && y - r < w.y + w.h) return true;
@@ -159,6 +162,14 @@ export default function GameScreen() {
   const [visitedCnt, setVisitedCnt] = useState(0);
   const [roomNumUi, setRoomNumUi] = useState<number | null>(null);
   const [roomFlashTs, setRoomFlashTs] = useState(0);
+  /* v0.152: ВИЗУАЛЬНАЯ ПЛАШКА СМЕНЫ КАРТЫ (событие «смена карты»): когда хост включает
+     КАРТУ B (или возвращает A), у ВСЕХ на карте всплывает плашка «🌃 НАСТУПИЛА КАРТА B» /
+     «🌄 СНОВА КАРТА A» — видно, на какую карту сменилось поле (стены теперь тоже по карте B).
+     bgBPrevRef — прошлый снимок s.bgB: плашка показывается только на РЕАЛЬНОМ изменении,
+     а не при первом входе в партию/переподключении */
+  const [bgBanner, setBgBanner] = useState<{ icon: string; label: string; ts: number } | null>(null);
+  const bgBPrevRef = useRef<string | null>(null);
+  const bgBannerTimer = useRef<number | null>(null);
   /* ---------- v0.124 FRENDY: катсцены, титры и туман карт-плиток ---------- */
   /* visitedTilesRef — открытые КАРТЫ-ПЛИТКИ (ид) для тумана «скрывать не открытые»
      (плиточный режим + опция карты / FRENDY): пополняется по позициям фишек каждый кадр. */
@@ -222,6 +233,29 @@ export default function GameScreen() {
       setRoWaiting(false);
     }
   }, [roWaiting, s?.rollOffValues, me]);
+  /* v0.152: ПЛАШКА «КАРТА B / КАРТА A» при событии «смена карты»: сравниваем снимок
+     s.bgB с прошлым; плашку видим ВСЕ (состояние в сессии — синхронно у всех) */
+  useEffect(() => {
+    const bg = s?.bgB;
+    const sig = bg ? JSON.stringify(bg) : '';
+    const prev = bgBPrevRef.current;
+    if (prev === null) { bgBPrevRef.current = sig || ''; return; } // первый вход в партию — без плашки
+    if (sig === prev) return;
+    bgBPrevRef.current = sig;
+    const wasMap = prev.includes('"map":true');
+    const nowMap = bg?.map === true;
+    const panels = !!(bg && ((bg.tiles && Object.keys(bg.tiles).length) || (bg.plates && Object.keys(bg.plates).length)));
+    let icon = '🌄';
+    let label: string;
+    if (nowMap && !wasMap) { icon = '🌃'; label = 'НАСТУПИЛА КАРТА B'; }
+    else if (!nowMap && wasMap) { label = 'СНОВА КАРТА A'; }
+    else if (nowMap && wasMap) { icon = '🌃'; label = panels ? 'КАРТА B: СМЕНИЛАСЬ ПАНЕЛЬ' : 'КАРТА B'; }
+    else { label = panels ? 'КАРТА A: ПАНЕЛЬ ВЕРНУЛАСЬ' : 'КАРТА A'; }
+    setBgBanner({ icon, label, ts: Date.now() });
+    if (bgBannerTimer.current) window.clearTimeout(bgBannerTimer.current);
+    bgBannerTimer.current = window.setTimeout(() => setBgBanner(null), 3200);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s?.bgB]);
   /* страховка: если значение так и не пришло — не крутим вечно */
   useEffect(() => {
     if (!roWaiting) return;
@@ -2069,8 +2103,8 @@ export default function GameScreen() {
                 const colR = colRadiusOf(p, mapToks); // v0.57: радиус коробки фишки — от размера её спрайта
                 const removedWalls = sess.wallsRemoved ?? [];
                 const myKeys = (me && sess.qKeys?.[me]) || []; // v0.55: свои ключи — двери своего цвета открыты
-                if (!inWallBox(m, nx, self.y, colR, removedWalls, myKeys)) self.x = nx; // v0.57: коробка — внутрь стены не пройти
-                if (!inWallBox(m, self.x, ny, colR, removedWalls, myKeys)) self.y = ny; // v0.57: скольжение по осям сохранено
+                if (!inWallBox(m, nx, self.y, colR, removedWalls, myKeys, !!sess.bgB?.map)) self.x = nx; // v0.57: коробка — внутрь стены не пройти · v0.152: стены активного варианта (A/B)
+                if (!inWallBox(m, self.x, ny, colR, removedWalls, myKeys, !!sess.bgB?.map)) self.y = ny; // v0.57: скольжение по осям сохранено
                 self.dir = Math.abs(vx) >= Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
                 self.moving = true;
                 self.dirty = true;
@@ -4026,6 +4060,15 @@ export default function GameScreen() {
         {canLookAround && (
           <div className="absolute top-14 right-3 hud-chip pixel-corners px-3 py-1.5 pointer-events-none">
             <span className="tick-label text-sky">Тяните карту мышью · колесо — зум · клик по ячейке — осмотр · до броска</span>
+          </div>
+        )}
+
+        {/* v0.152: ВИЗУАЛЬНАЯ ПЛАШКА СМЕНЫ КАРТЫ — «на какую карту сменил» видно ВСЕМ на карте */}
+        {bgBanner && Date.now() - bgBanner.ts < 3200 && (
+          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-40 pop-in pointer-events-none">
+            <div className={`pixel-corners px-5 py-2.5 border-[3px] shadow-[0_10px_30px_rgba(0,0,0,0.55)] ${bgBanner.icon === '🌃' ? 'border-magma bg-[rgba(30,16,8,0.92)]' : 'border-teal bg-[rgba(6,24,20,0.92)]'}`}>
+              <div className={`font-display uppercase text-[13px] tracking-wide ${bgBanner.icon === '🌃' ? 'text-magma' : 'text-teal'}`}>{bgBanner.icon} {bgBanner.label}</div>
+            </div>
           </div>
         )}
 

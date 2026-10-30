@@ -533,6 +533,18 @@ export default function MapEditor() {
      после СОБЫТИЯ: смена карты в редакторе диалогов, награда квеста NPC, а во FRENDY —
      приход Салли и Молдера к печи). A и B — отдельные картинки, bgMode общий */
   const [bgVar, setBgVar] = useState<'A' | 'B'>('A');
+  /* v0.152: refs варианта/скоупа/активной плитки — rAF-цикл канвы читает их БЕЗ ре-монтирования
+     эффекта: смена варианта тут же меняет предпросмотр фона и стен на канве */
+  const bgVarRef = useRef(bgVar); bgVarRef.current = bgVar;
+  const bgScopeRef = useRef(bgScope); bgScopeRef.current = bgScope;
+  const selTileIdRef = useRef(selTileId); selTileIdRef.current = selTileId;
+  /* v0.152: ЕДИНЫЙ ПЕРЕКЛЮЧАТЕЛЬ ВАРИАНТА «КАРТА A / КАРТА B» — меняет и фон (панель «Фон»),
+     и стены (панель «Невидимые стены»), и предпросмотр на канве. Выбранная стена сбрасывается —
+     списки A и B разные */
+  const switchBgVar = (v: 'A' | 'B') => {
+    if (v !== bgVarRef.current) { setBgVar(v); setSelWall(null); }
+    sfx.hover();
+  };
   const [extract, setExtract] = useState<{ file: File; src: string; name: string; busy: boolean; bgMode: 'auto' | 'custom'; bg: string; foundBg: string; thr: number; minSize: number; mergeGap: number; keepText: boolean; oneSize: boolean; tiles: TileImg[] } | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -879,16 +891,22 @@ export default function MapEditor() {
 
   /* ---------- НЕВИДИМЫЕ СТЕНЫ (только JOURNEY): зоны «куда фишке нельзя» ----------
      Работают ТОЛЬКО в режиме journey — при создании карты редактор проверит режим.
-     Стена — прямоугольник в px поля (x,y — левый верх). В игре НЕ рисуется. */
+     Стена — прямоугольник в px поля (x,y — левый верх). В игре НЕ рисуется.
+     v0.152: стены работают в ДВУХ вариантах — КАРТА A (map.walls, по умолчанию) и
+     КАРТА B (map.wallsB, включается СОБЫТИЕМ «смена карты»); панель стен, инструмент
+     «Стена», канва и списки квестов работают с ВЫБРАННЫМ вариантом (bgVar). */
+  const wallListOf = (m: GameMap): WallRect[] => (bgVarRef.current === 'B' ? (m.wallsB ?? []) : (m.walls ?? []));
   const updWall = (idx: number, patch: Partial<WallRect>) =>
     setMap((m) => {
-      if (!m || !m.walls || !m.walls[idx]) return m;
-      const arr = m.walls.slice();
+      if (!m) return m;
+      const isB = bgVarRef.current === 'B';
+      const arr = (isB ? (m.wallsB ?? []) : (m.walls ?? [])).slice();
+      if (!arr[idx]) return m;
       arr[idx] = { ...arr[idx], ...patch };
-      return { ...m, walls: arr };
+      return isB ? { ...m, wallsB: arr } : { ...m, walls: arr };
     });
   const wallAtPoint = (m: GameMap, wx: number, wy: number): number => {
-    const ws = m.walls ?? [];
+    const ws = wallListOf(m);
     for (let i = ws.length - 1; i >= 0; i--) {
       const w = ws[i];
       if (wx >= w.x && wx < w.x + w.w && wy >= w.y && wy < w.y + w.h) return i;
@@ -897,53 +915,56 @@ export default function MapEditor() {
   };
   const removeWall = (idx: number) => {
     const m = mapRef.current;
-    if (m && m.walls?.[idx]) {
-      const snap = m.walls[idx];
+    const isB = bgVarRef.current === 'B'; // v0.152: удаляем стену ВЫБРАННОГО варианта (A/B)
+    const snap = m ? wallListOf(m)[idx] : undefined;
+    if (m && snap) {
       rememberDeleted({
-        label: 'стену с карты',
+        label: isB ? 'стену КАРТЫ B с карты' : 'стену с карты',
         restore: async () => {
-          setMap((mm) => {
-            if (!mm || mm.id !== m.id) return mm;
-            const arr = (mm.walls ?? []).slice();
-            arr.splice(Math.min(idx, arr.length), 0, snap);
-            return { ...mm, walls: arr };
-          });
+          const put = (mm: GameMap): GameMap => {
+            const arr = (isB ? (mm.wallsB ?? []) : (mm.walls ?? [])).slice();
+            arr.splice(Math.min(idx, arr.length), 0, snap!);
+            return isB ? { ...mm, wallsB: arr } : { ...mm, walls: arr };
+          };
+          setMap((mm) => (mm && mm.id === m.id ? put(mm) : mm));
           const cur = await idbGet<GameMap>('maps', m.id);
           if (cur) {
-            const arr = (cur.walls ?? []).slice();
-            arr.splice(Math.min(idx, arr.length), 0, snap);
-            await idbPut('maps', m.id, { ...cur, walls: arr, updatedAt: Date.now() });
+            await idbPut('maps', m.id, { ...put(cur), updatedAt: Date.now() });
             await useApp.getState().refresh();
           }
         },
       });
     }
-    setMap((mm) => (mm ? { ...mm, walls: (mm.walls ?? []).filter((_, i) => i !== idx) } : mm));
+    setMap((mm) => {
+      if (!mm) return mm;
+      return isB ? { ...mm, wallsB: (mm.wallsB ?? []).filter((_, i) => i !== idx) } : { ...mm, walls: (mm.walls ?? []).filter((_, i) => i !== idx) };
+    });
     setSelWall(null);
     dirtyRef.current = true;
     sfx.fail();
   };
   const removeAllWalls = () => {
     const m = mapRef.current;
-    const cnt = m?.walls?.length ?? 0;
+    const isB = bgVarRef.current === 'B'; // v0.152: чистим только ВЫБРАННЫЙ вариант (A или B)
+    const snap = m ? (isB ? (m.wallsB ?? []) : (m.walls ?? [])) : [];
+    const cnt = snap.length;
     if (!cnt) return;
-    const snap = m!.walls!;
     rememberDeleted({
-      label: `все стены (${cnt})`,
+      label: isB ? `все стены КАРТЫ B (${cnt})` : `все стены (${cnt})`,
       restore: async () => {
-        setMap((mm) => (mm && mm.id === m!.id ? { ...mm, walls: snap.slice() } : mm));
+        setMap((mm) => (mm && mm.id === m!.id ? (isB ? { ...mm, wallsB: snap.slice() } : { ...mm, walls: snap.slice() }) : mm));
         const cur = await idbGet<GameMap>('maps', m!.id);
         if (cur) {
-          await idbPut('maps', m!.id, { ...cur, walls: snap.slice(), updatedAt: Date.now() });
+          await idbPut('maps', m!.id, { ...(isB ? { ...cur, wallsB: snap.slice() } : { ...cur, walls: snap.slice() }), updatedAt: Date.now() });
           await useApp.getState().refresh();
         }
       },
     });
-    setMap((mm) => (mm ? { ...mm, walls: [] } : mm));
+    setMap((mm) => (mm ? (isB ? { ...mm, wallsB: [] } : { ...mm, walls: [] }) : mm));
     setSelWall(null);
     dirtyRef.current = true;
     sfx.fail();
-    toast(m && (m.stamps ?? []).some((st) => st.frame) ? `Удалены все стены (${cnt}) — вернуть можно кнопкой «Вернуть». Рамки-борта тайлов НЕ тронуты: это свойство самих тайлов (галочка в панели тайла)` : `Удалены все стены (${cnt}) — вернуть можно кнопкой «Вернуть»`, 'err');
+    toast(m && (m.stamps ?? []).some((st) => st.frame) ? `Удалены все стены выбранного варианта (${cnt}) — вернуть можно кнопкой «Вернуть». Рамки-борта тайлов НЕ тронуты: это свойство самих тайлов (галочка в панели тайла)` : `Удалены все стены выбранного варианта (${cnt}) — вернуть можно кнопкой «Вернуть»`, 'err');
   };
 
   /* ---------- v0.97: ИМЯ СТЕНЫ/ДВЕРИ + переименование ПРЯМО НА КАРТЕ ----------
@@ -971,7 +992,7 @@ export default function MapEditor() {
     setSelAnim(null);
     setSelBoss(null);
     setSelNpc(null);
-    setWallRename({ idx: wi, value: (m.walls ?? [])[wi]?.name ?? '' });
+    setWallRename({ idx: wi, value: wallListOf(m)[wi]?.name ?? '' }); // v0.152: имя из списка выбранного варианта
     sfx.hover();
   };
 
@@ -1250,6 +1271,7 @@ export default function MapEditor() {
     const cells = m.cells.filter((c, ci) => { const cc = cellCenter(m, ci); return !inRect(cc.x, cc.y); });
     const stamps = (m.stamps ?? []).filter((s) => !inRect(s.x, s.y));
     const walls = (m.walls ?? []).filter((w) => !inRect(w.x + w.w / 2, w.y + w.h / 2));
+    const wallsB = (m.wallsB ?? []).filter((w) => !inRect(w.x + w.w / 2, w.y + w.h / 2)); // v0.152: стены КАРТЫ B удаляются вместе с плиткой так же
     const portals = (m.portals ?? []).filter((p) => !inRect(p.x + p.w / 2, p.y + p.h / 2) && !(p.tx !== undefined && p.ty !== undefined && inRect(p.tx, p.ty)));
     const anims = (m.anims ?? []).filter((a) => !inRect(a.x, a.y));
     // v0.75: у выживших боссов/NPC вырезаем ТОЧКИ ПАТРУЛЯ внутри удалённой плитки (пустой патруль — убираем)
@@ -1290,7 +1312,7 @@ export default function MapEditor() {
       if (next.hop !== null && next.hop !== undefined) next.hop = remap.get(next.hop);
       return next;
     });
-    const upd: Partial<GameMap> = { cells: cleaned, stamps, walls, portals, anims, bosses, npcs, cutscenes, tileBgs: Object.keys(tileBgs).length ? tileBgs : undefined, mw, mh };
+    const upd: Partial<GameMap> = { cells: cleaned, stamps, walls, wallsB, portals, anims, bosses, npcs, cutscenes, tileBgs: Object.keys(tileBgs).length ? tileBgs : undefined, mw, mh };
     updTileGrid({ ...tg, tiles }, upd);
     if (selTileId === id) setSelTileId(tiles[0]?.id ?? null);
     setSelCell(null);
@@ -2802,13 +2824,18 @@ export default function MapEditor() {
       const ww = Math.round(Math.abs(wd.ex - wd.sx));
       const wh = Math.round(Math.abs(wd.ey - wd.sy));
       if (ww >= 12 && wh >= 12 && mapRef.current) {
-        const newIdx = (mapRef.current.walls ?? []).length;
+        /* v0.152: новая стена попадает в список ВЫБРАННОГО варианта (КАРТА A — map.walls,
+           КАРТА B — map.wallsB) — как выбрано переключателем «КАРТА A / КАРТА B» */
+        const isB = bgVarRef.current === 'B';
+        const newIdx = (isB ? (mapRef.current.wallsB ?? []) : (mapRef.current.walls ?? [])).length;
         const wl: WallRect = { id: uid('wall'), x: wx, y: wy, w: ww, h: wh };
-        setMap((mm) => (mm ? { ...mm, walls: [...(mm.walls ?? []), wl] } : mm));
+        setMap((mm) => (mm ? (isB ? { ...mm, wallsB: [...(mm.wallsB ?? []), wl] } : { ...mm, walls: [...(mm.walls ?? []), wl] }) : mm));
         setSelWall(newIdx);
         dirtyRef.current = true;
         sfx.step();
-        toast('Стена готова: в игре она НЕВИДИМА — фишка не сможет зайти внутрь (действует в JOURNEY)', 'ok');
+        toast(isB
+          ? 'Стена КАРТЫ B готова (оранжевая): в момент события «смена карты» (фон всей карты → B) она ЗАМЕНИТ собой все стены карты A (в игре невидима, JOURNEY)'
+          : 'Стена готова: в игре она НЕВИДИМА — фишка не сможет зайти внутрь (действует в JOURNEY)', 'ok');
       }
     }
     /* ПОРТАЛ: фиксируем протянутую зону входа (минимум 12×12 px) и сразу предлагаем
@@ -2873,8 +2900,8 @@ export default function MapEditor() {
         } else if (selNpc) {
           const n = (map.npcs ?? []).find((x) => x.id === selNpc);
           keyDel.keyDeleteStart(`NPC «${(map.npcLib ?? []).find((x) => x.id === n?.nid)?.name ?? 'с карты'}»`, () => removeNpcAt(selNpc));
-        } else if (selWall !== null && (map.walls ?? [])[selWall]) {
-          keyDel.keyDeleteStart('стену с карты', () => removeWall(selWall));
+        } else if (selWall !== null && wallListOf(map)[selWall]) {
+          keyDel.keyDeleteStart(bgVar === 'B' ? 'стену КАРТЫ B с карты' : 'стену с карты', () => removeWall(selWall));
         } else if (selPortal !== null && (map.portals ?? [])[selPortal]) {
           keyDel.keyDeleteStart(`портал ${selPortal + 1} с карты`, () => removePortal(selPortal));
         } else if (selCell !== null) {
@@ -2917,6 +2944,24 @@ export default function MapEditor() {
       const cv = canvasRef.current;
       const m = mapRef.current;
       if (cv && m) {
+        /* v0.152: ПРЕДПРОСМОТР ВАРИАНТА КАРТЫ (A/B) на канве — bgB строится так же, как его
+           построит ИГРА при событии «смена карты»: «На всю карту» — вся карта, «На эту
+           карту-плитку/плитку» — только выбранная панель. Стены ниже рисуются из списка
+           того же варианта (A — коралловые, B — оранжевые) */
+        let bgPrev: { map?: boolean; tiles?: Record<string, boolean>; plates?: Record<number, boolean> } | undefined;
+        if (bgVarRef.current === 'B') {
+          if ((m.plateSize || m.tileGrid) && bgScopeRef.current === 'plate') {
+            const tgP = m.tileGrid;
+            if (tgP) {
+              const atP = tgP.tiles.find((x) => x.id === selTileIdRef.current) ?? tgP.tiles[0];
+              if (atP) bgPrev = { tiles: { [atP.id]: true } };
+            } else if (m.plateSize) {
+              const colsP = Math.max(1, Math.ceil((m.mw ?? m.cols * 64) / m.plateSize));
+              const cP = Math.floor(viewRef.current.x / m.plateSize), rP = Math.floor(viewRef.current.y / m.plateSize);
+              bgPrev = { plates: { [rP * colsP + cP + 1]: true } };
+            }
+          } else bgPrev = { map: true };
+        }
         const dpr = Math.min(2, window.devicePixelRatio || 1);
         const w = cv.clientWidth, h = cv.clientHeight;
         if (cv.width !== Math.floor(w * dpr) || cv.height !== Math.floor(h * dpr)) {
@@ -2930,6 +2975,7 @@ export default function MapEditor() {
           currentCell: startCellIdx(m),
           showNumbers: true, tokens: [], time: t,
           hoverCell: null,
+          bgB: bgPrev, // v0.152: предпросмотр выбранного варианта (КАРТА B — фон B на канве)
           sndRadii: true, // пунктирные круги радиусов звука — только в редакторе
           npcs: (m.npcs ?? []).map((n) => ({ npc: n, def: (m.npcLib ?? []).find((x) => x.id === n.nid), done: false })).filter((x): x is { npc: PlacedNpc; def: NpcLibEntry; done: boolean } => !!x.def),
           /* ПАТРУЛИРОВАНИЕ (v0.52): пунктирные маршруты с точками-кружками (только редактор);
@@ -3020,15 +3066,16 @@ export default function MapEditor() {
 
         // НЕВИДИМЫЕ СТЕНЫ: коралловая штриховка — видна ТОЛЬКО в редакторе (в игре их нет).
         // v0.55: стена с key — ДВЕРЬ: рисуется СВОИМ цветом с замком (в игре дверь тоже видна)
-        const drawWallRect = (x: number, y: number, w: number, h: number, selected: boolean, key?: string) => {
+        // v0.152: рисуются стены ВЫБРАННОГО ВАРИАНТА: КАРТА A — коралловые, КАРТА B — оранжевые
+        const drawWallRect = (x: number, y: number, w: number, h: number, selected: boolean, key?: string, rgb = '255,93,115') => {
           const doorHex = key ? doorKeyHex(key) : null;
           ctx.save();
           ctx.beginPath();
           ctx.rect(x, y, w, h);
           ctx.clip();
-          ctx.fillStyle = doorHex ? `${doorHex}26` : 'rgba(255,93,115,0.13)';
+          ctx.fillStyle = doorHex ? `${doorHex}26` : `rgba(${rgb},0.13)`;
           ctx.fillRect(x, y, w, h);
-          ctx.strokeStyle = doorHex ? `${doorHex}73` : 'rgba(255,93,115,0.45)';
+          ctx.strokeStyle = doorHex ? `${doorHex}73` : `rgba(${rgb},0.45)`;
           ctx.lineWidth = 1.5 / v.zoom;
           const step = 14;
           for (let d = -h; d < w; d += step) {
@@ -3049,7 +3096,7 @@ export default function MapEditor() {
             ctx.stroke();
           }
           ctx.restore();
-          ctx.strokeStyle = selected ? '#ffcf3f' : doorHex ?? 'rgba(255,93,115,0.85)';
+          ctx.strokeStyle = selected ? '#ffcf3f' : doorHex ?? `rgba(${rgb},0.9)`;
           ctx.lineWidth = (selected ? 3 : 2) / v.zoom;
           ctx.strokeRect(x, y, w, h);
         };
@@ -3064,22 +3111,27 @@ export default function MapEditor() {
           ctx.strokeRect(x, y, w, h);
           ctx.restore();
         };
-        for (let wi = 0; wi < (m.walls ?? []).length; wi++) {
-          const wl = m.walls![wi];
-          drawWallRect(wl.x, wl.y, wl.w, wl.h, selWall === wi, wl.key);
+        /* v0.152: стены ВЫБРАННОГО ВАРИАНТА (КАРТА A — коралловые, КАРТА B — оранжевые):
+           переключение «КАРТА A ↔ КАРТА B» тут же показывает на канве стены того варианта,
+           который сейчас редактируется, — и фоны (bgB в drawBoard выше) */
+        const wallsV = bgVarRef.current === 'B' ? (m.wallsB ?? []) : (m.walls ?? []);
+        const wallRgb = bgVarRef.current === 'B' ? '255,139,63' : '255,93,115';
+        for (let wi = 0; wi < wallsV.length; wi++) {
+          const wl = wallsV[wi];
+          drawWallRect(wl.x, wl.y, wl.w, wl.h, selWall === wi, wl.key, wallRgb);
           /* v0.97: подпись имени стены/двери НАД прямоугольником — среди десятка дверей видно, какая есть какая */
           if (wl.name) {
             ctx.save();
             ctx.font = `${Math.max(11, 12 / v.zoom)}px monospace`;
             ctx.textAlign = 'left';
             ctx.textBaseline = 'bottom';
-            const label = wl.key ? `🚪 ${wl.name}` : wl.name;
+            const label = `${bgVarRef.current === 'B' ? 'B·' : ''}${wl.key ? `🚪 ${wl.name}` : wl.name}`;
             const lx = wl.x + 2;
             const ly = wl.y - 4 / v.zoom;
             const tw = ctx.measureText(label).width;
             ctx.fillStyle = 'rgba(4,6,14,0.78)';
             ctx.fillRect(lx - 2 / v.zoom, ly - Math.max(11, 12 / v.zoom), tw + 6 / v.zoom, Math.max(11, 12 / v.zoom) + 4 / v.zoom);
-            ctx.fillStyle = wl.key ? doorKeyHex(wl.key) : 'rgba(255,150,160,0.95)';
+            ctx.fillStyle = wl.key ? doorKeyHex(wl.key) : (bgVarRef.current === 'B' ? 'rgba(255,190,120,0.95)' : 'rgba(255,150,160,0.95)');
             ctx.fillText(label, lx, ly);
             ctx.restore();
           }
@@ -3091,7 +3143,7 @@ export default function MapEditor() {
         }
         if (wallDragRef.current) {
           const wd = wallDragRef.current;
-          drawWallRect(Math.min(wd.sx, wd.ex), Math.min(wd.sy, wd.ey), Math.abs(wd.ex - wd.sx), Math.abs(wd.ey - wd.sy), true);
+          drawWallRect(Math.min(wd.sx, wd.ex), Math.min(wd.sy, wd.ey), Math.abs(wd.ex - wd.sx), Math.abs(wd.ey - wd.sy), true, undefined, wallRgb);
         }
         /* v0.56: протягиваемая ЗОНА-триггер кат-сцены — пунктирный оранжевый прямоугольник */
         if (cutZoneDragRef.current) {
@@ -3708,6 +3760,8 @@ export default function MapEditor() {
   const bgIsTile = !!(map && map.tileGrid && bgScope === 'plate');
   const tileBgCur = map && map.tileGrid && activeTile ? (map.tileBgs ?? {})[activeTile.id] : undefined;
   const activeTileNum = map?.tileGrid && activeTile ? map.tileGrid.tiles.findIndex((t) => t.id === activeTile.id) + 1 : 0;
+  /* v0.152: стены ВЫБРАННОГО ВАРИАНТА (A — map.walls, B — map.wallsB) — для панели «Невидимые стены» */
+  const wallsCur = bgVar === 'B' ? (map?.wallsB ?? []) : (map?.walls ?? []);
 
   return (
     <div className="h-full crt-grid-bg flex flex-col">
@@ -3807,8 +3861,8 @@ export default function MapEditor() {
                     КАРТА B (включается только СОБЫТИЕМ — смена карты в диалогах, награда
                     квеста NPC, а во FRENDY — приход Салли и Молдера к печи) */}
                 <div className="flex gap-1.5 mb-1.5">
-                  <button onClick={() => { setBgVar('A'); sfx.hover(); }} title="КАРТА A — обычный фон, показывается в игре ПО УМОЛЧАНИЮ" className={`flex-1 py-1 border-2 cursor-pointer font-display text-[9px] uppercase ${bgVar === 'A' ? 'border-teal text-teal bg-teal/10' : 'border-edge text-faint hover:text-dim'}`}>КАРТА A</button>
-                  <button onClick={() => { setBgVar('B'); sfx.hover(); }} title="КАРТА B — альтернативный фон (вечер, развалины, «что-то произошло»). В игре НЕ показывается, пока не сработает СОБЫТИЕ: смена карты в редакторе диалогов, награда квеста NPC, а во FRENDY — приход Салли и Молдера к печи" className={`flex-1 py-1 border-2 cursor-pointer font-display text-[9px] uppercase ${bgVar === 'B' ? 'border-magma text-magma bg-magma/10' : 'border-edge text-faint hover:text-dim'}`}>КАРТА B (событие)</button>
+                  <button onClick={() => switchBgVar('A')} title="КАРТА A — обычный фон, показывается в игре ПО УМОЛЧАНИЮ. Переключает и стены (панель «Невидимые стены»), и предпросмотр на канве" className={`flex-1 py-1 border-2 cursor-pointer font-display text-[9px] uppercase ${bgVar === 'A' ? 'border-teal text-teal bg-teal/10' : 'border-edge text-faint hover:text-dim'}`}>КАРТА A</button>
+                  <button onClick={() => switchBgVar('B')} title="КАРТА B — альтернативный фон (вечер, развалины, «что-то произошло»). В игре НЕ показывается, пока не сработает СОБЫТИЕ: смена карты в редакторе диалогов, награда квеста NPC, а во FRENDY — приход Салли и Молдера к печи. Переключает и стены (панель «Невидимые стены»), и предпросмотр на канве" className={`flex-1 py-1 border-2 cursor-pointer font-display text-[9px] uppercase ${bgVar === 'B' ? 'border-magma text-magma bg-magma/10' : 'border-edge text-faint hover:text-dim'}`}>КАРТА B (событие)</button>
                 </div>
                 {/* КУДА ЛОЖИТСЯ НОВЫЙ ФОН — выбор появляется при разбивке на плитки ИЛИ
                     в плиточном режиме: «На эту плитку» = у каждой плитки своя картинка
@@ -4430,24 +4484,38 @@ export default function MapEditor() {
                   title={panelOpen('walls') ? 'Свернуть' : 'Развернуть'}
                 >
                   <span className={`text-[10px] shrink-0 ${panelOpen('walls') ? 'text-gold' : 'text-faint'}`}>{panelOpen('walls') ? '▾' : '▸'}</span>
-                  <span className="tick-label">Невидимые стены · {(map.walls ?? []).length}</span>
+                  <span className="tick-label">Невидимые стены · A: {(map.walls ?? []).length} · B: {(map.wallsB ?? []).length}</span>
                 </button>
                 {panelOpen('walls') && (
                   <div className="space-y-1.5">
-                    <p className="text-[10px] text-faint leading-tight">Зоны, куда фишка НЕ может зайти («невидимые стены» в играх). Ходить изначально можно ВЕЗДЕ — стены только исключения. Инструмент «Стена»: протяните прямоугольник по полю. Обычные стены в игре НЕ рисуются; стена с ЗАМКОМ (дверь) — видна цветной зоной и открывается ключом того же цвета.</p>
+                    {/* v0.152: ВАРИАНТ КАРТЫ для стен — тот же переключатель, что и у фона:
+                        «КАРТА A» — стены по умолчанию, «КАРТА B» — включаются СОБЫТИЕМ
+                        «смена карты» (фон ВСЕЙ карты) и заменяют собой все стены A */}
+                    <div className="flex gap-1.5">
+                      <button onClick={() => switchBgVar('A')} title="Стены КАРТЫ A — действуют в игре по умолчанию, пока СОБЫТИЕ не включит КАРТУ B всей карты" className={`flex-1 py-1 border-2 cursor-pointer font-display text-[9px] uppercase ${bgVar === 'A' ? 'border-teal text-teal bg-teal/10' : 'border-edge text-faint hover:text-dim'}`}>Стены КАРТЫ A</button>
+                      <button onClick={() => switchBgVar('B')} title="Стены КАРТЫ B — рисуются для альтернативной карты (вечер/развалины): в момент СОБЫТИЯ «смена карты» (фон всей карты → B) они заменяют ВСЕ стены карты A. Пока стен B нет — действуют стены A" className={`flex-1 py-1 border-2 cursor-pointer font-display text-[9px] uppercase ${bgVar === 'B' ? 'border-magma text-magma bg-magma/10' : 'border-edge text-faint hover:text-dim'}`}>Стены КАРТЫ B (событие)</button>
+                    </div>
+                    <p className="text-[10px] text-faint leading-tight">
+                      {bgVar === 'B'
+                        ? <><span className="text-magma">РЕДАКТИРУЮТСЯ СТЕНЫ КАРТЫ B</span> (на канве — оранжевые): в игре работают только после СОБЫТИЯ «смена карты» — фон ВСЕЙ карты → КАРТА B; стены A при этом ПЕРЕСТАЮТ действовать. Смена фон ПАНЕЛИ (плитки/карты-плитки) стены не трогает. Для смены одной панели стены не нужны.</>
+                        : 'Зоны, куда фишка НЕ может зайти («невидимые стены» в играх). Ходить изначально можно ВЕЗДЕ — стены только исключения. Инструмент «Стена»: протяните прямоугольник по полю. Обычные стены в игре НЕ рисуются; стена с ЗАМКОМ (дверь) — видна цветной зоной и открывается ключом того же цвета.'}
+                    </p>
+                    {bgVar === 'B' && (map.wallsB ?? []).length === 0 && (
+                      <p className="text-[9px] text-magma leading-tight border-2 border-magma/40 px-2 py-1">Стены КАРТЫ B пусты: в игре будут действовать СТЕНЫ КАРТЫ A. Нарисуйте хотя бы одну стену B (инструмент «Стена») — и в момент события она заменит собой ВСЕ стены карты A.</p>
+                    )}
                     <p className={`text-[10px] leading-tight border-2 px-2 py-1.5 ${isJourneyLike(map.mode) ? 'text-teal border-teal/40' : 'text-magma border-magma/40'}`}>
                       {isJourneyLike(map.mode)
                         ? `Режим ${MAP_MODES.find((x) => x.id === (map.mode ?? 'classic'))?.name ?? ''} — стены активны: фишки не смогут их пересечь.`
                         : 'Стены работают ТОЛЬКО в JOURNEY, JOURNEY SOLO и RUBG: с любым другим режимом карту не завершить — смените режим (кнопки вверху) или удалите все стены.'}
                     </p>
-                    {(map.walls ?? []).length > 0 && (
+                    {wallsCur.length > 0 && (
                       <>
-                        <p className="text-[10px] text-dim leading-tight">Клик по стене — выбрать и тянуть, ДВОЙНОЙ КЛИК по стене на карте — переименовать (имя видно подписью на карте и в списках квестов), Delete — удалить выбранную. Можно убрать все стены одной кнопкой:</p>
-                        <PxBtn color="coral" small className="w-full" onClick={removeAllWalls}>{Ic.trash(12)} Удалить все стены разом</PxBtn>
+                        <p className="text-[10px] text-dim leading-tight">{bgVar === 'B' ? 'Стены КАРТЫ B' : 'Стены'}: клик по стене — выбрать и тянуть, ДВОЙНОЙ КЛИК по стене на карте — переименовать (имя видно подписью на карте и в списках квестов), Delete — удалить выбранную. Можно убрать все стены одной кнопкой:</p>
+                        <PxBtn color="coral" small className="w-full" onClick={removeAllWalls}>{Ic.trash(12)} {bgVar === 'B' ? 'Удалить все стены КАРТЫ B разом' : 'Удалить все стены разом'}</PxBtn>
                         {/* v0.55: ДВЕРЬ — выбранной стене назначается цвет замка; NPC выдаёт ключ этого цвета (в диалоге или наградой квеста), и фишка проходит сквозь */}
-                        {selWall !== null && (map.walls ?? [])[selWall] && (
+                        {selWall !== null && wallsCur[selWall] && (
                           <div className="space-y-1 border-2 border-[rgba(255,207,63,0.4)] px-2 py-1.5">
-                            <div className="tick-label text-[#ffcf3f]">🚪 Дверь выбранной стены</div>
+                            <div className="tick-label text-[#ffcf3f]">🚪 Дверь выбранной стены{bgVar === 'B' ? ' (КАРТА B)' : ''}</div>
                             <p className="text-[9px] text-dim leading-tight">Стена с замком = ДВЕРЬ: в игре она видна цветной зоной, и пройти её можно только с КЛЮЧОМ того же цвета. Выдать ключ: панель NPC → диалог «🔑 дать ключ» или награда квеста.</p>
                             {/* v0.97: ИМЯ стены/двери — видно на карте и в списках «Снять стены» */}
                             <div className="flex items-center gap-1">
@@ -4455,33 +4523,33 @@ export default function MapEditor() {
                                 className="field-in flex-1 min-w-0 px-1.5 py-1 text-[10px]"
                                 placeholder="название (напр. Склад, Каюта)"
                                 maxLength={40}
-                                value={(map.walls ?? [])[selWall]!.name ?? ''}
+                                value={wallsCur[selWall]!.name ?? ''}
                                 title="Имя стены/двери: подпись на карте и в списках квестов. Двойной клик по стене на карте — то же самое"
                                 onChange={(ev) => updWall(selWall!, { name: ev.target.value || undefined })}
                                 onBlur={(ev) => { const vv = ev.target.value.trim(); if (vv !== ev.target.value) updWall(selWall!, { name: vv || undefined }); }}
                               />
-                              <GhostBtn small onClick={() => setWallRename({ idx: selWall!, value: (map.walls ?? [])[selWall!]!.name ?? '' })} title="Окно переименования (как двойной клик по стене)">✏</GhostBtn>
+                              <GhostBtn small onClick={() => setWallRename({ idx: selWall!, value: wallsCur[selWall!]!.name ?? '' })} title="Окно переименования (как двойной клик по стене)">✏</GhostBtn>
                             </div>
                             <div className="flex items-center gap-1 flex-wrap">
                               <button
                                 onClick={() => updWall(selWall, { key: undefined })}
                                 title="Обычная невидимая стена (без замка)"
-                                className={`px-2 py-1 text-[9px] font-display border-2 cursor-pointer ${(map.walls ?? [])[selWall]!.key ? 'border-edge text-dim' : 'border-gold text-gold bg-gold/10'}`}
+                                className={`px-2 py-1 text-[9px] font-display border-2 cursor-pointer ${wallsCur[selWall]!.key ? 'border-edge text-dim' : 'border-gold text-gold bg-gold/10'}`}
                               >без замка</button>
                               {DOOR_KEYS.map((k) => (
                                 <button
                                   key={k.id}
                                   onClick={() => updWall(selWall, { key: k.id })}
                                   title={`Дверь с замком «${k.name}» — открывается ключом «${k.name}»`}
-                                  className={`w-6 h-6 border-2 cursor-pointer flex items-center justify-center ${(map.walls ?? [])[selWall]!.key === k.id ? 'border-gold' : 'border-edge'}`}
+                                  className={`w-6 h-6 border-2 cursor-pointer flex items-center justify-center ${wallsCur[selWall]!.key === k.id ? 'border-gold' : 'border-edge'}`}
                                   style={{ background: `${k.hex}33` }}
                                 >
                                   <span className="w-3 h-3 border border-abyss" style={{ background: k.hex }} />
                                 </button>
                               ))}
                             </div>
-                            {(map.walls ?? [])[selWall]!.key && (
-                              <p className="text-[9px] text-[#ffcf3f] leading-tight">🔑 Замок: {DOOR_KEYS.find((x) => x.id === (map.walls ?? [])[selWall]!.key)?.name} — NPC выдаёт ключ, фишка проходит.</p>
+                            {wallsCur[selWall]!.key && (
+                              <p className="text-[9px] text-[#ffcf3f] leading-tight">🔑 Замок: {DOOR_KEYS.find((x) => x.id === wallsCur[selWall]!.key)?.name} — NPC выдаёт ключ, фишка проходит.</p>
                             )}
                           </div>
                         )}
@@ -4587,13 +4655,24 @@ export default function MapEditor() {
                             <button onClick={() => shrinkTileScheme('cols')} title="Убрать последний столбец справа (если он пуст)" className="px-1.5 py-0.5 font-pixel text-[9px] border-2 border-edge text-faint hover:text-coral hover:border-coral cursor-pointer">− столбец</button>
                             <button onClick={() => shrinkTileScheme('rows')} title="Убрать последний ряд снизу (если он пуст)" className="px-1.5 py-0.5 font-pixel text-[9px] border-2 border-edge text-faint hover:text-coral hover:border-coral cursor-pointer">− ряд</button>
                           </div>
-                          {tileBgCount > 0 && <p className="text-[9px] text-teal mt-1 leading-tight"><span className="inline-block w-1.5 h-1.5 bg-teal align-middle mr-0.5" /> — у карты свой фон ({tileBgCount} шт., загрузка в панели «Фон» выше)</p>}
+                          {tileBgCount > 0 && <p className="text-[9px] text-teal mt-1 leading-tight"><span className="inline-block w-1.5 h-1.5 bg-teal align-middle mr-0.5" /> — у карты свой фон ({tileBgCount} шт., загрузка здесь или в панели «Фон» выше)</p>}
                         </div>
                         <div className="flex gap-1.5">
                           <PxBtn color="teal" small className="flex-1" onClick={addMapTile}>{Ic.plus(12)} Добавить карту-плитку</PxBtn>
-                          {/* v0.124: дубль загрузки фона — рядом с добавлением плитки (раньше кнопка была только вверху левой колонки — далеко крутить роликом) */}
-                          <PxBtn color="gold" small className="flex-1" onClick={() => { setBgScope('plate'); setTimeout(() => bgRef.current?.click(), 0); }} title="Загрузить фон для КАРТЫ-ПЛИТКИ, на которую сейчас смотрит камера (дубль кнопки из панели «Фон» выше — чтобы не крутить роликом кверху)">{Ic.plus(12)} Добавить фон плитке</PxBtn>
+                          {/* v0.124: дубль загрузки фона — рядом с добавлением плитки (раньше кнопка была только вверху левой колонки — далеко крутить роликом).
+                              v0.152: ложит фон ВЫБРАННОГО варианта (A или B — переключатель под кнопкой) */}
+                          <PxBtn color="gold" small className="flex-1" onClick={() => { setBgScope('plate'); setTimeout(() => bgRef.current?.click(), 0); }} title="Загрузить фон выбранного варианта (A или B) для КАРТЫ-ПЛИТКИ, на которую сейчас смотрит камера (дубль кнопки из панели «Фон» выше — чтобы не крутить роликом кверху)">{Ic.plus(12)} {bgVar === 'B' ? 'Добавить КАРТУ B плитке' : 'Добавить фон плитке'}</PxBtn>
                         </div>
+                        {/* v0.152: ВЫБОР ВАРИАНТА ФОНА ЕЩЁ И ЗДЕСЬ — внизу, где добавляем плитки и ряды
+                            (заказчик: «Выбор добавление фона B добавь и вниз, где добавляем плитки, ряды»);
+                            переключатель синхронизирован с панелью «Фон» выше и со стенами */}
+                        <div className="flex gap-1.5">
+                          <button onClick={() => switchBgVar('A')} title="КАРТА A — обычный фон карты-плитки, показывается в игре ПО УМОЛЧАНИЮ" className={`flex-1 py-1 border-2 cursor-pointer font-display text-[9px] uppercase ${bgVar === 'A' ? 'border-teal text-teal bg-teal/10' : 'border-edge text-faint hover:text-dim'}`}>Фон A</button>
+                          <button onClick={() => switchBgVar('B')} title="КАРТА B — альтернативный фон этой карты-плитки (вечер, развалины, «что-то произошло»): в игре НЕ показывается, пока не сработает СОБЫТИЕ «смена карты» (редактор диалогов, награда квеста NPC, а во FRENDY — приход Салли и Молдера)" className={`flex-1 py-1 border-2 cursor-pointer font-display text-[9px] uppercase ${bgVar === 'B' ? 'border-magma text-magma bg-magma/10' : 'border-edge text-faint hover:text-dim'}`}>Фон B (событие)</button>
+                        </div>
+                        {bgVar === 'B' && (
+                          <p className="text-[9px] text-magma leading-tight border-2 border-magma/40 px-2 py-1">Кнопка выше положит КАРТУ B фон выбранной карты-плитки (сейчас № {activeTileNum}). В игре по умолчанию показывается фон A — КАРТА B появится только после СОБЫТИЯ.</p>
+                        )}
                         <p className="text-[10px] text-faint leading-tight">Новая плитка встаёт на свободный слот рядом с выбранной. Схему стройте КАК УГОДНО: «+ столбец / + ряд» добавляют пустые ряды и столбцы (хоть 6 вправо и 3 вниз), «−» убирает пустой край. Перетаскивание ПЛАВНОЕ: зажали ЛКМ — плитка приподнялась, за курсором едет призрак «КАРТА N → сюда», отпустили — плитка доезжает до слота (на свободный или обмен с другой — вместе с содержимым). «⛶ Весь экран» — вся схема на мониторе. Порталы связывают ЛЮБЫЕ плитки.</p>
                         {/* v0.76: ТИП ИГРЫ КАРТ-ПЛИТОК — видимость соседей × способ перехода (во время игры) */}
                         <div className="border-2 border-edge px-2 py-1.5 space-y-1">
@@ -5243,6 +5322,16 @@ export default function MapEditor() {
                 >Вся карта</button>
               </div>
 
+              {/* v0.152: БЕЙДЖ ВЫБРАННОГО ВАРИАНТА НА КАНВЕ — «на какую карту сменил» видно всегда:
+                  при выборе «КАРТА B» канва показывает фон B и стены B (оранжевые) */}
+              {bgVar === 'B' && (
+                <div className="absolute top-3 right-3 z-10 pointer-events-none">
+                  <div className="pixel-corners px-3 py-1.5 border-2 border-magma bg-[rgba(30,16,8,0.85)]">
+                    <span className="font-display text-[10px] uppercase tracking-wide text-magma">РЕДАКТИРУЕТСЯ КАРТА B (событие)</span>
+                  </div>
+                </div>
+              )}
+
               {/* статус (v0.46.0: лимит ширины — раньше наезжал на правую подсказку) */}
               <div className="absolute bottom-3 left-3 hud-chip pixel-corners px-3 py-2 text-[11px] space-y-0.5 pointer-events-none max-w-[min(620px,52%)]">
                 <div className={`font-display uppercase ${map.cells.length >= 10 ? 'text-teal' : 'text-gold'}`}>
@@ -5255,7 +5344,7 @@ export default function MapEditor() {
                 {tool === 'hop' && <div className="text-coral font-pixel text-[8px]">ПЕРЕХОД: клик по ячейке А, затем по Б — при остановке на А фишка прыгнет на Б · Esc — отмена{linkFrom !== null ? ' · выбрана А, жмите Б' : ''}</div>}
                 {tool === 'erase' && <div className="text-coral font-pixel text-[8px]">ЛАСТИК: клик или тяните с кнопкой — стирает ТАЙЛЫ под курсором · ячейки не трогает</div>}
                 {tool === 'tile' && <div className="text-sky font-pixel text-[8px]">ТАЙЛ: клик — поставить{tileFrame ? ' · 🧱 БОРТА ВКЛ (рамка-коллайдер вокруг нового тайла — галочка в панели «Тайлы карты»)' : ' · без границ (борта — галочка «🧱 Борта у новых тайлов» в панели «Тайлы карты»)'}</div>}
-                {tool === 'wall' && <div className="text-coral font-pixel text-[8px]">СТЕНА: протяните прямоугольник — фишка не зайдёт внутрь (в игре невидима) · клик по стене — выбрать и тянуть · ДВОЙНОЙ КЛИК — переименовать · Delete — удалить</div>}
+                {tool === 'wall' && <div className="text-coral font-pixel text-[8px]">СТЕНА {bgVar === 'B' ? 'КАРТЫ B' : ''}: протяните прямоугольник — фишка не зайдёт внутрь (в игре невидима) · клик по стене — выбрать и тянуть · ДВОЙНОЙ КЛИК — переименовать · Delete — удалить{bgVar === 'B' ? ' · стены B заменят ВСЕ стены A при событии «смена карты»' : ''}</div>}
                 {tool === 'portal' && <div className="text-[rgb(192,122,255)] font-pixel text-[8px]">{pickTargetFor !== null ? `ПОРТАЛ ${pickTargetFor + 1}: кликните по карте — КУДА переносить (плитку переключите в панели «Плитки и порталы») · Esc — отмена` : 'ПОРТАЛ: протяните зону входа · после этого кликните по карте — куда переносить · клик по порталу — выбрать и тянуть · Delete — удалить'}</div>}
               </div>
               {/* подсказки мыши (v0.46.0: фон + лимит ширины; скрыта, пока открыта правая панель, — раньше текст НАКЛАДЫВАЛСЯ на панель и на статус) */}
@@ -5929,17 +6018,19 @@ export default function MapEditor() {
                             {DOOR_KEYS.map((k) => <option key={k.id} value={k.id}>🔑 {k.name}</option>)}
                           </select>
                         </div>
-                        {(map.walls ?? []).filter((w) => w.id).length > 0 && (
+                        {/* v0.152: списки снимаемых стен видят стены ОБОИХ вариантов (КАРТА A и КАРТА B) —
+                            выполненный квест снимает стену из любого списка (id уникальны) */}
+                        {[...(map.walls ?? []).map((w) => ({ w, isB: false })), ...(map.wallsB ?? []).map((w) => ({ w, isB: true }))].filter((x) => x.w.id).length > 0 && (
                           <div className="space-y-1">
                             <span className="tick-label text-faint">Снять стены при выполнении:</span>
-                            {(map.walls ?? []).map((w, wi) => w.id && (
-                              <label key={w.id} className="flex items-center gap-1.5 text-[10px] text-dim cursor-pointer">
+                            {[...(map.walls ?? []).map((w) => ({ w, isB: false })), ...(map.wallsB ?? []).map((w) => ({ w, isB: true }))].map((x, wi) => x.w.id && (
+                              <label key={x.w.id} className="flex items-center gap-1.5 text-[10px] text-dim cursor-pointer">
                                 <input
                                   type="checkbox"
-                                  checked={(q.removeWalls ?? []).includes(w.id!)}
-                                  onChange={(ev) => updNpcQuest(q.id, { removeWalls: ev.target.checked ? [...(q.removeWalls ?? []), w.id!] : (q.removeWalls ?? []).filter((x) => x !== w.id) })}
+                                  checked={(q.removeWalls ?? []).includes(x.w.id!)}
+                                  onChange={(ev) => updNpcQuest(q.id, { removeWalls: ev.target.checked ? [...(q.removeWalls ?? []), x.w.id!] : (q.removeWalls ?? []).filter((id) => id !== x.w.id) })}
                                 />
-                                стена/дверь №{wi + 1}{w.name ? ` «${w.name}»` : ''}{w.key ? ` · ${DOOR_KEYS.find((x) => x.id === w.key)?.name ?? ''}` : ''} ({Math.round(w.w)}×{Math.round(w.h)})
+                                {x.isB ? <span className="text-magma">[B]</span> : ''} стена/дверь №{wi + 1}{x.w.name ? ` «${x.w.name}»` : ''}{x.w.key ? ` · ${DOOR_KEYS.find((k) => k.id === x.w.key)?.name ?? ''}` : ''} ({Math.round(x.w.w)}×{Math.round(x.w.h)})
                               </label>
                             ))}
                           </div>

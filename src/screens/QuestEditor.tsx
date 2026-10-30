@@ -329,17 +329,19 @@ export default function QuestEditor() {
                             <option value="hereA">🗺 панель NPC → A</option>
                           </select>
                         </div>
-                        {(map.walls ?? []).filter((w) => w.id).length > 0 && (
+                        {/* v0.152: списки снимаемых стен видят стены ОБОИХ вариантов (КАРТА A и КАРТА B) —
+                            выполненный квест снимает стену из любого списка (id уникальны) */}
+                        {[...(map.walls ?? []).map((w) => ({ w, isB: false })), ...(map.wallsB ?? []).map((w) => ({ w, isB: true }))].filter((x) => x.w.id).length > 0 && (
                           <div className="space-y-1">
                             <span className="tick-label text-faint">Снять стены при выполнении:</span>
-                            {(map.walls ?? []).map((w, wi) => w.id && (
-                              <label key={w.id} className="flex items-center gap-1.5 text-[10px] text-dim cursor-pointer">
+                            {[...(map.walls ?? []).map((w) => ({ w, isB: false })), ...(map.wallsB ?? []).map((w) => ({ w, isB: true }))].map((x, wi) => x.w.id && (
+                              <label key={x.w.id} className="flex items-center gap-1.5 text-[10px] text-dim cursor-pointer">
                                 <input
                                   type="checkbox"
-                                  checked={(q.removeWalls ?? []).includes(w.id!)}
-                                  onChange={(ev) => updQuest(selIdx, q.id, { removeWalls: ev.target.checked ? [...(q.removeWalls ?? []), w.id!] : (q.removeWalls ?? []).filter((x) => x !== w.id) })}
+                                  checked={(q.removeWalls ?? []).includes(x.w.id!)}
+                                  onChange={(ev) => updQuest(selIdx, q.id, { removeWalls: ev.target.checked ? [...(q.removeWalls ?? []), x.w.id!] : (q.removeWalls ?? []).filter((id) => id !== x.w.id) })}
                                 />
-                                {w.key ? 'дверь' : 'стена'} №{wi + 1}{w.name ? ` «${w.name}»` : ''}{w.key ? ` · ${DOOR_KEYS.find((x) => x.id === w.key)?.name ?? ''}` : ''} ({Math.round(w.w)}×{Math.round(w.h)})
+                                {x.isB ? <span className="text-magma">[B]</span> : ''} {x.w.key ? 'дверь' : 'стена'} №{wi + 1}{x.w.name ? ` «${x.w.name}»` : ''}{x.w.key ? ` · ${DOOR_KEYS.find((k) => k.id === x.w.key)?.name ?? ''}` : ''} ({Math.round(x.w.w)}×{Math.round(x.w.h)})
                               </label>
                             ))}
                           </div>

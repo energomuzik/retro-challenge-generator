@@ -1,4 +1,4 @@
-import type { BgEv, CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir } from './types';
+import type { BgEv, CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir, WallRect } from './types';
 import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_ENERGETIC_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_BURN_SHIELD_MS, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, cartFitsConsole, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, rubgItemSize, rubgGridFits, rubgGridFirstFit, FRENDY_INV_COLS, FRENDY_INV_ROWS, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
@@ -269,7 +269,9 @@ export function applyBgEv(s: GameSession, map: GameMap, ev: BgEv, at?: { x: numb
   if (ev.startsWith('map') || (!map.tileGrid && !map.plateSize)) {
     if (!!b.map === toB) return null;
     b.map = toB;
-    return toB ? '🌃 ФОН КАРТЫ СМЕНИЛСЯ: НАСТУПИЛА КАРТА B' : '🌄 ФОН КАРТЫ ВЕРНУЛСЯ: СНОВА КАРТА A';
+    /* v0.152: у карты B свои стены — игроки ходят по НОВОЙ карте; скажем об этом в логе */
+    const wallHint = toB && map.wallsB?.length ? ' Стены перестроены по КАРТЕ B.' : '';
+    return toB ? `🌃 ФОН КАРТЫ СМЕНИЛСЯ: НАСТУПИЛА КАРТА B${wallHint}` : '🌄 ФОН КАРТЫ ВЕРНУЛСЯ: СНОВА КАРТА A';
   }
   if (map.tileGrid && at) {
     const id = bgTileAt(map, at.x, at.y);
@@ -290,12 +292,21 @@ export function applyBgEv(s: GameSession, map: GameMap, ev: BgEv, at?: { x: numb
   return null;
 }
 
+/* v0.152: СТЕНЫ АКТИВНОГО ВАРИАНТА КАРТЫ (A/B): когда СОБЫТИЕ сменило фон ВСЕЙ карты
+   на B (mapB) и у карты есть СВОИ стены КАРТЫ B — действуют ОНИ, а стены карты A
+   ПЕРЕСТАЮТ действовать; пока стен B не нарисовано — обычные стены (map.walls).
+   Единая точка чтения стен: движок (коллизии фишек, BFS Френди) и рисование дверей. */
+export function wallsOf(map: GameMap, mapB?: boolean): WallRect[] {
+  return mapB && map.wallsB ? map.wallsB : (map.walls ?? []);
+}
+
 /* НЕВИДИМЫЕ СТЕНЫ (JOURNEY): точка (центр фишки) внутри стены?
    Стены хранятся углом (x,y — левый верх) + размер; ходить можно везде, кроме них.
    v0.55: стена с key — ЗАПЕРТАЯ ДВЕРЬ цвета: точка считается вне стены, только если
-   у фишки ЕСТЬ ключ этого цвета (keys — список цветов ключей игрока). */
-function pointInWall(map: GameMap, x: number, y: number, removed?: string[], keys?: string[]): boolean {
-  for (const w of map.walls ?? []) {
+   у фишки ЕСТЬ ключ этого цвета (keys — список цветов ключей игрока).
+   v0.152: mapB — событие уже включило КАРТУ B всей карты: стены берутся из wallsB. */
+function pointInWall(map: GameMap, x: number, y: number, removed?: string[], keys?: string[], mapB?: boolean): boolean {
+  for (const w of wallsOf(map, mapB)) {
     if (w.id && removed?.includes(w.id)) continue; // стена СНЯТА выполнением квеста NPC
     if (w.key && keys?.includes(w.key)) continue; // v0.55: дверь открыта КЛЮЧОМ того же цвета
     if (x >= w.x && x < w.x + w.w && y >= w.y && y < w.y + w.h) return true;
@@ -1559,7 +1570,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
   };
 
   /* ---------- v0.123 FRENDY: хоррор-режим — разброс микросхем, BFS-ИИ босса, тик ---------- */
-  const frendyCellFree = (x: number, y: number): boolean => !pointInWall(map, x, y);
+  /* v0.152: стены берутся по активному варианту карты (A/B) — s.bgB?.map */
+  const frendyCellFree = (x: number, y: number): boolean => !pointInWall(map, x, y, undefined, undefined, !!s.bgB?.map);
   /** Случайная свободная точка поля (не стена; не печь/старт; не ближе minDist к avoid). */
   const frendyFreeSpot = (avoid: { x: number; y: number }[], minDist = 90): { x: number; y: number } | null => {
     const W = map.mw ?? map.cols * CELL_PX;
@@ -1601,7 +1613,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           const nx = Math.round(cx + dx * (r.w / 2 + off));
           const ny = Math.round(cy + dy * (r.h / 2 + off));
           if (nx < 12 || ny < 12 || nx > W - 12 || ny > H - 12) continue;
-          if (pointInWall(map, nx, ny)) continue;
+          if (pointInWall(map, nx, ny, undefined, undefined, !!s.bgB?.map)) continue;
           let hit = false; // не дать вылететь В ДРУГУЮ приставку/печь
           for (let j = 0; j < map.cells.length; j++) {
             const c2 = map.cells[j];
@@ -1796,9 +1808,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const dl = Math.hypot(dx, dy) || 1;
       let nx = b.x + (dx / dl) * Math.min(step, dl + 4);
       let ny = b.y + (dy / dl) * Math.min(step, dl + 4);
-      if (pointInWall(map, nx, ny)) {
-        if (!pointInWall(map, nx, b.y)) ny = b.y; // скольжение по осям
-        else if (!pointInWall(map, b.x, ny)) nx = b.x;
+      if (pointInWall(map, nx, ny, undefined, undefined, !!s.bgB?.map)) {
+        if (!pointInWall(map, nx, b.y, undefined, undefined, !!s.bgB?.map)) ny = b.y; // скольжение по осям
+        else if (!pointInWall(map, b.x, ny, undefined, undefined, !!s.bgB?.map)) nx = b.x;
         else { nx = b.x; ny = b.y; }
       }
       b.x = Math.max(8, Math.min(W - 8, Math.round(nx)));
@@ -2057,7 +2069,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         const ang = Math.random() * Math.PI * 2;
         const rad = CELL_PX * (1.2 + Math.random() * 1.6);
         const sx = tp.x + Math.cos(ang) * rad, sy = tp.y + Math.sin(ang) * rad;
-        if (!pointInWall(map, sx, sy)) spot = { x: Math.round(sx), y: Math.round(sy) };
+        if (!pointInWall(map, sx, sy, undefined, undefined, !!s.bgB?.map)) spot = { x: Math.round(sx), y: Math.round(sy) };
       }
       if (spot) {
         b.lastTpAt = now;
@@ -2077,7 +2089,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         const ang = Math.random() * Math.PI * 2;
         const rad = CELL_PX * (0.9 + Math.random() * 0.7); // 0.9–1.6 клетки — появляется рядом
         const sx = tp.x + Math.cos(ang) * rad, sy = tp.y + Math.sin(ang) * rad;
-        if (!pointInWall(map, sx, sy)) spot = { x: Math.round(sx), y: Math.round(sy) };
+        if (!pointInWall(map, sx, sy, undefined, undefined, !!s.bgB?.map)) spot = { x: Math.round(sx), y: Math.round(sy) };
       }
       if (spot) {
         b.lastTpAt = now;
@@ -3078,7 +3090,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       /* НЕВИДИМЫЕ СТЕНЫ: фишка не может зайти в стену (клиент скользит по стене сам —
          сюда точка внутри стены попадает только при рассинхроне). v0.55: у игрока
          есть ЦВЕТНЫЕ КЛЮЧИ — через дверь его цвета он ПРОХОДИТ. */
-      if (pointInWall(map, x, y, s.wallsRemoved, s.qKeys?.[p.id])) break;
+      if (pointInWall(map, x, y, s.wallsRemoved, s.qKeys?.[p.id], !!s.bgB?.map)) break;
       /* защита от телепортаций: одно обновление не дальше 2.5 клеток от прошлой позиции.
          СТОП-обновление (mv=false) принимаем всегда — игрок реально стоит в этой точке,
          иначе при сетевом заторе цепочка отклонённых апдейтов «застревала» надолго.
@@ -4577,9 +4589,10 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         const msgQ = applyBgEv(s, map, q.reward.bgEv, { x: npc.x, y: npc.y });
         if (msgQ) log(`${msgQ} (квест «${q.title}») `);
       }
-      /* Снятие стен: выполненный квест убирает назначенные ему стены — путь открыт ВСЕМ */
+      /* Снятие стен: выполненный квест убирает назначенные ему стены — путь открыт ВСЕМ.
+         v0.152: стены ищутся в ОБОИХ вариантах карты (A и B — id уникальны) */
       if (q.removeWalls?.length) {
-        const ids = (map.walls ?? []).map((w) => w.id).filter((id): id is string => !!id && q.removeWalls!.includes(id));
+        const ids = [...(map.walls ?? []), ...(map.wallsB ?? [])].map((w) => w.id).filter((id): id is string => !!id && q.removeWalls!.includes(id));
         const before = s.wallsRemoved ?? [];
         s.wallsRemoved = [...new Set([...before, ...ids])];
         if (s.wallsRemoved.length > before.length) log(`🧱 Стены ИСЧЕЗЛИ (${s.wallsRemoved.length - before.length} шт.) — путь открыт!`);
