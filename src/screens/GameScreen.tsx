@@ -310,7 +310,7 @@ export default function GameScreen() {
   /* экранный D-pad: пока открыт мини-экран (карман/взлом) или ИНВЕНТАРЬ — направления
      игнорируются, фишка на фоне стоит (ref объявлен ниже, читается в рантайме после монтирования) */
   const journeyPress = (d: TokenDir, on: boolean) => {
-    if (on && (pocketBlockRef.current || invBlockRef.current || furnBlockRef.current || consoleBlockRef.current)) return; // v0.144: окно приставки тоже стоит
+    if (on && (pocketBlockRef.current || taskWinRef.current || invBlockRef.current || furnBlockRef.current || consoleBlockRef.current)) return; // v0.155: + окно МОЕГО задания; v0.144: окно приставки тоже стоит
     if (on) journeyKeys.current.add(d); else journeyKeys.current.delete(d);
   };
   /* ---------- FX: разовые анимации-спектакль (5-я/6-я фишки, реакции боссов) ----------
@@ -1013,6 +1013,10 @@ export default function GameScreen() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() === 'e' || e.key.toLowerCase() === 'у') {
+        /* v0.155: открыто окно МОЕГО задания (играю картридж — включил сам или Френди заставил):
+           E ничего НЕ открывает. Фокус после клика «Старт игры» может остаться на родительской
+           странице — и E открывала приставку/печь/разговоры ПОД окном задания. ESC ниже не тронут. */
+        if (taskWinRef.current) return;
         const cur = nearNpc;
         if (cur && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); openDialog(cur.npc.id); } // v0.56: в кат-сцене разговоров нет
         /* v0.123 FRENDY: E у ПЕЧИ — окно сжигания микросхемы */
@@ -1066,6 +1070,10 @@ export default function GameScreen() {
     const iv = window.setInterval(() => {
       const cur = new Set<number>();
       collectPadButtons(cur);
+      /* v0.155: открыто окно МОЕГО задания (играю картридж) — лицевые кнопки это ВВОД ИГРЫ:
+       окно печи в фоне НЕ открываем. База нажатий продолжает обновляться — после победы/
+       поражения первое НАСТОЯЩЕЕ нажатие снова откроет печь, а залипшая в игре кнопка — нет. */
+      if (taskWinRef.current) { furnPadPrevRef.current = cur; return; }
       let fresh = false;
       for (const b of cur) if (!furnPadPrevRef.current.has(b)) { fresh = true; break; }
       furnPadPrevRef.current = cur;
@@ -1085,6 +1093,16 @@ export default function GameScreen() {
     const iv = window.setInterval(() => {
       const cur = new Set<number>();
       collectPadButtons(cur);
+      /* v0.155: ГЛАВНЫЙ ФИКС «фишка в фоне открывает приставку» (заказчик: «включить приставку,
+       запустить картридж и начать играть с джоя — в фоне фишка открывает приставку»). После
+       POWER ON окно закрывается, фишка ОСТАЁТСЯ у приставки — и край-триггер v0.146 ловил
+       нажатия ЛИЦЕВЫХ КНОПОК В САМОЙ МИНИ-ИГРЕ: каждая считалась «свежим нажатием у приставки»
+       и переоткрывала окно приставки ПОД окном задания (тусклая панель просвечивала в фоне +
+       щёлкал звук). То же — когда Френди сам включил приставку. Теперь пока открыто окно МОЕГО
+       задания (taskWinRef) лицевые кнопки — только ввод ИГРЫ. База нажатий продолжает
+       обновляться: после победы/поражения первое настоящее нажатие снова откроет приставку
+       (как задумано в v0.146), а залипшая в игре кнопка — нет. */
+      if (taskWinRef.current) { consPadPrevRef.current = cur; return; }
       let fresh = false;
       for (const b of cur) if (!consPadPrevRef.current.has(b)) { fresh = true; break; }
       consPadPrevRef.current = cur;
