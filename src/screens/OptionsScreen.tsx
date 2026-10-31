@@ -2,8 +2,8 @@ import { useRef, useState } from 'react';
 import { useApp } from '../store';
 import { Field, GhostBtn, Ic, Modal, Panel, PxBtn, Toggle } from '../ui';
 import type { SpoilerMode } from '../types';
-import type { GameOptions } from '../types';
-import { idbDel, idbAll, exportLibrary, importLibrary } from '../db';
+import type { GameOptions, SaveDef } from '../types';
+import { idbAll, idbAllKeys, idbClear, idbDelMany, idbDelRange, exportLibrary, importLibrary } from '../db';
 import { STORES } from '../db';
 import { sfx } from '../sound';
 import { downloadHostBat } from '../host/hostPackage';
@@ -24,8 +24,9 @@ const SPOILER_MODES: { key: SpoilerMode; label: string; hint: string }[] = [
 ];
 
 export default function OptionsScreen() {
-  const { options, setOptions, setScreen, toast, refresh } = useApp();
+  const { options, setOptions, setScreen, toast, refresh, roms } = useApp();
   const [wipe, setWipe] = useState(false);
+  const [wipeRoms, setWipeRoms] = useState(false);
   /* v0.83: фоновая музыка — тумблер, громкость и режим «где играть»; v0.84: + трек-статус,
      «следующий», «совсем рандомный рандом», кликабельный автор с предупреждением */
   const mEnabled = useMusic((s) => s.enabled);
@@ -110,15 +111,33 @@ export default function OptionsScreen() {
     }
   };
 
+  /* v0.158: очистка библиотеки МГНОВЕННАЯ — одна команда clear() на каждое хранилище
+     (раньше всё читалось в память и удалялось по одной записи — с 16 000 ромов вкладка зависала) */
   const doWipe = async () => {
-    for (const s of STORES) {
-      const all = await idbAll(s);
-      await Promise.all(all.map((e) => idbDel(s, e.key)));
-    }
+    for (const s of STORES) await idbClear(s);
     await refresh();
     setWipe(false);
     sfx.fail();
     toast('Библиотека очищена', 'err');
+  };
+
+  /* v0.158: СБРОС БАЗЫ РОМОВ (заказчик залил 16 000 ромов и захотел всё это убрать,
+     не тронув карты): удаляются ВСЕ ромы, их двоичные данные и их сохранения;
+     карты, тайлы, фишки, анимации и челленджи ОСТАЮТСЯ. Мгновенно — одна-две транзакции.
+     ВАЖНО: ключи читаем ПРЯМО ИЗ БД, а не из списка на экране — сброс должен работать,
+     даже если список отстал от хранилища; блобы ромов удаляем ДИАПАЗОНОМ «rom-…» —
+     так уйдут и осиротевшие блобы, оставшиеся от сбоев прежних версий. */
+  const doWipeRoms = async () => {
+    const [romKeys, allSaves] = await Promise.all([idbAllKeys('roms'), idbAll<SaveDef>('saves')]);
+    const romSet = new Set(romKeys);
+    const orphanSaves = allSaves.filter((e) => e.value.romId && romSet.has(e.value.romId)).map((e) => e.key);
+    await idbDelRange('blobs', 'rom-', 'rom-\uffff');
+    await idbDelMany('saves', orphanSaves);
+    await idbClear('roms');
+    await refresh();
+    setWipeRoms(false);
+    sfx.fail();
+    toast(`База ромов сброшена: удалено ромов ${romKeys.length}${orphanSaves.length ? ` · сохранений ${orphanSaves.length}` : ''} — карты и всё остальное не тронуты`, 'err');
   };
 
   return (
@@ -663,11 +682,14 @@ export default function OptionsScreen() {
                   />
                 </label>
                 <span className="w-px h-6 bg-edge" />
+                <PxBtn color="coral" onClick={() => setWipeRoms(true)} title="Удалить все ромы, их данные и сохранения — карты, тайлы, фишки и челленджи останутся">{Ic.cart(14)} Сбросить базу ромов</PxBtn>
                 <PxBtn color="coral" onClick={() => setWipe(true)}>{Ic.trash(14)} Очистить библиотеку</PxBtn>
               </div>
               <p className="text-[11px] text-faint">
                 Экспорт скачивает один JSON-файл со всей библиотекой (ромы включены). Импорт сливает файл с текущей библиотекой —
                 удобно переносить карты с localhost на опубликованный сайт и между компьютерами.
+                «Сбросить базу ромов» стирает ТОЛЬКО ромы (и их сохранения) — если залили слишком много и всё стало тормозить;
+                «Очистить библиотеку» стирает вообще всё (карты тоже).
               </p>
             </div>
           </Panel>
@@ -680,6 +702,24 @@ export default function OptionsScreen() {
           <div className="flex gap-3 justify-end">
             <GhostBtn onClick={() => setWipe(false)}>Отмена</GhostBtn>
             <PxBtn color="coral" onClick={doWipe}>Стереть всё</PxBtn>
+          </div>
+        </Modal>
+      )}
+      {wipeRoms && (
+        <Modal title="Сбросить базу ромов?" icon={Ic.cart(16)} onClose={() => setWipeRoms(false)} w="max-w-md">
+          <div className="p-1 space-y-4">
+            <p className="text-[13px] text-paper leading-relaxed">
+              Будут удалены <span className="text-coral font-display uppercase">ВСЕ ромы ({roms.length})</span>, их двоичные данные
+              и их сохранения («Уровень N», «Босс N», «Моё задание», частные).
+            </p>
+            <p className="text-[12px] text-dim leading-relaxed">
+              Карты, тайлы, фишки, анимации, звуки и челленджи <span className="text-paper">останутся на месте</span>.
+              Задания, привязанные к ромам, попросят выбрать ром заново. Отменить действие нельзя.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <GhostBtn onClick={() => setWipeRoms(false)}>Отмена</GhostBtn>
+              <PxBtn color="coral" onClick={doWipeRoms}>Сбросить ромы</PxBtn>
+            </div>
           </div>
         </Modal>
       )}

@@ -54,6 +54,55 @@ export const idbGet = <T,>(store: StoreName, key: string) => tx<T | undefined>(s
 
 export const idbDel = (store: StoreName, key: string) => tx(store, 'readwrite', (s) => s.delete(key));
 
+/* v0.158: БЫСТРЫЕ МАССОВЫЕ ОПЕРАЦИИ — раньше «Очистить библиотеку» и удаление папки
+   ромов читали ВСЕ записи в память и удаляли по одной (у каждой — своя транзакция):
+   с 16 000 ромов это тысячи транзакций и гигабайты в памяти — вкладка зависала.
+   Теперь очистка/удаление/запись пачки идут ОДНОЙ транзакцией, без чтения в память. */
+
+/** Мгновенно стирает ВСЁ хранилище одной командой clear() — независимо от числа записей. */
+export async function idbClear(store: StoreName): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(store, 'readwrite');
+    t.objectStore(store).clear();
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error ?? new Error('транзакция прервана'));
+  });
+}
+
+/** Удаляет МНОЖЕСТВО ключей одного хранилища в ОДНОЙ транзакции (быстро даже на десятках тысяч). */
+export async function idbDelMany(store: StoreName, keys: string[]): Promise<void> {
+  if (!keys.length) return;
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(store, 'readwrite');
+    const s = t.objectStore(store);
+    for (const k of keys) s.delete(k);
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error ?? new Error('транзакция прервана'));
+  });
+}
+
+export interface IdbPutEntry { store: StoreName; key: string; value: unknown }
+
+/** Записывает ПАЧКУ значений (можно в разные хранилища) в ОДНУ транзакцию —
+ *  загрузка папки ромов ускоряется в десятки раз (2 записи на ром, но без
+ *  отдельной транзакции на каждую). Вызывающий сам режет пачку на чанки. */
+export async function idbPutMany(entries: IdbPutEntry[]): Promise<void> {
+  if (!entries.length) return;
+  const db = await openDb();
+  const stores = [...new Set(entries.map((e) => e.store))];
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(stores, 'readwrite');
+    for (const e of entries) t.objectStore(e.store).put(e.value, e.key);
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error ?? new Error('транзакция прервана'));
+  });
+}
+
 export async function idbAll<T>(store: StoreName): Promise<{ key: string; value: T }[]> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
@@ -69,6 +118,31 @@ export async function idbAll<T>(store: StoreName): Promise<{ key: string; value:
       } else resolve(out);
     };
     cur.onerror = () => reject(cur.error);
+  });
+}
+
+/* v0.158: ключи хранилища БЕЗ чтения значений (быстро — только getAllKeys) */
+export async function idbAllKeys(store: StoreName): Promise<string[]> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(store, 'readonly');
+    const rq = t.objectStore(store).getAllKeys();
+    rq.onsuccess = () => resolve(rq.result.map(String));
+    rq.onerror = () => reject(rq.error);
+  });
+}
+
+/* v0.158: удаляет все ключи в ДИАПАЗОНЕ одной транзакцией — для блобов ромов
+   (все ключи блобов ромов начинаются с «rom-»), в том числе осиротевшие,
+   которых нет в списке ромов (после сбоев прежних версий) */
+export async function idbDelRange(store: StoreName, lo: string, hi: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(store, 'readwrite');
+    t.objectStore(store).delete(IDBKeyRange.bound(lo, hi, false, false));
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error ?? new Error('транзакция прервана'));
   });
 }
 

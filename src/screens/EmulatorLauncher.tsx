@@ -4,7 +4,7 @@ import { EmuVolumeChip, Field, GhostBtn, Ic, Panel, PxBtn } from '../ui';
 import SegaBox, { type SegaApi } from '../SegaBox';
 import CodeSearchModal from '../CodeSearch';
 import KeyBinder from '../KeyBinder';
-import { idbDel, idbGet, idbPut, uid, exportRomBase, importRomBase } from '../db';
+import { idbDel, idbDelMany, idbGet, idbPut, idbPutMany, uid, exportRomBase, importRomBase, type IdbPutEntry } from '../db';
 import { CartridgeBadge, CartCutModal, CoverCropBtn, CoverPickBtn, CoverRemoveBtn, PlatName, RomPicsModal, RomTile, cartLabelOf, fileToCover, storeRomCover } from '../cartridge';
 import type { RomDef, SaveDef, SaveKind } from '../types';
 import { SAVE_KIND_CLS, SAVE_KIND_SHORT, saveKindOf, saveKindNum } from '../types';
@@ -22,6 +22,15 @@ import { sfx } from '../sound';
 import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
 
 const fmtSize = (b: number) => (b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} МБ` : `${Math.max(1, Math.round(b / 1024))} КБ`);
+
+/* v0.158: ЗАГРУЗКА БОЛЬШИХ ПАЧЕК (заказчик залил папку из 16 000 файлов — вкладка висела):
+   записи идут чанками по 40 файлов (80 записей) в ОДНОЙ транзакции на чанк — вместо
+   32 000 отдельных транзакций; видно прогресс. Большие папки в списке показываются
+   по частям (PAGE/STEP) — 16 000 строк DOM убивали интерфейс даже после загрузки. */
+const UPLOAD_CHUNK = 40;
+const ROM_PAGE = 100; // столько строк/плиток папка показывает сразу
+const ROM_STEP = 500; // сколько добавляет «Показать ещё»
+const UNDO_ROMS_LIMIT = 40; // до стольких ромов в папке Ctrl+Z работает как раньше
 
 /* v0.62: короткое имя компонента единого выделения платформ (как GAME GEAR в v0.61) */
 const P = PlatName;
@@ -66,6 +75,9 @@ export default function EmulatorLauncher() {
   const [newFolderOpen, setNewFolderOpen] = useState(false); // строка создания новой папки
   const [newFolderName, setNewFolderName] = useState('');
   const [emptyFolders, setEmptyFolders] = useState<string[]>(loadEmptyRomFolders);
+  /* v0.158: прогресс загрузки большой пачки (N готово из M) + постраничный показ папок */
+  const [upProg, setUpProg] = useState<{ done: number; total: number } | null>(null);
+  const [folderLimit, setFolderLimit] = useState<Record<string, number>>({});
   /* v0.70: свёрнутость папок — в localStorage (переживает перезаход), старт по режиму спойлеров.
      v0.71: режим действует только при ВХОДЕ — дальше папки свободно сворачиваются/разворачиваются:
      ручные переключения живут в folderOvr и показываются поверх стартового режима. */
@@ -176,7 +188,9 @@ export default function EmulatorLauncher() {
   }, []);
 
   /* загрузка СРАЗУ НЕСКОЛЬКИХ ромов в выбранную папку (select над кнопкой);
-     v0.60: folderOverride — имя папки при загрузке ЦЕЛОЙ ПАПКИ кнопкой «Загрузить папку» */
+     v0.60: folderOverride — имя папки при загрузке ЦЕЛОЙ ПАПКИ кнопкой «Загрузить папку»
+     v0.158: запись ЧАНКАМИ по UPLOAD_CHUNK файлов в одной транзакции + прогресс —
+     папка из 16 000 файлов раньше делала 32 000 отдельных транзакций и висела часами */
   const onUpload = async (files: FileList | null, folderOverride?: string, dedupeNames = false) => {
     const list = Array.from(files ?? []);
     if (!list.length) return;
@@ -188,23 +202,39 @@ export default function EmulatorLauncher() {
     // попал в эту же загрузку, ПРОПУСКАЕТСЯ — можно скидывать ромы от всех в одну папку
     const existing = dedupeNames ? new Set(roms.map((r) => r.fileName.toLowerCase())) : null;
     const batch = new Set<string>();
-    for (const f of list) {
-      const ext = (f.name.split('.').pop() ?? '').toLowerCase();
-      const romExt = romFileExt(ext);
-      if (!romExt) { skipped++; continue; }
-      const nameKey = f.name.toLowerCase();
-      if (existing && (existing.has(nameKey) || batch.has(nameKey))) { dupNames++; continue; }
-      if (existing) batch.add(nameKey);
-      const buf = await f.arrayBuffer();
-      const r: RomDef = {
-        id: uid('rom'), name: f.name.replace(/\.[^.]+$/, ''), fileName: f.name,
-        ext: romExt, size: f.size, createdAt: Date.now(),
-        ...(folder ? { folder } : {}),
-      };
-      await idbPut('roms', r.id, r);
-      await idbPut('blobs', `rom-${r.id}`, buf);
-      lastId = r.id;
-      loaded++;
+    // v0.158: поддерживаемые файлы читаем и складываем в чанки; ArrayBuffer читается
+    // ДО транзакции (в транзакции нельзя ждать) — по UPLOAD_CHUNK файлов за раз
+    let chunk: IdbPutEntry[] = [];
+    const flush = async () => {
+      if (chunk.length) { await idbPutMany(chunk); chunk = []; }
+    };
+    setUpProg({ done: 0, total: list.length });
+    try {
+      for (const f of list) {
+        const ext = (f.name.split('.').pop() ?? '').toLowerCase();
+        const romExt = romFileExt(ext);
+        if (!romExt) { skipped++; continue; }
+        const nameKey = f.name.toLowerCase();
+        if (existing && (existing.has(nameKey) || batch.has(nameKey))) { dupNames++; continue; }
+        if (existing) batch.add(nameKey);
+        const buf = await f.arrayBuffer();
+        const r: RomDef = {
+          id: uid('rom'), name: f.name.replace(/\.[^.]+$/, ''), fileName: f.name,
+          ext: romExt, size: f.size, createdAt: Date.now(),
+          ...(folder ? { folder } : {}),
+        };
+        chunk.push({ store: 'roms', key: r.id, value: r });
+        chunk.push({ store: 'blobs', key: `rom-${r.id}`, value: buf });
+        lastId = r.id;
+        loaded++;
+        if (chunk.length >= UPLOAD_CHUNK * 2) {
+          await flush();
+          setUpProg({ done: loaded + skipped, total: list.length });
+        }
+      }
+      await flush();
+    } finally {
+      setUpProg(null);
     }
     if (!loaded) { toast('Нет поддерживаемых файлов: .nes · .md/.gen/.bin/.sms/.gg (SEGA) · .sfc/.smc (SNES) · .gb/.gbc (Game Boy) · .gba · .32x (SEGA 32X) · .a26 (Atari 2600) · .pce (PC Engine)', 'err'); return; }
     if (folder) removeEmptyRomFolder(folder); // папка больше не пустая
@@ -388,8 +418,11 @@ export default function EmulatorLauncher() {
     toast(`Ром «${r.name}» и его сохранения удалены`, 'err');
   };
 
-  /* удалить папку ромов: ромы + их данные + сохранения (всё запоминается для Ctrl+Z);
-     пустую папку просто убираем из списка — Ctrl+Z вернёт и её */
+  /* удалить папку ромов: ромы + их данные + сохранения;
+     v0.158: маленькая папка (≤ UNDO_ROMS_LIMIT) — как раньше, с полным Ctrl+Z;
+     БОЛЬШАЯ папка (16 000 ромов) раньше читала ВСЕ ромы в память для отмены и
+     удаляла по одной записи — вкладка зависала намертво. Теперь большие папки
+     удаляются ОДНОЙ транзакцией без чтения данных (Ctrl+Z честно недоступен) */
   const delRomFolder = async (folder: string) => {
     const inF = roms.filter((r) => r.folder === folder);
     if (!inF.length) {
@@ -401,6 +434,19 @@ export default function EmulatorLauncher() {
       if (uploadFolder === folder) setUploadFolder('');
       sfx.fail();
       toast(`Пустая папка «${folder}» убрана`, 'err');
+      return;
+    }
+    if (inF.length > UNDO_ROMS_LIMIT) {
+      // большая папка: удаление без запоминания для Ctrl+Z (не читаем данные в память)
+      const saveKeys = saves.filter((s) => inF.some((r) => r.id === s.romId)).map((s) => s.id);
+      await idbDelMany('saves', saveKeys);
+      await idbDelMany('roms', inF.map((r) => r.id));
+      await idbDelMany('blobs', inF.map((r) => `rom-${r.id}`));
+      if (romId && inF.some((r) => r.id === romId)) { setRomId(null); setRunning(false); }
+      removeEmptyRomFolder(folder);
+      if (uploadFolder === folder) setUploadFolder('');
+      await refresh();
+      toast(`Папка «${folder}» удалена (ромов: ${inF.length}) — большая папка удаляется без Ctrl+Z`, 'err');
       return;
     }
     const items: { rom: RomDef; blob: ArrayBuffer | null; saves: SaveDef[] }[] = [];
@@ -531,6 +577,18 @@ export default function EmulatorLauncher() {
     </div>
   );
 
+  /* v0.158: кнопка «Показать ещё» внизу постраничного списка (папка или «Без папки») */
+  const moreBtn = (rest: number, key: string) => rest > 0 ? (
+    <button
+      type="button"
+      onClick={() => { setFolderLimit((s) => ({ ...s, [key]: (s[key] ?? ROM_PAGE) + ROM_STEP })); sfx.click(); }}
+      className="w-full text-center font-display text-[10px] uppercase tracking-wide text-faint hover:text-gold cursor-pointer border-2 border-edge hover:border-edge2 bg-panel px-2 py-1.5"
+      title={`Показать следующие ромы (в папке ещё ${rest})`}
+    >
+      Показать ещё {Math.min(ROM_STEP, rest)} · осталось {rest}
+    </button>
+  ) : null;
+
   const prefs = loadEmuPrefs();
   const pads = listGamepads();
 
@@ -542,11 +600,11 @@ export default function EmulatorLauncher() {
           <h1 className="font-display text-2xl uppercase tracking-wider text-coral flex items-center gap-3">
             <span className="text-coral">{Ic.chip(22)}</span> Запуск эмулятора
           </h1>
-          <PxBtn color="coral" className="ml-auto" onClick={() => fileRef.current?.click()}>{Ic.upload(15)} Загрузить ромы</PxBtn>
-          <PxBtn color="coral" onClick={() => dirRef.current?.click()}>{Ic.folder(15)} Загрузить папку</PxBtn>
+          <PxBtn color="coral" className="ml-auto" disabled={!!upProg} onClick={() => fileRef.current?.click()}>{Ic.upload(15)} Загрузить ромы</PxBtn>
+          <PxBtn color="coral" disabled={!!upProg} onClick={() => dirRef.current?.click()}>{Ic.folder(15)} Загрузить папку</PxBtn>
           {/* v0.65: база ромов одним файлом (ромы + обложки) — сохранить/загрузить */}
-          <GhostBtn onClick={() => void doExportBase()} title="Сохранить ВСЮ базу ромов одним файлом (ромы + обложки картриджей)">{Ic.download(14)} Сохранить базу</GhostBtn>
-          <GhostBtn onClick={() => baseRef.current?.click()} title="Загрузить базу ромов из файла (ромы + обложки; уже существующие не дублируются)">{Ic.upload(14)} Загрузить базу</GhostBtn>
+          <GhostBtn disabled={!!upProg} onClick={() => void doExportBase()} title="Сохранить ВСЮ базу ромов одним файлом (ромы + обложки картриджей)">{Ic.download(14)} Сохранить базу</GhostBtn>
+          <GhostBtn disabled={!!upProg} onClick={() => baseRef.current?.click()} title="Загрузить базу ромов из файла (ромы + обложки; уже существующие не дублируются)">{Ic.upload(14)} Загрузить базу</GhostBtn>
           <input ref={baseRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void doImportBase(f); e.target.value = ''; }} />
           <input ref={fileRef} type="file" accept=".nes,.md,.gen,.bin,.sms,.gg,.sfc,.smc,.fig,.gb,.gbc,.gba,.32x,.a26,.pce" multiple className="hidden" onChange={(e) => { void onUpload(e.target.files); e.target.value = ''; }} />
           <input ref={dirRef} type="file" multiple className="hidden" {...({ webkitdirectory: 'true', directory: 'true' } as Record<string, string>)} onChange={(e) => { void onUploadFolder(e.target.files); e.target.value = ''; }} />
@@ -566,6 +624,19 @@ export default function EmulatorLauncher() {
           БАЗА РОМОВ: кнопка «Сохранить базу» выгружает ВСЕ ромы одним файлом — вместе с обложками картриджей; «Загрузить базу» заливает такой файл целиком (уже существующие ромы не дублируются) — можно собрать базу на одном устройстве и перенести на другое без загрузки всего остального.
           {' '}CODESEARCH: запустите ром и нажмите CodeSearch — поиск по памяти игры в стиле ArtMoney: найдите адрес жизней/оружия/счётчика и соберите КОД УСЛОВИЯ для задания (вставляется в редакторе заданий — тогда задание зачтётся само, без «на доверии»).
         </p>
+
+        {/* v0.158: прогресс загрузки большой пачки — видно, что вкладка жива и сколько осталось */}
+        {upProg && (
+          <div className="mb-4 pixel-panel pixel-corners px-4 py-3 max-w-3xl">
+            <div className="font-display text-[11px] uppercase text-gold">
+              Загрузка ромов: {upProg.done.toLocaleString('ru-RU')} из {upProg.total.toLocaleString('ru-RU')} ({Math.round((upProg.done / Math.max(1, upProg.total)) * 100)}%)
+            </div>
+            <div className="mt-2 h-2 bg-[rgba(255,255,255,0.08)] relative overflow-hidden">
+              <div className="absolute left-0 top-0 h-full bg-gold" style={{ width: `${Math.round((upProg.done / Math.max(1, upProg.total)) * 100)}%` }} />
+            </div>
+            <div className="tick-label text-faint mt-1.5">не закрывайте вкладку до конца — запись идёт пачками, это быстрее прежнего</div>
+          </div>
+        )}
 
         <div className="grid lg:grid-cols-[300px_1fr] gap-5">
           <Panel title={`Ромы · ${roms.length}`} icon={Ic.cart(16)} accent="var(--color-coral)">
@@ -603,6 +674,10 @@ export default function EmulatorLauncher() {
                 const inF = romsIn(f);
                 const collapsed = folderOvr[f] ?? effSpoilerCollapsed(spoilerMode, collapsedFoldersRaw[f], false); // v0.71: ручное поверх стартового режима
                 const pics = (folderViews[f] ?? 'list') === 'pics'; // v0.61: режим показа папки (дефолт — СПИСОК)
+                /* v0.158: постраничный показ — 16 000 строк DOM убивали интерфейс */
+                const lim = folderLimit[f] ?? ROM_PAGE;
+                const shown = inF.slice(0, lim);
+                const rest = inF.length - shown.length;
                 return (
                   <div key={`f-${f}`}>
                     <div className="flex items-center gap-1 mb-1">
@@ -639,7 +714,7 @@ export default function EmulatorLauncher() {
                       )}
                       <HoldDeleteButton
                         onFire={() => void delRomFolder(f)}
-                        label={`папку ромов «${f}» (${inF.length})`}
+                        label={`папку ромов «${f}» (${inF.length}${inF.length > UNDO_ROMS_LIMIT ? ' — большая, без Ctrl+Z' : ''})`}
                         ariaLabel="Удалить папку ромов"
                         title="Удалить папку вместе с ромами и их сохранениями"
                         className="text-faint hover:text-coral cursor-pointer shrink-0 px-0.5"
@@ -662,7 +737,7 @@ export default function EmulatorLauncher() {
                           />
                         </div>
                         <div className="flex flex-wrap gap-1.5">
-                          {inF.map((r) => (
+                          {shown.map((r) => (
                             <RomTile
                               key={r.id}
                               rom={r}
@@ -675,23 +750,33 @@ export default function EmulatorLauncher() {
                             />
                           ))}
                         </div>
+                        {rest > 0 && <div className="mt-1.5">{moreBtn(rest, f)}</div>}
                       </div>
                     ) : (
-                      <div className="space-y-1.5">{inF.map((r) => romRow(r))}</div>
+                      <div className="space-y-1.5">
+                        {shown.map((r) => romRow(r))}
+                        {rest > 0 && moreBtn(rest, f)}
+                      </div>
                     ))}
                   </div>
                 );
               })}
 
-              {/* ромы без папки */}
+              {/* ромы без папки (v0.158: тоже постранично) */}
               {looseRoms.length > 0 && folderNames.length > 0 && (
                 <div className="pt-1">
                   <div className="tick-label text-faint mb-1 px-1">Без папки · {looseRoms.length}</div>
-                  <div className="space-y-1.5">{looseRoms.map((r) => romRow(r))}</div>
+                  <div className="space-y-1.5">
+                    {looseRoms.slice(0, folderLimit.__loose__ ?? ROM_PAGE).map((r) => romRow(r))}
+                    {moreBtn(looseRoms.length - Math.min(looseRoms.length, folderLimit.__loose__ ?? ROM_PAGE), '__loose__')}
+                  </div>
                 </div>
               )}
               {looseRoms.length > 0 && folderNames.length === 0 && (
-                <div className="space-y-1.5">{looseRoms.map((r) => romRow(r))}</div>
+                <div className="space-y-1.5">
+                  {looseRoms.slice(0, folderLimit.__loose__ ?? ROM_PAGE).map((r) => romRow(r))}
+                  {moreBtn(looseRoms.length - Math.min(looseRoms.length, folderLimit.__loose__ ?? ROM_PAGE), '__loose__')}
+                </div>
               )}
 
               {roms.length === 0 && (
@@ -883,11 +968,12 @@ export default function EmulatorLauncher() {
         </div>
       </div>
 
-      {/* v0.61: развёрнутый список картинок папки — отдельное окно со своим слайдером размера и прокруткой колёсиком */}
+      {/* v0.61: развёрнутый список картинок папки — отдельное окно со своим слайдером размера и прокруткой колёсиком
+          v0.158: показываются первые 600 — тысячи плиток вешали окно */}
       {expandFolder && (
         <RomPicsModal
-          title={expandFolder}
-          roms={romsIn(expandFolder)}
+          title={`${expandFolder}${romsIn(expandFolder).length > 600 ? ` · показаны первые 600 из ${romsIn(expandFolder).length}` : ''}`}
+          roms={romsIn(expandFolder).slice(0, 600)}
           selectedId={romId}
           onClose={() => setExpandFolder(null)}
           onPick={(r) => { setRomId(r.id); setRunning(false); setExpandFolder(null); sfx.hover(); }}
