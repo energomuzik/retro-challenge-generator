@@ -78,6 +78,10 @@ export default function EmulatorLauncher() {
   /* v0.158: прогресс загрузки большой пачки (N готово из M) + постраничный показ папок */
   const [upProg, setUpProg] = useState<{ done: number; total: number } | null>(null);
   const [folderLimit, setFolderLimit] = useState<Record<string, number>>({});
+  /* v0.159: ПОИСК РОМА ПО НАЗВАНИЮ — «всюду» (все папки сразу) или только в папке,
+     выбранной в списке выше; регистр не важен, ищет и по имени файла */
+  const [searchQ, setSearchQ] = useState('');
+  const [searchAll, setSearchAll] = useState(true);
   /* v0.70: свёрнутость папок — в localStorage (переживает перезаход), старт по режиму спойлеров.
      v0.71: режим действует только при ВХОДЕ — дальше папки свободно сворачиваются/разворачиваются:
      ручные переключения живут в folderOvr и показываются поверх стартового режима. */
@@ -141,6 +145,25 @@ export default function EmulatorLauncher() {
   );
   const looseRoms = useMemo(() => roms.filter((r) => !r.folder), [roms]);
   const romsIn = (folder: string) => roms.filter((r) => r.folder === folder);
+
+  /* v0.159: результаты поиска (null — строка пустая, показываем обычное дерево папок).
+     Фильтр по 16 000 названий — это миллисекунды: тяжёлым был DOM, а не поиск;
+     результаты всё равно показываются ПОСТРАНИЧНО (первые 100 + «Показать ещё»). */
+  const searchResults = useMemo(() => {
+    const q = searchQ.trim().toLowerCase();
+    if (!q) return null;
+    const base = searchAll ? roms : roms.filter((r) => (r.folder ?? '') === uploadFolder);
+    return base
+      .filter((r) => r.name.toLowerCase().includes(q) || r.fileName.toLowerCase().includes(q))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [searchQ, searchAll, roms, uploadFolder]);
+  /* смена запроса/области сбрасывает страницу поиска, чтобы новая выдача началась с первых 100 */
+  const resetSearchPage = () => setFolderLimit((s) => {
+    if (!('__search__' in s)) return s;
+    const next = { ...s };
+    delete next.__search__;
+    return next;
+  });
 
   /* Раскладка пользователя → «мост»: клавиша пользователя → клавиша ядра.
      Клавиши ядра читаются из самого EmulatorJS при старте — переназначение не
@@ -617,6 +640,7 @@ export default function EmulatorLauncher() {
           <span className="text-sky font-display uppercase"> «Частное сохранение»</span> («Назови меня N» — переименовывается ✏).
           В игре после захвата ячейки выбираются уровни/боссы/моё задание; частные — только в редакторе заданий.
           Ромы раскладываются по папкам-спойлерам (как тайлы): создайте папку кнопкой «+ Папка», выберите её в списке и загрузите сразу пачку файлов.
+          Строка 🔍 ищет ром ПО НАЗВАНИЮ (и по имени файла) — «всюду» по всем папкам сразу или только в выбранной; у найденного рома бейдж «📁 папка», ✕ сбрасывает поиск.
           Каждому рому можно дать ОБЛОЖКУ КАРТРИДЖА: 📷 — готовая картинка (размер и пропорции читаются из файла), ✂ — вырезать картридж из картинки ТОЧНО ТАК ЖЕ, как тайлы в редакторе карт: фон АВТО/палитра/пипетка, допуск, мин. размер, склейка частей — клик по вырезанному тайлу ставит его обложкой (пропорции честные, прозрачный фон остаётся прозрачным). В режиме КАРТИНОК (кнопка 🖼 на папке) ромы показываются фотографиями реальных картриджей, а кнопка ⛶ разворачивает большой список картинок в отдельном окне.
           Удаление папок, ромов, сохранений и УБИРАНИЕ ОБЛОЖЕК (✕) подчиняются режиму из «Опций», а Ctrl+Z вернёт последнее удалённое.
           ПЕРЕИМЕНОВАНИЕ (✏) — у ЛЮБОГО сохранения: добавьте к «Уровню N»/«Боссу N» свои слова-пометки («Уровень 2 — башня») — в игре сразу видно, какой это уровень, даже если уровни выбираются в произвольном порядке.
@@ -669,6 +693,52 @@ export default function EmulatorLauncher() {
                 </div>
               )}
 
+              {/* v0.159: строка поиска рома — «всюду» или только в выбранной папке */}
+              <div className="flex items-center gap-1">
+                <input
+                  className="field-in flex-1 min-w-0 px-2 py-1.5 text-[11px]"
+                  placeholder="🔍 Поиск рома по названию…"
+                  value={searchQ}
+                  onChange={(e) => { setSearchQ(e.target.value); resetSearchPage(); }}
+                  onKeyDown={(e) => { if (e.key === 'Escape') { setSearchQ(''); resetSearchPage(); } }}
+                  title="Ищет по названию рома и по имени файла — во ВСЕХ папках сразу или только в выбранной (кнопка справа). Esc — очистить."
+                />
+                {searchQ && (
+                  <button type="button" onClick={() => { setSearchQ(''); resetSearchPage(); sfx.click(); }} className="text-faint hover:text-coral cursor-pointer shrink-0 px-0.5 text-[12px] leading-none" title="Сбросить поиск">✕</button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => { setSearchAll((v) => !v); resetSearchPage(); sfx.click(); }}
+                  className={`shrink-0 font-display text-[9px] uppercase tracking-wide px-1.5 py-1 border-2 cursor-pointer max-w-[120px] truncate ${searchAll ? 'border-gold text-gold' : 'border-edge text-faint hover:text-dim'}`}
+                  title="Область поиска: ВСЕ папки сразу или ТОЛЬКО папка, выбранная в списке выше"
+                >
+                  {searchAll ? 'всюду' : `📁 ${uploadFolder || 'без папки'}`}
+                </button>
+              </div>
+
+              {/* v0.159: результаты поиска — вместо дерева папок, пока строка не пустая */}
+              {searchResults && (
+                <div>
+                  <div className="tick-label text-faint mb-1 px-1">
+                    {searchResults.length > 0
+                      ? `найдено: ${searchResults.length}${searchAll ? ' · во всех папках' : uploadFolder ? ` · в папке «${uploadFolder}»` : ' · без папки'}`
+                      : `ничего не найдено${searchAll ? '' : ' — жмите «всюду» и ищите во всех папках'}`}
+                  </div>
+                  <div className="space-y-1.5">
+                    {searchResults.slice(0, folderLimit.__search__ ?? ROM_PAGE).map((r) => (
+                      <div key={r.id}>
+                        {searchAll && (
+                          <div className="tick-label text-faint mb-0.5 px-0.5 truncate" title={r.folder ? `Ром лежит в папке «${r.folder}»` : 'Ром без папки'}>📁 {r.folder || 'Без папки'}</div>
+                        )}
+                        {romRow(r)}
+                      </div>
+                    ))}
+                    {moreBtn(searchResults.length - Math.min(searchResults.length, folderLimit.__search__ ?? ROM_PAGE), '__search__')}
+                  </div>
+                </div>
+              )}
+
+              {!searchResults && (<>
               {/* папки-спойлеры с ромами */}
               {folderNames.map((f) => {
                 const inF = romsIn(f);
@@ -786,6 +856,7 @@ export default function EmulatorLauncher() {
                   <p className="text-[10px] text-faint mt-2 leading-tight">Создайте папку («+ Папка»), выберите её в списке — и жмите «Загрузить ромы»: можно сразу несколько файлов</p>
                 </div>
               )}
+              </>)}
             </div>
           </Panel>
 
