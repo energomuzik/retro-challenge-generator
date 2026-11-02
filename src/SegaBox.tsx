@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from './store';
+import { seedCoreFromYandex, CORES_YANDEX_URL } from './yandexCores'; // v0.160: резерв ядер с Яндекс Диска автора
 import { FAMILY_RETRO, FAMILY_GPAD_DEFAULT, FAMILY_PAD_FIELD, FAMILY_ACTIONS,
   type PadFamily } from './input';
 
@@ -140,6 +141,20 @@ export default function SegaBox({
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   // номер текущей попытки загрузки ядра (виден в оверлее «ЗАГРУЗКА ЯДРА SEGA…»)
   const [loadAttempt, setLoadAttempt] = useState(0);
+  /* v0.160: подсказка при ДОЛГОЙ загрузке ядра (у одного из игроков загрузка висела на «0.0 mb»):
+     через 45 с непрерывного «ЗАГРУЗКА ЯДРА…» объясняем две самые частые причины
+     (переполненная память устройства, где браузеру некуда кэшировать ядро, и провайдер,
+     тормозящий доступ к сайту) и что делать — ждать автоповторы (они перебирают запасной CDN)
+     или сменить сеть. */
+  const [slowTip, setSlowTip] = useState(false);
+  /* v0.160: строка прогресса РЕЗЕРВА («⚡ РЕЗЕРВ: ЯНДЕКС ДИСК — FCEUMM-WASM.DATA 42%») —
+     видна в оверлее загрузки, пока ядро докачивается с Яндекс Диска автора. */
+  const [yanNote, setYanNote] = useState<string | null>(null);
+  // v0.160: резерв включён в Опциях? (по умолчанию ВЫКЛ — заказчик: «по дефолту пускай
+  // скачивание с яндекс диска пускай будет выключена»; включает осознанно тот, у кого ядро не качается)
+  const coresYandexOn = useApp((st) => st.options.coresYandex === true);
+  const coresYandexOnRef = useRef(coresYandexOn);
+  coresYandexOnRef.current = coresYandexOn;
   // АВТОПОВТОР: сколько раз ядро перезапускалось из-за сбоя загрузки (сбой CDN/сети/зависание).
   // Готовность сбрасывает счётчик; после AUTO_RETRY_MAX остаётся кнопка «Попробовать снова».
   const [autoRetry, setAutoRetry] = useState(0);
@@ -396,6 +411,7 @@ export default function SegaBox({
   useEffect(() => {
     setStatus('loading');
     setLoadAttempt(0);
+    setSlowTip(false); // v0.160: подсказка заново на каждой попытке
     readyRef.current = false;
     gotHelloRef.current = false;
     const t = setTimeout(() => {
@@ -404,7 +420,33 @@ export default function SegaBox({
     const t2 = setTimeout(() => {
       if (!readyRef.current) setStatus((prev) => (prev === 'ready' ? prev : 'error'));
     }, 90000);
-    return () => { clearTimeout(t); clearTimeout(t2); };
+    const t3 = setTimeout(() => setSlowTip(true), 45000); // v0.160: загрузка явно буксует — объясним
+    return () => { clearTimeout(t); clearTimeout(t2); clearTimeout(t3); };
+  }, [bootTick]);
+
+  /* v0.160: РЕЗЕРВ ЯНДЕКС.ДИСКА — если загрузка ядра буксует («0.0 mb» у игрока из южного
+     региона: провайдер режет большие файлы с сайта), через 8 с после старта попытки тихо
+     докачиваем ядро с публичной папки автора на Яндекс Диске и подкладываем в кэш
+     EmulatorJS (IndexedDB) — пересобранный iframe находит ядро в кэше мгновенно.
+     РЕЗЕРВ ПО УМОЛЧАНИЮ ВЫКЛЮЧЕН — работает только с галочкой в Опциях (блок «Ядро
+     эмулятора»); у кого ядро качается с сайта, галочку не включают и Яндекса не видят. */
+  useEffect(() => {
+    if (!CORES_YANDEX_URL || badRomRef.current) return; // ссылка автора не подключена / битый ром — резерв ни при чём
+    let cancelled = false;
+    const kick = () => {
+      if (cancelled || readyRef.current || badRomRef.current) return;
+      if (!coresYandexOnRef.current) return;
+      void seedCoreFromYandex(resolvedCore, (note) => { if (!cancelled) setYanNote(note); })
+        .then((added) => {
+          if (cancelled) return;
+          setYanNote(null);
+          if (added > 0 && !readyRef.current) setBootTick((t) => t + 1); // свежий iframe → ядро из кэша
+        })
+        .catch(() => { if (!cancelled) setYanNote(null); }); // резерв не сработал — живём как раньше
+    };
+    const t4 = setTimeout(kick, 8000);
+    return () => { cancelled = true; clearTimeout(t4); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootTick]);
 
   /* АВТОПОВТОР ЗАГРУЗКИ (v0.43.0): раньше при сбое CDN ядро показывало ошибку «перезапустите ром»
@@ -420,6 +462,13 @@ export default function SegaBox({
     if (status !== 'error') return;
     if (badRomRef.current) return; // v0.128: битый ром — автоповтор бессмыслен, ждём новый файл от пользователя
     if (autoRetry >= AUTO_RETRY_MAX) return;
+    /* v0.160: на СБОЕ резерв с Яндекс Диска пробуем сразу — 8 секунд ждать незачем.
+       Кики идемпотентны (модуль не качает один файл дважды), повторный вызов безопасен. */
+    if (CORES_YANDEX_URL && coresYandexOnRef.current) {
+      void seedCoreFromYandex(resolvedCore)
+        .then((added) => { if (added > 0 && !readyRef.current) setBootTick((t) => t + 1); })
+        .catch(() => { /* резерв не сработал — обычный автоповтор продолжается */ });
+    }
     const t = setTimeout(() => {
       setAutoRetry((n) => n + 1);
       setBootTick((t2) => t2 + 1); // пересобрать srcDoc + перемонтировать iframe — полная новая попытка
@@ -464,6 +513,17 @@ export default function SegaBox({
               ? 'Пробуем следующий источник (свой сайт → запасной CDN). Ядро скачается автоматически.'
               : `Ядра ${coreLabel} теперь лежат ВНУТРИ сайта — CDN не нужен. Дальше браузер берёт их из кэша мгновенно.`}
           </span>
+          {slowTip && (
+            <span className="text-[10px] text-faint px-6 text-center max-w-sm leading-relaxed border-2 border-edge bg-panel px-4 py-2">
+              Долго стоит на 0.0 МБ? Самые частые причины: (1) ПАМЯТЬ устройства переполнена — браузеру некуда кэшировать ядро: освободите место на диске и очистите данные сайта в браузере; (2) провайдер тормозит доступ к сайту: подождите — автоповторы сами переберут запасной CDN, или смените сеть (например, мобильный интернет).
+              {CORES_YANDEX_URL && (coresYandexOn
+                ? ' Подключён резерв с Яндекс Диска — ядро докачается с него автоматически (следите за строкой «⚡ РЕЗЕРВ» ниже).'
+                : ' Ещё вариант — включить резервную загрузку ядер с Яндекс Диска в Опциях (блок «Ядро эмулятора»).')}
+            </span>
+          )}
+          {yanNote && (
+            <span className="font-pixel text-[9px] text-gold text-center px-6">{yanNote}</span>
+          )}
         </div>
       )}
       {status === 'loading' && firstBootRef.current && (
@@ -485,7 +545,7 @@ export default function SegaBox({
               <span className="font-pixel text-[9px] text-coral">НЕ УДАЛОСЬ ЗАГРУЗИТЬ ЯДРО</span>
               <span className="text-[11px] text-dim leading-relaxed max-w-sm">
                 {autoRetry >= AUTO_RETRY_MAX
-                  ? `Автоповторы (${AUTO_RETRY_MAX}) не помогли. Ядра лежат внутри сайта — если не грузятся даже они, проверьте соединение (запасной источник — CDN emulatorjs.org) и попробуйте ещё раз.`
+                  ? `Автоповторы (${AUTO_RETRY_MAX}) не помогли. Ядра лежат внутри сайта — если не грузятся даже они, проверьте соединение (запасной источник — CDN emulatorjs.org) и попробуйте ещё раз.${CORES_YANDEX_URL ? ' Ещё вариант — резервная загрузка ядра с Яндекс Диска: включите её в Опциях (блок «Ядро эмулятора»), затем нажмите «Попробовать снова».' : ''}`
                   : `Сбой загрузки ядра ${coreLabel} — сейчас перезапустимся автоматически (попытка ${autoRetry + 1} из ${AUTO_RETRY_MAX}). Основной источник — свой сайт, запасной — CDN.`}
               </span>
             </>

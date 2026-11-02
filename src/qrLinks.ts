@@ -2,7 +2,8 @@
    по бокам панелей — по две с каждой стороны от панелей кнопок»). v0.150 — ВТОРАЯ ИТЕРАЦИЯ:
    слово «Ссылка» убрано (кликает сам код), фон кода — КАК У ПАНЕЛЕЙ (прозрачный PNG поверх
    плашки bg-panel2), модули — светло-серые (#b9c1de), чтобы не слепили и читались.
-   СЛЕВА от панелей — каналы: YouTube (@ENERGOMUZHIK) и VK Video Live (energomuzhik);
+   СЛЕВА от панелей — каналы: YouTube (@ENERGOMUZHIK), VK Video Live (energomuzhik)
+   и TWITCH (energomuzhik) — v0.160: заказчик начал дополнительно стримить на Twitch.
    СПРАВА — донаты: CloudTips и DonatePay.
    PNG-коды лежат в assets/qr/ (прозрачный фон, серые модули — проверены декодированием);
    клик по картинке открывает адрес в новой вкладке. */
@@ -18,10 +19,11 @@ export interface QrLink {
 
 const byName = (n: string): string => QR[`./assets/qr/${n}`] ?? '';
 
-/** СЛЕВА от панелей кнопок: YouTube, VK Video Live. */
+/** СЛЕВА от панелей кнопок: YouTube, VK Video Live, Twitch (v0.160). */
 export const QR_LINKS_LEFT: QrLink[] = [
   { key: 'youtube', label: 'YOUTUBE', url: 'https://www.youtube.com/@ENERGOMUZHIK', img: byName('qr-youtube.png') },
   { key: 'vk', label: 'VK ВИДЕО', url: 'https://live.vkvideo.ru/energomuzhik', img: byName('qr-vk.png') },
+  { key: 'twitch', label: 'TWITCH', url: 'https://www.twitch.tv/energomuzhik', img: byName('qr-twitch.png') },
 ];
 
 /** СПРАВА от панелей кнопок: донаты CloudTips, DonatePay. */

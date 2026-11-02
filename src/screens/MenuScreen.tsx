@@ -112,12 +112,13 @@ export default function MenuScreen() {
         {/* меню — сетка 2 колонки; «Опции» последним пунктом на всю ширину.
             v0.150: по бокам панелей — QR-коды как мини-панели (без слова «Ссылка»,
             фон панельный, код серый, при наведении ничего не скачет); слева YouTube +
-            VK Видео, справа донаты (CloudTips + DonatePay); на узких экранах — полоса
-            из 4 кодов под кнопками. */}
+            VK Видео + TWITCH (v0.160), справа донаты (CloudTips + DonatePay); на узких
+            экранах — полоса из 5 кодов под кнопками. */}
         <div className="mt-5 sm:mt-7 flex-1 min-h-0 overflow-y-auto">
           <div className="flex items-center gap-4 lg:gap-6">
-            {/* левые QR — YouTube + VK Видео (широкие экраны); v0.150: колонка уже
-                (по ширине плиток) и центрирована по вертикали относительно меню */}
+            {/* левые QR — YouTube + VK Видео + Twitch (широкие экраны); v0.150: колонка уже
+                (по ширине плиток) и центрирована по вертикали относительно меню; v0.160:
+                слева теперь ТРИ кода — заказчик начал стримить на Twitch */}
             <div className="hidden lg:flex flex-col justify-center gap-4 shrink-0 w-[112px]">
               {QR_LINKS_LEFT.map((l) => <QrTile key={l.key} l={l} />)}
             </div>
@@ -146,7 +147,7 @@ export default function MenuScreen() {
               </button>
             ))}
           </div>
-            {/* v0.149: полоса QR-кодов под кнопками на узких экранах (все 4 подряд) */}
+            {/* v0.149: полоса QR-кодов под кнопками на узких экранах (все 5 подряд, v0.160) */}
             <div className="lg:hidden mt-3 flex items-start justify-center gap-4 flex-wrap">
               {[...QR_LINKS_LEFT, ...QR_LINKS_RIGHT].map((l) => <QrTile key={l.key} l={l} compact />)}
             </div>
