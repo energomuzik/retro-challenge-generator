@@ -19,6 +19,7 @@ import {
   type PadFamily,
 } from '../input';
 import { sfx } from '../sound';
+import { scanYandexRoms, fetchYandexCover, fetchYandexBuf, yandexResolveHref, saveYandexRomAsLocal, findLocalRomByFile, YA_ROMS_LINK_KEY, type YaRomEntry } from '../yandexRoms';
 import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
 
 const fmtSize = (b: number) => (b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} МБ` : `${Math.max(1, Math.round(b / 1024))} КБ`);
@@ -327,6 +328,91 @@ export default function EmulatorLauncher() {
     setNewFolderOpen(false);
     sfx.coin();
     toast(`Папка «${name}» создана — загрузите в неё ромы`, 'ok');
+  };
+
+  /* ---------- v0.161: РОМЫ С ЯНДЕКС ДИСКА (спойлер внизу панели «Ромы») ----------
+     Ссылка на публичную папку (ромы + обложки «имя рома.jpg» + spisok.txt).
+     Скан — список из spisok.txt (один запрос) или автоскан API-листингом;
+     клик по рому — скачивание с прогрессом, ром становится ОБЫЧНЫМ ромом
+     библиотеки (папка «Яндекс Диск»), повторные запуски — без скачивания. */
+  const [yaOpen, setYaOpen] = useState(false);
+  const [yaLinkIn, setYaLinkIn] = useState(() => localStorage.getItem(YA_ROMS_LINK_KEY) ?? '');
+  const [yaList, setYaList] = useState<YaRomEntry[] | null>(null);
+  const [yaBusy, setYaBusy] = useState('');
+  const [yaPage, setYaPage] = useState(ROM_PAGE);
+  const [yaCovers, setYaCovers] = useState<Record<string, string>>({});
+  /* строка 🔍 фильтрует и яндекс-список тоже */
+  const yaFiltered = useMemo(() => {
+    if (!yaList) return null;
+    const q = searchQ.trim().toLowerCase();
+    if (!q) return yaList;
+    return yaList.filter((e) => e.name.toLowerCase().includes(q));
+  }, [yaList, searchQ]);
+  const yaScan = async (force: boolean) => {
+    const link = yaLinkIn.trim();
+    if (!/^https:\/\/disk\.yandex\.ru\//.test(link)) {
+      sfx.fail();
+      toast('Это не похоже на публичную ссылку Яндекс Диска (https://disk.yandex.ru/d/…)', 'err');
+      return;
+    }
+    localStorage.setItem(YA_ROMS_LINK_KEY, link);
+    setYaList(null);
+    setYaBusy(force ? 'пересканирую папку…' : 'сканирую папку…');
+    try {
+      const list = await scanYandexRoms(link, (n) => setYaBusy(n));
+      setYaList(list);
+      setYaPage(ROM_PAGE);
+      setYaBusy(list.length ? `ромов в папке: ${list.length}` : 'папка просканирована — ромов не нашлось (проверьте расширения и spisok.txt)');
+      if (list.length) sfx.coin(); else sfx.fail();
+    } catch {
+      setYaList(null);
+      setYaBusy('');
+      sfx.fail();
+      toast('Не удалось просканировать папку — проверьте ссылку (папка должна быть публичной)', 'err');
+    }
+  };
+  const yaPlay = async (e: YaRomEntry) => {
+    const link = yaLinkIn.trim() || localStorage.getItem(YA_ROMS_LINK_KEY) || '';
+    const fileName = e.name.split('/').pop() || e.name;
+    const local = findLocalRomByFile(useApp.getState().roms, fileName);
+    if (local) {
+      const data = await getRomData(local.id);
+      if (data) {
+        setRomId(local.id);
+        setRunning(false);
+        await refresh();
+        sfx.start();
+        toast(`«${local.name}» уже в библиотеке — запускаю без скачивания`, 'ok');
+        void launch();
+        return;
+      }
+    }
+    if (!link) { setYaBusy('вставьте ссылку на папку'); return; }
+    try {
+      setYaBusy(`качаю «${fileName}»…`);
+      const href = await yandexResolveHref(link, e.path.replace(/^\//, ''));
+      if (!href) throw new Error('нет ссылки');
+      const buf = await fetchYandexBuf(href, (got, total) => {
+        const part = total > 0 ? `${Math.min(99, Math.floor((got * 100) / total))}%` : `${(got / 1048576).toFixed(1)} МБ`;
+        setYaBusy(`качаю «${fileName}» — ${part}`);
+      });
+      setYaBusy('обложка…');
+      const cover = yaCovers[e.name] ?? (await fetchYandexCover(link, e));
+      setYaBusy('добавляю в библиотеку…');
+      const { romId: nid } = await saveYandexRomAsLocal({ buf, fileName, link, cover, roms: useApp.getState().roms });
+      if (cover) setYaCovers((m) => ({ ...m, [e.name]: cover }));
+      await refresh();
+      setYaBusy('');
+      sfx.success();
+      toast('Ром скачан и добавлен в библиотеку — папка «Яндекс Диск»', 'ok');
+      setRomId(nid);
+      setRunning(false);
+      void launch();
+    } catch {
+      setYaBusy('');
+      sfx.fail();
+      toast('Не получилось скачать ром с Яндекс Диска — попробуйте ещё раз', 'err');
+    }
   };
 
   const launch = async (state?: unknown) => {
@@ -857,6 +943,79 @@ export default function EmulatorLauncher() {
                 </div>
               )}
               </>)}
+
+              {/* v0.161: РОМЫ С ЯНДЕКС ДИСКА — публичная папка с ромсетом (spisok.txt + обложки «имя рома.jpg») */}
+              <div className="pt-2 mt-1 border-t-2 border-edge/60">
+                <button
+                  type="button"
+                  onClick={() => { setYaOpen((o) => !o); sfx.click(); }}
+                  className="flex items-center gap-1 w-full text-left cursor-pointer px-1 py-0.5"
+                  title="Список ромов с публичной папки на Яндекс Диске"
+                >
+                  <span className={`text-[10px] shrink-0 ${yaOpen ? 'text-coral' : 'text-faint'}`}>{yaOpen ? '▾' : '▸'}</span>
+                  <span className="text-[10px] shrink-0">🌐</span>
+                  <span className="font-display text-[10px] uppercase text-dim truncate">Ромы с Яндекс Диска</span>
+                  {yaList && yaList.length > 0 && <span className="tick-label text-faint shrink-0">· {yaList.length}</span>}
+                </button>
+                {yaOpen && (
+                  <div className="px-1 pt-1 space-y-1.5">
+                    <div className="flex items-center gap-1">
+                      <input
+                        className="field-in flex-1 min-w-0 px-2 py-1.5 text-[11px]"
+                        placeholder="https://disk.yandex.ru/d/…"
+                        value={yaLinkIn}
+                        onChange={(e) => setYaLinkIn(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') void yaScan(false); }}
+                        title="Публичная ссылка на папку с ромами (внутри — ромы, обложки «имя рома.jpg» и список spisok.txt)"
+                      />
+                      <PxBtn color="teal" small onClick={() => void yaScan(false)}>Показать</PxBtn>
+                    </div>
+                    {yaList && (
+                      <div className="flex items-center gap-2 px-0.5">
+                        <button type="button" onClick={() => void yaScan(true)} className="tick-label text-faint hover:text-gold cursor-pointer" title="Пересканировать папку (если автор добавил ромы)">⟳ Обновить</button>
+                        <button type="button" onClick={() => { localStorage.removeItem(YA_ROMS_LINK_KEY); setYaLinkIn(''); setYaList(null); setYaBusy(''); sfx.click(); }} className="tick-label text-faint hover:text-coral cursor-pointer" title="Забыть ссылку в этом браузере">✕ забыть ссылку</button>
+                      </div>
+                    )}
+                    {yaBusy && <div className="tick-label text-gold px-0.5 break-all">{yaBusy}</div>}
+                    {yaFiltered && yaFiltered.length > 0 && (
+                      <div className="space-y-1">
+                        {yaFiltered.slice(0, yaPage).map((e) => {
+                          const nm = e.name.split('/').pop() || e.name;
+                          const loc = roms.find((r) => r.fileName === nm);
+                          const cov = yaCovers[e.name] ?? loc?.cover;
+                          return (
+                            <button key={e.path} type="button" onClick={() => void yaPlay(e)} className="w-full flex items-center gap-2 px-1.5 py-1 border-2 border-edge hover:border-teal bg-[rgba(255,255,255,0.02)] cursor-pointer text-left">
+                              {cov ? (
+                                <img src={cov} alt="" className="w-9 h-9 object-cover border border-edge shrink-0" />
+                              ) : (
+                                <span className="w-9 h-9 shrink-0 flex items-center justify-center text-faint">{Ic.cart(18)}</span>
+                              )}
+                              <span className="flex-1 min-w-0">
+                                <span className="block text-[11px] text-dim truncate">{e.name}</span>
+                                <span className="block tick-label text-faint truncate">{loc ? 'уже в библиотеке — запуск без скачивания' : e.size > 0 ? fmtSize(e.size) : 'размер покажет автоскан (в spisok.txt его нет)'}</span>
+                              </span>
+                              <span className="text-teal shrink-0">{Ic.play(12)}</span>
+                            </button>
+                          );
+                        })}
+                        {yaFiltered.length > yaPage && (
+                          <button type="button" onClick={() => setYaPage((p) => p + 500)} className="tick-label text-faint hover:text-gold cursor-pointer px-1 py-1 w-full text-center border-2 border-edge hover:border-gold">
+                            Показать ещё 500 · осталось {yaFiltered.length - yaPage}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {yaFiltered && yaFiltered.length === 0 && (
+                      <div className="tick-label text-faint px-0.5">по запросу ничего нет</div>
+                    )}
+                    {!yaList && (
+                      <p className="text-[10px] text-faint leading-tight px-0.5">
+                        Вставьте публичную ссылку на папку с ромами — внутри папки: файлы ромов, обложки «имя рома.jpg» и список spisok.txt (строка = имя файла). Ссылку даёт автор карты или стример. Скачанный ром становится обычным ромом библиотеки — сохранения и задания работают как всегда.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </Panel>
 

@@ -9,6 +9,7 @@ import { cardArt, cartridgeArt } from '../assets';
 import { cartImgSrcOf } from '../cartridge'; // v0.144: обложка/фото картриджа задания
 import { frendyConsoleImgOfRegion, frendyConsoleImg } from '../consoleAssets'; // v0.144/145: фото приставок (Dendy/Famicom/NES)
 import SegaBox, { type SegaApi } from '../SegaBox';
+import { ensureTaskRom } from '../yandexRoms';
 import { isFloatT, opOk, readAt } from '../memcode';
 import KeyBinder from '../KeyBinder';
 import {
@@ -459,6 +460,20 @@ export default function GameScreen() {
   /* ---------- загрузка рома и сохранения под челлендж ----------
      Гость сначала смотрит in-memory кэш (полученный по сети от хоста), затем свою
      IndexedDB. Если рома нет нигде — просит хост прислать бинарник (needRom). */
+  /* v0.161: ссылка папки ромов для докачки задания — из КАРТЫ (romsYandex),
+     из srcYandex любого рома заданий карты или своя сохранённая в «Запуске
+     эмулятора» (она же уезжает в файле игры — exportGame). */
+  const yaTaskLink = (): string => {
+    const st0 = useApp.getState();
+    if (map?.romsYandex) return map.romsYandex;
+    for (const c of map?.cells ?? []) {
+      const t = c.task;
+      if (!t) continue;
+      const rd = st0.roms.find((r) => r.id === t.romId);
+      if (rd?.srcYandex) return rd.srcYandex;
+    }
+    return localStorage.getItem('rcgYaRomsLink') || '';
+  };
   const romReadyTick = useApp((x) => x.romReadyTick);
   const isHost = !!room?.isHost;
   useEffect(() => {
@@ -471,6 +486,13 @@ export default function GameScreen() {
       let buf: ArrayBuffer | null = cache.romCache[task.romId] ?? null;
       if (!buf) buf = (await getRomData(task.romId)) ?? null;
       if (!on) return;
+      /* v0.161: АВТОДОКАЧКА РОМА ЗАДАНИЯ С ЯНДЕКС ДИСКА (хост и соло; гостю ром
+         привозит хост по needRom) — по TaskDef.romFile из папки карты. Ром
+         записывается ПОД id задания — ядро по расширению, P2P и экспорт родные. */
+      if (!buf && (isHost || !room) && task.romFile) {
+        buf = await ensureTaskRom(task.romId, task.romFile, yaTaskLink());
+        if (buf) useApp.getState().toast('Ром задания скачан с Яндекс Диска и добавлен в библиотеку', 'ok');
+      }
       if (!buf) {
         if (!isHost) {
           // рома нет — запрашиваем у хоста; эффект перезапустится по romReadyTick
@@ -523,6 +545,11 @@ export default function GameScreen() {
       let buf: ArrayBuffer | null = cache.romCache[myRubgTask.romId] ?? null;
       if (!buf) buf = (await getRomData(myRubgTask.romId)) ?? null;
       if (!on) return;
+      /* v0.161: докачка рома ЛИЧНОГО задания RUBG с Яндекса (хост/соло) */
+      if (!buf && (isHost || !room) && myRubgTask.romFile) {
+        buf = await ensureTaskRom(myRubgTask.romId, myRubgTask.romFile, yaTaskLink());
+        if (buf) useApp.getState().toast('Ром задания скачан с Яндекс Диска и добавлен в библиотеку', 'ok');
+      }
       if (!buf) {
         if (!isHost) room?.send('needRom', { romId: myRubgTask.romId, saveId: myRubgTask.saveId });
         return;

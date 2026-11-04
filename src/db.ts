@@ -298,6 +298,11 @@ export async function exportGame(mapId: string): Promise<string> {
     const blob = await idbGet<ArrayBuffer>('blobs', `rom-${rid}`);
     if (rd && blob) roms.push({ def: JSON.parse(JSON.stringify(rd)), b64: abToB64(blob) });
   }
+  // v0.161: ссылка на папку ромов Яндекса уезжает с игрой (из srcYandex ромов заданий)
+  if (!map.romsYandex) {
+    const withSrc = roms.find((r) => r.def.srcYandex);
+    if (withSrc) map.romsYandex = withSrc.def.srcYandex;
+  }
   return JSON.stringify({ app: 'retropolia-game', version: 1, exportedAt: Date.now(), map, saves, roms } as ExportedGame);
 }
 

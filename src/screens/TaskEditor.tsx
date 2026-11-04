@@ -493,6 +493,9 @@ export default function TaskEditor() {
     const nextMap = JSON.parse(JSON.stringify(map)) as GameMap;
     const task: TaskDef = {
       romId: fRom, saveId: fSave || undefined,
+      /* v0.161: имя файла рома — по нему другой игрок докачает ром с Яндекс Диска,
+         если его нет в библиотеке (GameMap.romsYandex / srcYandex / своя ссылка) */
+      romFile: roms.find((r) => r.id === fRom)?.fileName,
       title: fTitle.trim() || romName(fRom),
       desc: fDesc.trim() || 'Пройдите фрагмент игры, как договорились игроки.',
       imageId,

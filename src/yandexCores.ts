@@ -29,6 +29,9 @@
    (свой мини-парсер ZIP без зависимостей, метод STORE) и подкладывает в кэш
    EmulatorJS СРАЗУ ВСЕ ядра — после одного архива covered любая консоль. */
 
+/* v0.161: резерв теперь качает СРАЗУ архив (retro-cores-full.zip — один файл на
+   всю папку), прямые файлы ядер — запас; мелкие файлы автор с Диска удаляет. */
+
 /** Публичная ССЫЛКА на папку с ядрами на Яндекс.Диске автора (пусто = резерв неактивен). */
 export const CORES_YANDEX_URL = 'https://disk.yandex.ru/d/wqEVrHVk-fPtOw';
 
@@ -135,12 +138,13 @@ async function idbEnsureKey(db: IDBDatabase, key: string): Promise<void> {
 
 /* ── Яндекс: резолв прямой ссылки + качание с прогрессом ── */
 
-/** Прямая ссылка на файл в публичной папке: пробуем «/<файл>» и «/cores/<файл>» —
- *  автор может опубликовать как саму папку с ядрами, так и её родителя. */
-async function resolveYandexHref(file: string): Promise<string | null> {
+/** Общий резолв прямой ссылки на файл ПУБЛИЧНОЙ папки (ядра v0.160 + ромы v0.161):
+ *  пробуем «/<файл>» и «/cores/<файл>» — структура папки может быть любой из двух. */
+export async function yandexResolveHref(pub: string, file: string): Promise<string | null> {
+  if (!pub) return null;
   for (const path of [`/${file}`, `/cores/${file}`]) {
     try {
-      const u = `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(CORES_YANDEX_URL)}&path=${encodeURIComponent(path)}`;
+      const u = `https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=${encodeURIComponent(pub)}&path=${encodeURIComponent(path)}`;
       const r = await fetch(u, { method: 'GET' });
       if (!r.ok) continue;
       const j = (await r.json()) as { href?: unknown };
@@ -150,10 +154,16 @@ async function resolveYandexHref(file: string): Promise<string | null> {
   return null;
 }
 
+/** Прямая ссылка на файл ЯДРА в публичной папке автора. */
+function resolveYandexHref(file: string): Promise<string | null> {
+  return yandexResolveHref(CORES_YANDEX_URL, file);
+}
+
 const MB = 1024 * 1024;
 
-/** Качание по прямой ссылке с прогрессом; таймаут 120 с общий + «застряли без байт на 30 с». */
-async function fetchYandexBuf(
+/** Качание по прямой ссылке с прогрессом; таймаут 120 с общий + «застряли без байт на 30 с».
+ *  Общая и для резервов ядер, и для ромов с Яндекса (v0.161). */
+export async function fetchYandexBuf(
   href: string,
   onProg: (gotBytes: number, totalBytes: number) => void,
 ): Promise<ArrayBuffer> {
@@ -326,6 +336,14 @@ export async function seedCoreFromYandex(system: string, onNote?: (note: string)
   const legacy = `${coreFile}-legacy-wasm.data`;
   const files = hasWebgl2() ? [plain, legacy] : [legacy, plain];
   const before = files.filter((f) => seeded.has(f)).length;
+  /* v0.161: АРХИВ — ПЕРВЫЙ источник (заказчик: «качался просто retro-cores-full.zip
+     вместо остальных мелких файлов… чтобы меньше запросов было, так как у нас будут
+     ромы» — мелкие файлы с Диска удалены): 1 запрос + одно скачивание ~18 МБ —
+     и в кэше сразу ВСЕ ядра. Прямые файлы ниже — запасной источник (если папку
+     снова наполнят): качается только то, что архив не закрыл. */
+  if (!seeded.has(plain) || !seeded.has(legacy)) {
+    await seedAllFromZip(onNote);
+  }
   for (const f of files) {
     if (seeded.has(f)) continue;
     let p = inflight.get(f);
