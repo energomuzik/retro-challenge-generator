@@ -9,7 +9,7 @@ import { cardArt, cartridgeArt } from '../assets';
 import { cartImgSrcOf } from '../cartridge'; // v0.144: обложка/фото картриджа задания
 import { frendyConsoleImgOfRegion, frendyConsoleImg } from '../consoleAssets'; // v0.144/145: фото приставок (Dendy/Famicom/NES)
 import SegaBox, { type SegaApi } from '../SegaBox';
-import { ensureTaskRom } from '../yandexRoms';
+import { ensureTaskRom, yaCachedName } from '../yandexRoms';
 import { isFloatT, opOk, readAt } from '../memcode';
 import KeyBinder from '../KeyBinder';
 import {
@@ -490,8 +490,9 @@ export default function GameScreen() {
          привозит хост по needRom) — по TaskDef.romFile из папки карты. Ром
          записывается ПОД id задания — ядро по расширению, P2P и экспорт родные. */
       if (!buf && (isHost || !room) && task.romFile) {
-        buf = await ensureTaskRom(task.romId, task.romFile, yaTaskLink());
-        if (buf) useApp.getState().toast('Ром задания скачан с Яндекс Диска и добавлен в библиотеку', 'ok');
+        const lk = yaTaskLink();
+        buf = await ensureTaskRom(task.romId, task.romFile, lk);
+        if (buf) { const fn = yaCachedName(lk); useApp.getState().toast(fn ? `Ром задания скачан с «${fn}» и добавлен в библиотеку` : 'Ром задания скачан с Яндекс Диска и добавлен в библиотеку', 'ok'); }
       }
       if (!buf) {
         if (!isHost) {
@@ -547,8 +548,9 @@ export default function GameScreen() {
       if (!on) return;
       /* v0.161: докачка рома ЛИЧНОГО задания RUBG с Яндекса (хост/соло) */
       if (!buf && (isHost || !room) && myRubgTask.romFile) {
-        buf = await ensureTaskRom(myRubgTask.romId, myRubgTask.romFile, yaTaskLink());
-        if (buf) useApp.getState().toast('Ром задания скачан с Яндекс Диска и добавлен в библиотеку', 'ok');
+        const lk = yaTaskLink();
+        buf = await ensureTaskRom(myRubgTask.romId, myRubgTask.romFile, lk);
+        if (buf) { const fn = yaCachedName(lk); useApp.getState().toast(fn ? `Ром задания скачан с «${fn}» и добавлен в библиотеку` : 'Ром задания скачан с Яндекс Диска и добавлен в библиотеку', 'ok'); }
       }
       if (!buf) {
         if (!isHost) room?.send('needRom', { romId: myRubgTask.romId, saveId: myRubgTask.saveId });

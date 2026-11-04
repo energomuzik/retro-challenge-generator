@@ -33,11 +33,11 @@
 
 import { uid, idbGet, idbPut } from './db';
 import type { RomDef } from './types';
-import { fetchYandexBuf, yandexResolveHref } from './yandexCores';
+import { fetchYandexBuf, yandexResolveHref, yandexFolderName, yaCachedName, yaNameFromListing } from './yandexCores';
 import { getRomData, useApp } from './store';
 
 /* общие хелперы Яндекс API — потребителям удобнее брать их отсюда же */
-export { fetchYandexBuf, yandexResolveHref };
+export { fetchYandexBuf, yandexResolveHref, yandexFolderName, yaCachedName };
 
 const MB = 1024 * 1024;
 
@@ -95,9 +95,28 @@ export interface YaRomEntry {
 
 const MAX_LIST = 10000; // потолок автоскана (хватило бы GoodNES с запасом)
 
-/** Список ромов публичной папки: spisok.txt → иначе автоскан API-листингом. */
-export async function scanYandexRoms(link: string, onNote?: (s: string) => void): Promise<YaRomEntry[]> {
-  if (!link) return [];
+/** Имя папки библиотеки для скачанных с Яндекса ромов: НАСТОЯЩЕЕ имя папки на
+ *  Диске (v0.162: «надо не просто писать папка яндекс диска, а название папки»),
+ *  неизвестно — запасное «Яндекс Диск». Ограничение 24 символа — как у папок
+ *  загрузки с диска. */
+export function yaLibFolderOf(link: string, folderName?: string | null): string {
+  return ((folderName || yaCachedName(link) || 'Яндекс Диск').trim() || 'Яндекс Диск').slice(0, 24);
+}
+
+/** Результат скана папки: список ромов + настоящее имя папки (для интерфейса). */
+export interface YaScanResult {
+  entries: YaRomEntry[];
+  folderName: string | null; // «test roms» / «retro-cores»…; null — не узнали
+}
+
+/** Список ромов публичной папки: spisok.txt → иначе автоскан API-листингом.
+ *  Попутно возвращает настоящее ИМЯ папки (в автоскане — бесплатно, из того же
+ *  ответа; в потоке spisok — один лёгкий запрос параллельно с скачиванием списка). */
+export async function scanYandexRoms(link: string, onNote?: (s: string) => void): Promise<YaScanResult> {
+  if (!link) return { entries: [], folderName: null };
+  // имя папки начинаем тянуть сразу — параллельно со списком; force: скан явный,
+  // автор мог переименовать папку на Диске — обновляем кэш (не вышло — покажем прежнее)
+  const nameP = yandexFolderName(link, true).catch(() => null);
   // 1) spisok.txt — идея заказчика: весь список одним файлом
   try {
     const href = await yandexResolveHref(link, 'spisok.txt');
@@ -105,7 +124,8 @@ export async function scanYandexRoms(link: string, onNote?: (s: string) => void)
       const buf = await fetchYandexBuf(href, () => {});
       const names = parseSpisok(buf);
       if (names.length) {
-        return names.map((n) => ({ name: n, path: n.startsWith('/') ? n : `/${n}`, size: 0 }));
+        const folderName = await nameP;
+        return { entries: names.map((n) => ({ name: n, path: n.startsWith('/') ? n : `/${n}`, size: 0 })), folderName };
       }
     }
   } catch { /* файл не скачался — уходим в автоскан */ }
@@ -113,11 +133,13 @@ export async function scanYandexRoms(link: string, onNote?: (s: string) => void)
   const out: YaRomEntry[] = [];
   const covers = new Map<string, string>();
   let offset = 0;
+  let folderName: string | null = null;
   for (;;) {
     const u = `https://cloud-api.yandex.net/v1/disk/public/resources?public_key=${encodeURIComponent(link)}&limit=200&offset=${offset}`;
     const r = await fetch(u);
     if (!r.ok) throw new Error(`list http ${r.status}`);
-    const j = (await r.json()) as { _embedded?: { items?: { type?: string; name?: string; size?: number; path?: string }[]; total?: number } };
+    const j = (await r.json()) as { name?: unknown; _embedded?: { items?: { type?: string; name?: string; size?: number; path?: string }[]; total?: number } };
+    if (!folderName) folderName = yaNameFromListing(link, j); // имя папки — из того же ответа, без запроса
     const items = j._embedded?.items ?? [];
     for (const it of items) {
       if (it.type !== 'file' || !it.name) continue;
@@ -127,11 +149,11 @@ export async function scanYandexRoms(link: string, onNote?: (s: string) => void)
     }
     const total = j._embedded?.total ?? 0;
     offset += items.length;
-    onNote?.(`сканирую папку: ${offset}${total > 0 ? ` из ${total}` : ''}`);
+    onNote?.(`сканирую папку${folderName ? ` «${folderName}»` : ''}: ${offset}${total > 0 ? ` из ${total}` : ''}`);
     if (items.length < 200 || offset >= total || offset >= MAX_LIST) break;
   }
   for (const e of out) e.coverPath = covers.get(e.name) ?? covers.get(romStemOf(e.name));
-  return out;
+  return { entries: out, folderName: folderName ?? await nameP };
 }
 
 /* ---------- обложки ---------- */
@@ -177,8 +199,8 @@ export function findLocalRomByFile(roms: RomDef[], fileName: string): RomDef | u
   return roms.find((r) => r.fileName === base);
 }
 
-/** Записать скачанный с Яндекса ром как ОБЫЧНЫЙ ром библиотеки (папка
- *  «Яндекс Диск», обложка, srcYandex). forceId — id задания карты: ром
+/** Записать скачанный с Яндекса ром как ОБЫЧНЫЙ ром библиотеки (папка с НАСТОЯЩИМ
+ *  именем папки Диска — v0.162, обложка, srcYandex). forceId — id задания карты: ром
  *  записывается под ним, и все ссылки задания работают как родные.
  *  Возвращает id рома и признак «новый» (false = уже был). */
 export async function saveYandexRomAsLocal(opts: {
@@ -188,6 +210,7 @@ export async function saveYandexRomAsLocal(opts: {
   cover?: string | null;
   roms: RomDef[];
   forceId?: string;
+  folderName?: string | null; // настоящее имя папки Диска (не обязательно — возьмём из кэша)
 }): Promise<{ romId: string; created: boolean }> {
   const fileName = opts.fileName.split('/').pop() || opts.fileName;
   // ром с таким id уже описан (деф без данных или с данными) — только доливаем данные
@@ -207,7 +230,7 @@ export async function saveYandexRomAsLocal(opts: {
     ext,
     size: opts.buf.byteLength,
     createdAt: Date.now(),
-    folder: 'Яндекс Диск',
+    folder: yaLibFolderOf(opts.link, opts.folderName), // v0.162: настоящее имя папки («test roms»)
     ...(opts.cover ? { cover: opts.cover } : {}),
     ...(opts.link ? { srcYandex: opts.link } : {}),
   };
@@ -225,6 +248,11 @@ export async function saveYandexRomAsLocal(opts: {
  *  БЕЗ сети; нет — качается (и обложка в нагрузку). Возвращает данные или null. */
 export async function ensureTaskRom(romId: string, romFile: string | undefined, link: string, onNote?: (s: string) => void): Promise<ArrayBuffer | null> {
   if (!romFile || !link) return null;
+  // v0.162: имя папки для сообщений/библиотеки — из кэша или лёгкий запрос (кэшируется):
+  // к моменту первых процентов оно уже известно и подставляется в строки прогресса
+  let fname: string | null = yaCachedName(link);
+  if (!fname) void yandexFolderName(link).then((n) => { if (n) fname = n; }).catch(() => {});
+  const where = () => (fname ? `«${fname}»` : 'Яндекс Диск');
   onNote?.('Ром задания не в библиотеке — ищу на Яндекс Диске…');
   const st0 = useApp.getState();
   // 1) такой файл уже лежит в библиотеке (под любым id) — копируем байты без сети
@@ -242,12 +270,27 @@ export async function ensureTaskRom(romId: string, romFile: string | undefined, 
   if (!href) return null;
   const buf = await fetchYandexBuf(href, (got, total) => {
     const part = total > 0 ? `${Math.min(99, Math.floor((got * 100) / total))}%` : `${(got / MB).toFixed(1)} МБ`;
-    onNote?.(`Качаю ром задания с Яндекс Диска — ${part}`);
+    onNote?.(`Качаю ром задания с ${where()} — ${part}`);
   });
   if (buf.byteLength < 1024) return null; // обрыв/страница ошибки — не ром
   const cover = await fetchYandexCover(link, { name: romFile, path: `/${romFile}`, size: buf.byteLength });
-  await saveYandexRomAsLocal({ buf, fileName: romFile, link, cover, roms: useApp.getState().roms, forceId: romId });
+  await saveYandexRomAsLocal({ buf, fileName: romFile, link, cover, roms: useApp.getState().roms, forceId: romId, folderName: fname });
   useApp.getState().refresh();
-  onNote?.('Ром задания скачан и добавлен в библиотеку');
+  onNote?.(`Ром задания скачан с ${where()} и добавлен в библиотеку`);
   return buf;
+}
+
+/* ---------- v0.162: переезд старых ромов в папку с настоящим именем ---------- */
+
+/** Ромы, скачанные с этой папки ещё до v0.162, лежали в обезличенной папке
+ *  «Яндекс Диск» — после скана переименовываем их в папку с НАСТОЯЩИМ именем
+ *  (локально, без сети). Возвращает сколько ромов переехало. */
+export async function adoptYandexFolderName(link: string, folderName: string): Promise<number> {
+  const lib = yaLibFolderOf(link, folderName);
+  if (!link || lib === 'Яндекс Диск') return 0;
+  const st = useApp.getState();
+  const hit = st.roms.filter((r) => r.srcYandex === link && r.folder === 'Яндекс Диск');
+  for (const r of hit) await idbPut('roms', r.id, { ...r, folder: lib });
+  if (hit.length) useApp.getState().refresh();
+  return hit.length;
 }

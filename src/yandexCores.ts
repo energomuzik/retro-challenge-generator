@@ -32,11 +32,97 @@
 /* v0.161: резерв теперь качает СРАЗУ архив (retro-cores-full.zip — один файл на
    всю папку), прямые файлы ядер — запас; мелкие файлы автор с Диска удаляет. */
 
+/* v0.162: ИМЯ ПАПКИ в интерфейсе (заказчик: «надо не просто писать папка яндекс
+   диска, а название папки, если можно»): публичный API в ответе отдаёт поле
+   «name» — НАСТОЯЩЕЕ имя папки на Диске (проверено живьём: у папки ядер —
+   «retro-cores», у тестовой папки ромов — «test roms»). Имя показывается везде,
+   где раньше писалось обезличенное «Яндекс Диск»: оверлей резерва ядер, статус
+   скана ромов, папка библиотеки, тосты, докачка рома задания. Имя кэшируется в
+   браузере (localStorage «rcgYaFolderNames», до 8 папок) — после первого скана
+   показывается мгновенно, без запроса. */
+
 /** Публичная ССЫЛКА на папку с ядрами на Яндекс.Диске автора (пусто = резерв неактивен). */
 export const CORES_YANDEX_URL = 'https://disk.yandex.ru/d/wqEVrHVk-fPtOw';
 
 /** Имя архива со всеми ядрами в той же папке (фолбэк для глючных файлов). */
 export const CORES_ZIP_NAME = 'retro-cores-full.zip';
+
+/* ── v0.162: настоящее ИМЯ публичной папки (поле «name» из API) ── */
+
+const YA_NAMES_KEY = 'rcgYaFolderNames';
+const yaNameCache = new Map<string, string>();
+
+/** Запомнить имя папки: сессия + localStorage (карта «ссылка → имя», до 8 папок). */
+function rememberYaName(pub: string, name: string): void {
+  const n = name.trim().slice(0, 40);
+  if (!n) return;
+  yaNameCache.set(pub, n);
+  try {
+    const m = JSON.parse(localStorage.getItem(YA_NAMES_KEY) || '{}') as Record<string, string>;
+    m[pub] = n;
+    const keys = Object.keys(m);
+    if (keys.length > 8) delete m[keys[0]];
+    localStorage.setItem(YA_NAMES_KEY, JSON.stringify(m));
+  } catch { /* без localStorage живём с сессионным кэшем */ }
+}
+
+/** Имя папки из кэша (сессия/localStorage) — БЕЗ сети; null — неизвестно. */
+export function yaCachedName(pub: string): string | null {
+  const c = yaNameCache.get(pub);
+  if (c) return c;
+  try {
+    const m = JSON.parse(localStorage.getItem(YA_NAMES_KEY) || '{}') as Record<string, string>;
+    const n = m[pub];
+    if (typeof n === 'string' && n) { yaNameCache.set(pub, n); return n; }
+  } catch { /* битый JSON — забываем */ }
+  return null;
+}
+
+/** Настоящее имя публичной папки с Диска («test roms», «retro-cores»…).
+ *  Один лёгкий запрос к API; ответ кэшируется. force — обновить кэш принудительно
+ *  (явный скан папки: автор мог ПЕРЕИМЕНОВАТЬ папку на Диске).
+ *  null — не вышло (троттлинг и т.п.). */
+export async function yandexFolderName(pub: string, force = false): Promise<string | null> {
+  if (!pub) return null;
+  if (!force) {
+    const c = yaCachedName(pub);
+    if (c) return c;
+  }
+  try {
+    const u = `https://cloud-api.yandex.net/v1/disk/public/resources?public_key=${encodeURIComponent(pub)}`;
+    const r = await fetch(u);
+    if (!r.ok) return yaCachedName(pub); // не обновилось — покажем прежнее имя, если было
+    const j = (await r.json()) as { name?: unknown };
+    if (j && typeof j.name === 'string' && j.name.trim()) {
+      rememberYaName(pub, j.name);
+      return yaNameCache.get(pub) ?? null;
+    }
+  } catch { /* троттлинг/сеть — покажем запасное имя */ }
+  return yaCachedName(pub);
+}
+
+/** Имя папки для автоскана (листинг и так в руках — имя берём из ответа, БЕЗ лишнего запроса). */
+export function yaNameFromListing(pub: string, j: { name?: unknown }): string | null {
+  if (j && typeof j.name === 'string' && j.name.trim()) {
+    rememberYaName(pub, j.name);
+    return yaNameCache.get(pub) ?? null;
+  }
+  return null;
+}
+
+/* Подпись папки ядер для строк резерва: «retro-cores» после первого ответа,
+   до того — запасное «ЯНДЕКС ДИСК». Имя тянется один раз за сессию. */
+let coresName: string | null | undefined; // undefined = ещё не начинали
+function coresLabel(): string {
+  return coresName ? `«${coresName}»` : 'ЯНДЕКС ДИСК';
+}
+function ensureCoresName(): void {
+  if (coresName !== undefined) return;
+  coresName = yaCachedName(CORES_YANDEX_URL);
+  if (coresName) return;
+  coresName = null;
+  void yandexFolderName(CORES_YANDEX_URL).then((n) => { if (n) coresName = n; }).catch(() => {});
+}
 
 /** Резерв вообще доступен (ссылка подключена)? */
 export function coresYandexReady(): boolean {
@@ -227,14 +313,14 @@ async function seedBuf(coreFile: string, file: string, buf: ArrayBuffer): Promis
 }
 
 async function seedOne(coreFile: string, file: string, onNote?: (note: string) => void): Promise<boolean> {
-  onNote?.('⚡ РЕЗЕРВ: ЯНДЕКС ДИСК — ИЩУ ЯДРО…');
+  onNote?.(`⚡ РЕЗЕРВ: ${coresLabel()} — ИЩУ ЯДРО…`);
   const href = await resolveYandexHref(file);
   if (!href) return false;
   const buf = await fetchYandexBuf(href, (got, total) => {
     const part = total > 0
       ? `${Math.min(99, Math.floor((got * 100) / total))}%`
       : `${(got / MB).toFixed(1)} МБ`;
-    onNote?.(`⚡ РЕЗЕРВ: ЯНДЕКС ДИСК — ${file.toUpperCase()} ${part}`);
+    onNote?.(`⚡ РЕЗЕРВ: ${coresLabel()} — ${file.toUpperCase()} ${part}`);
   });
   return seedBuf(coreFile, file, buf);
 }
@@ -284,14 +370,14 @@ let zipInflight: Promise<number> | null = null;
 function seedAllFromZip(onNote?: (note: string) => void): Promise<number> {
   if (!zipInflight) {
     zipInflight = (async () => {
-      onNote?.('⚡ РЕЗЕРВ: ЯНДЕКС ДИСК — АРХИВ ЯДЕР (обход глючных файлов)…');
+      onNote?.(`⚡ РЕЗЕРВ: ${coresLabel()} — АРХИВ ЯДЕР (обход глючных файлов)…`);
       const href = await resolveYandexHref(CORES_ZIP_NAME);
       if (!href) return 0;
       const buf = await fetchYandexBuf(href, (got, total) => {
         const part = total > 0
           ? `${Math.min(99, Math.floor((got * 100) / total))}%`
           : `${(got / MB).toFixed(1)} МБ`;
-        onNote?.(`⚡ РЕЗЕРВ: ЯНДЕКС ДИСК — АРХИВ ЯДЕР ${part}`);
+        onNote?.(`⚡ РЕЗЕРВ: ${coresLabel()} — АРХИВ ЯДЕР ${part}`);
       });
       if (buf.byteLength < 1024 * 1024) return 0; // архив ядер меньше МБ не бывает
       let entries: ReturnType<typeof unzipStoreForTest>;
@@ -330,6 +416,7 @@ const inflight = new Map<string, Promise<boolean>>();
 export async function seedCoreFromYandex(system: string, onNote?: (note: string) => void): Promise<number> {
   const coreFile = coreFileFor(system);
   if (!CORES_YANDEX_URL || !coreFile) return 0;
+  ensureCoresName(); // v0.162: в строках резерва — настоящее имя папки («retro-cores»), тянется один раз
   // EmulatorJS запрашивает обычный файл при WebGL2 и «-legacy» без него; качаем нужный первым,
   // второй — запасом (если первому не повезло или WebGL2 определился неверно).
   const plain = `${coreFile}-wasm.data`;

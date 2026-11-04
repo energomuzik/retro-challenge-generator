@@ -19,7 +19,7 @@ import {
   type PadFamily,
 } from '../input';
 import { sfx } from '../sound';
-import { scanYandexRoms, fetchYandexCover, fetchYandexBuf, yandexResolveHref, saveYandexRomAsLocal, findLocalRomByFile, YA_ROMS_LINK_KEY, type YaRomEntry } from '../yandexRoms';
+import { scanYandexRoms, fetchYandexCover, fetchYandexBuf, yandexResolveHref, saveYandexRomAsLocal, findLocalRomByFile, adoptYandexFolderName, yaLibFolderOf, YA_ROMS_LINK_KEY, type YaRomEntry } from '../yandexRoms';
 import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
 
 const fmtSize = (b: number) => (b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} МБ` : `${Math.max(1, Math.round(b / 1024))} КБ`);
@@ -338,6 +338,7 @@ export default function EmulatorLauncher() {
   const [yaOpen, setYaOpen] = useState(false);
   const [yaLinkIn, setYaLinkIn] = useState(() => localStorage.getItem(YA_ROMS_LINK_KEY) ?? '');
   const [yaList, setYaList] = useState<YaRomEntry[] | null>(null);
+  const [yaFolder, setYaFolder] = useState<string | null>(null); // v0.162: настоящее имя папки («test roms»)
   const [yaBusy, setYaBusy] = useState('');
   const [yaPage, setYaPage] = useState(ROM_PAGE);
   const [yaCovers, setYaCovers] = useState<Record<string, string>>({});
@@ -357,15 +358,25 @@ export default function EmulatorLauncher() {
     }
     localStorage.setItem(YA_ROMS_LINK_KEY, link);
     setYaList(null);
+    setYaFolder(null);
     setYaBusy(force ? 'пересканирую папку…' : 'сканирую папку…');
     try {
-      const list = await scanYandexRoms(link, (n) => setYaBusy(n));
+      const { entries: list, folderName } = await scanYandexRoms(link, (n) => setYaBusy(n));
       setYaList(list);
+      setYaFolder(folderName);
       setYaPage(ROM_PAGE);
-      setYaBusy(list.length ? `ромов в папке: ${list.length}` : 'папка просканирована — ромов не нашлось (проверьте расширения и spisok.txt)');
+      setYaBusy(folderName
+        ? `папка «${folderName}» — ромов: ${list.length}`
+        : list.length ? `ромов в папке: ${list.length}` : 'папка просканирована — ромов не нашлось (проверьте расширения и spisok.txt)');
+      // v0.162: ромы, скачанные с этой папки раньше (лежали в «Яндекс Диск»), переезжают в папку с настоящим именем
+      if (folderName) {
+        const moved = await adoptYandexFolderName(link, folderName);
+        if (moved > 0) toast(`Ромы этой папки в библиотеке теперь лежат в «${yaLibFolderOf(link, folderName)}»`, 'ok');
+      }
       if (list.length) sfx.coin(); else sfx.fail();
     } catch {
       setYaList(null);
+      setYaFolder(null);
       setYaBusy('');
       sfx.fail();
       toast('Не удалось просканировать папку — проверьте ссылку (папка должна быть публичной)', 'err');
@@ -399,12 +410,12 @@ export default function EmulatorLauncher() {
       setYaBusy('обложка…');
       const cover = yaCovers[e.name] ?? (await fetchYandexCover(link, e));
       setYaBusy('добавляю в библиотеку…');
-      const { romId: nid } = await saveYandexRomAsLocal({ buf, fileName, link, cover, roms: useApp.getState().roms });
+      const { romId: nid } = await saveYandexRomAsLocal({ buf, fileName, link, cover, roms: useApp.getState().roms, folderName: yaFolder });
       if (cover) setYaCovers((m) => ({ ...m, [e.name]: cover }));
       await refresh();
       setYaBusy('');
       sfx.success();
-      toast('Ром скачан и добавлен в библиотеку — папка «Яндекс Диск»', 'ok');
+      toast(`Ром скачан и добавлен в библиотеку — папка «${yaFolder ?? 'Яндекс Диск'}»`, 'ok');
       setRomId(nid);
       setRunning(false);
       void launch();
@@ -955,6 +966,7 @@ export default function EmulatorLauncher() {
                   <span className={`text-[10px] shrink-0 ${yaOpen ? 'text-coral' : 'text-faint'}`}>{yaOpen ? '▾' : '▸'}</span>
                   <span className="text-[10px] shrink-0">🌐</span>
                   <span className="font-display text-[10px] uppercase text-dim truncate">Ромы с Яндекс Диска</span>
+                  {yaFolder && <span className="tick-label text-faint shrink-0">· «{yaFolder}»</span>}
                   {yaList && yaList.length > 0 && <span className="tick-label text-faint shrink-0">· {yaList.length}</span>}
                 </button>
                 {yaOpen && (
@@ -973,7 +985,7 @@ export default function EmulatorLauncher() {
                     {yaList && (
                       <div className="flex items-center gap-2 px-0.5">
                         <button type="button" onClick={() => void yaScan(true)} className="tick-label text-faint hover:text-gold cursor-pointer" title="Пересканировать папку (если автор добавил ромы)">⟳ Обновить</button>
-                        <button type="button" onClick={() => { localStorage.removeItem(YA_ROMS_LINK_KEY); setYaLinkIn(''); setYaList(null); setYaBusy(''); sfx.click(); }} className="tick-label text-faint hover:text-coral cursor-pointer" title="Забыть ссылку в этом браузере">✕ забыть ссылку</button>
+                        <button type="button" onClick={() => { localStorage.removeItem(YA_ROMS_LINK_KEY); setYaLinkIn(''); setYaList(null); setYaFolder(null); setYaBusy(''); sfx.click(); }} className="tick-label text-faint hover:text-coral cursor-pointer" title="Забыть ссылку в этом браузере">✕ забыть ссылку</button>
                       </div>
                     )}
                     {yaBusy && <div className="tick-label text-gold px-0.5 break-all">{yaBusy}</div>}
