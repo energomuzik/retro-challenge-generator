@@ -23,7 +23,7 @@ import { saveSessionSnapshot } from './Lobby';
 import QuizOverlay from './QuizOverlay';
 import { AnimPreview, EmuVolumeChip, Field, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin, CoinRow } from '../ui';
 import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isQuizovoMode, isBossCatchMode, isSoloMode, isFrendyMode, FRENDY_PHRASES, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf, cartRegionOfRom } from '../types';
-import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem, RubgItemKind, CartRegion } from '../types';
+import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, SaveDef, TaskDef, TokenDef, TokenDir, RubgItem, RubgItemKind, CartRegion } from '../types';
 import Randomizer from './Randomizer';
 import TradeWindow from './TradeWindow';
 /* v0.135: карточка «Лор Френди» убрана из игры (и отсюда, и из обучения) — предысторию
@@ -507,8 +507,9 @@ export default function GameScreen() {
         return;
       }
       const cache2 = useApp.getState();
+      /* v0.166: состояние сохранения достаём из базы (в ОЗУ оно больше не живёт) */
       const sv = task.saveId
-        ? (cache2.saveCache[task.saveId] ?? st.saves.find((x) => x.id === task.saveId)?.state ?? null)
+        ? (cache2.saveCache[task.saveId] ?? (await idbGet<SaveDef>('saves', task.saveId))?.state ?? null)
         : null;
       if (!on) return;
       setRomBuf(buf);
@@ -559,8 +560,9 @@ export default function GameScreen() {
         if (!isHost) room?.send('needRom', { romId: myRubgTask.romId, saveId: myRubgTask.saveId });
         return;
       }
+      /* v0.166: состояние сохранения достаём из базы (в ОЗУ оно больше не живёт) */
       const sv = myRubgTask.saveId
-        ? (cache.saveCache[myRubgTask.saveId] ?? st.saves.find((x) => x.id === myRubgTask.saveId)?.state ?? null)
+        ? (cache.saveCache[myRubgTask.saveId] ?? (await idbGet<SaveDef>('saves', myRubgTask.saveId))?.state ?? null)
         : null;
       if (!on) return;
       setRRomBuf(buf); setRSaveState(sv); setREmuKey((k) => k + 1);
@@ -589,8 +591,9 @@ export default function GameScreen() {
         if (!isHost) room?.send('needRom', { romId: myQTask.romId, saveId: myQTask.saveId });
         return;
       }
+      /* v0.166: состояние сохранения достаём из базы (в ОЗУ оно больше не живёт) */
       const sv = myQTask.saveId
-        ? (cache.saveCache[myQTask.saveId] ?? st.saves.find((x) => x.id === myQTask.saveId)?.state ?? null)
+        ? (cache.saveCache[myQTask.saveId] ?? (await idbGet<SaveDef>('saves', myQTask.saveId))?.state ?? null)
         : null;
       if (!on) return;
       setQRomBuf(buf); setQSaveState(sv); setQEmuKey((k) => k + 1);

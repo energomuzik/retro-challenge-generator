@@ -1,5 +1,11 @@
 let ctx: AudioContext | null = null;
 let volume = 0.6;
+/* v0.166 САМОВОССТАНОВЛЕНИЕ ЗВУКА: если вкладка задыхалась по памяти, падала и
+   восстанавливалась браузером или долго жила в фоне, аудиоконтекст может зависнуть
+   в состоянии suspended/closed — тогда короткие «бипы» кнопок молчат, хотя mp3
+   (реплики Френди) и внешняя музыка продолжают играть. Лечим: resume на каждый клик
+   и возврат вкладки; если resume трижды не удался — контекст пересоздаётся с нуля. */
+let resumeFails = 0;
 
 export function setVolume(v: number) {
   volume = Math.max(0, Math.min(1, v));
@@ -7,15 +13,36 @@ export function setVolume(v: number) {
 
 function ac(): AudioContext | null {
   try {
+    if (ctx && ctx.state === 'closed') { ctx = null; resumeFails = 0; }
     if (!ctx) {
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       ctx = new AC();
+      resumeFails = 0;
     }
-    if (ctx.state === 'suspended') void ctx.resume();
+    if (ctx.state === 'suspended') {
+      void ctx.resume().then(() => { resumeFails = 0; }).catch(() => {
+        resumeFails++;
+        if (resumeFails >= 3 && ctx && ctx.state !== 'running') {
+          try { void ctx.close(); } catch { /* уже закрыт */ }
+          ctx = null; // следующий звук создаст свежий контекст
+        }
+      });
+    }
     return ctx;
   } catch {
     return null;
   }
+}
+
+/* Толчок контексту при ЛЮБОМ клике и при возврате на вкладку — даже если
+   обработчики игры ещё не смонтированы (после восстановления вкладки). */
+if (typeof document !== 'undefined') {
+  document.addEventListener('pointerdown', () => {
+    if (ctx && ctx.state === 'suspended') void ctx.resume().catch(() => { /* пересоздастся по счётчику */ });
+  }, true);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && ctx && ctx.state === 'suspended') void ctx.resume().catch(() => { /* пересоздастся по счётчику */ });
+  }, true);
 }
 
 function tone(freq: number, dur: number, type: OscillatorType = 'square', gain = 0.12, delay = 0, slide = 0) {

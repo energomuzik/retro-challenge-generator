@@ -166,11 +166,22 @@ export const useApp = create<AppState>()((set, get) => ({
       tileList = seeds;
     }
     const sortMaps = maps.map((e) => e.value).sort((a, b) => b.updatedAt - a.updatedAt);
+    /* v0.166 ЛЕГКАЯ БАЗА: в ОЗУ живут сохранения БЕЗ состояния (state вычитается) —
+       состояние ядра эмулятора это base64 на сотни КБ и десятки МБ на запись; раньше
+       idbAll('saves') тащил ВСЕ состояния в память при каждом старте и каждом refresh()
+       (запись/удаление/переименование сохранения) — вкладка раздувалась, задыхался GC,
+       пропадали короткие звуки и браузер перезагружал страницу «из-за нехватки памяти».
+       Полная запись достаётся из базы idbGet('saves', id) в момент использования. */
+    const lightSaves = saves.map((e) => {
+      const { state, ...rest } = e.value;
+      void state;
+      return { ...rest, stateSize: typeof state === 'string' ? (state as string).length : e.value.stateSize };
+    }).sort((a, b) => a.slot - b.slot);
     set({
       tiles: tileList.sort((a, b) => Number(!!a.builtin) - Number(!!b.builtin) || a.createdAt - b.createdAt),
       maps: sortMaps,
       roms: roms.map((e) => e.value).sort((a, b) => a.name.localeCompare(b.name)),
-      saves: saves.map((e) => e.value).sort((a, b) => a.slot - b.slot),
+      saves: lightSaves,
       tokens: tokens.map((e) => e.value).sort((a, b) => a.createdAt - b.createdAt),
       anims: anims.map((e) => e.value).sort((a, b) => a.createdAt - b.createdAt),
       bossAnims: bossAnims.map((e) => e.value).sort((a, b) => a.createdAt - b.createdAt),

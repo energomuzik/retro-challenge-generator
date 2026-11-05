@@ -161,7 +161,9 @@ async function sendLibrary(room: Room, map: GameMap): Promise<void> {
   for (const s of st.saves) {
     if (romIds.has(s.romId) && (s.kind ?? 'level') !== 'private') saveIds.add(s.id);
   }
-  const saves = st.saves.filter((s) => saveIds.has(s.id));
+  /* v0.166: сохранения едут гостю ПОЛНЫМИ записями из базы (в ОЗУ у хоста они без state —
+     а гость должен получить состояние ядра, чтобы запускать задания) */
+  const saves = (await Promise.all([...saveIds].map((id) => idbGet<SaveDef>('saves', id)))).filter((s): s is SaveDef => !!s);
   const blobs: Record<string, string> = {};
   for (const r of roms) {
     const buf = await getRomData(r.id);

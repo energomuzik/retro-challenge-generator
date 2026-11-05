@@ -132,6 +132,24 @@ export async function idbAllKeys(store: StoreName): Promise<string[]> {
   });
 }
 
+/* v0.166: курсорное чтение БЕЗ удержания записей в памяти — idbAll собирает ВСЁ в массив
+   (гигабайты на тяжёлой базе), а idbEach отдаёт записи по одной: пик памяти = одна запись */
+export async function idbEach<T>(store: StoreName, cb: (key: string, value: T) => void): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(store, 'readonly');
+    const cur = t.objectStore(store).openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result;
+      if (c) {
+        cb(String(c.key), c.value as T);
+        c.continue();
+      } else resolve();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
+}
+
 /* v0.158: удаляет все ключи в ДИАПАЗОНЕ одной транзакцией — для блобов ромов
    (все ключи блобов ромов начинаются с «rom-»), в том числе осиротевшие,
    которых нет в списке ромов (после сбоев прежних версий) */
@@ -289,8 +307,11 @@ export async function exportGame(mapId: string): Promise<string> {
     if (t.romId) romIds.add(t.romId);
   }
   const saves: SaveDef[] = [];
-  for (const s of await idbAll<SaveDef>('saves')) {
-    if (saveIds.has(String(s.key))) saves.push(JSON.parse(JSON.stringify(s.value)));
+  /* v0.166: читаем ТОЛЬКО нужные сохранения по одному (раньше idbAll тащил ВСЕ записи
+     с состояниями в память ради нескольких id карты) */
+  for (const sid of saveIds) {
+    const s = await idbGet<SaveDef>('saves', sid);
+    if (s) saves.push(JSON.parse(JSON.stringify(s)));
   }
   const roms: ExportedGame['roms'] = [];
   for (const rid of romIds) {

@@ -441,15 +441,22 @@ export default function EmulatorLauncher() {
   // Загрузка сохранения: перезапуск ядра с применением состояния через
   // документированный EJS_loadStateURL (NES и SEGA — единый путь). Ядро при этом
   // берётся из кэша браузера, поэтому перезапуск быстрый и без повторного скачивания.
-  const loadSave = (s: SaveDef) => {
+  // v0.166: состояние достаётся из базы ПОЛНОЙ записью (в ОЗУ оно больше не живёт).
+  const loadSave = async (s: SaveDef) => {
+    const full = (await idbGet<SaveDef>('saves', s.id)) ?? s;
+    if (full.state === undefined || full.state === null) {
+      sfx.fail();
+      toast('В этом сохранении не нашлось состояния — возможно, оно повреждено. Запишите его заново', 'err');
+      return;
+    }
     if (rom && running && ejsApiRef.current) {
-      ejsApiRef.current.loadSaveReliable(s.state as string);
-      setRunState(s.state);
+      ejsApiRef.current.loadSaveReliable(full.state as string);
+      setRunState(full.state);
       sfx.coin();
       toast(`Загружаю сохранение (слот ${s.slot})…`, 'ok');
       return;
     }
-    void launch(s.state);
+    void launch(full.state);
   };
 
   /* ---------- v0.107: БЫСТРАЯ ЗАГРУЗКА ВЫДЕЛЕННОГО СОХРАНЕНИЯ ----------
@@ -459,7 +466,7 @@ export default function EmulatorLauncher() {
   const selSave = romSaves.find((x) => x.id === selSaveId) ?? null;
   const quickKeyLbl = quickKeyLabelOf(loadEmuPrefs()); // v0.107: подпись клавиши быстрой загрузки
   const quickLoadFire = () => {
-    if (selSave) { loadSave(selSave); return; }
+    if (selSave) { void loadSave(selSave); return; }
     toast(rom ? 'Сначала выделите сохранение — кликните по нему в списке' : 'Сначала выберите ром', 'err');
   };
   useQuickLoad(quickLoadFire);
@@ -488,8 +495,8 @@ export default function EmulatorLauncher() {
     if (kind === 'mytask') {
       const ex = romSaves.find((s) => saveKindOf(s) === 'mytask');
       const sv: SaveDef = ex
-        ? { ...ex, state: st, createdAt: Date.now() }
-        : { id: uid('save'), romId: rom.id, slot, name: 'Моё задание', kind: 'mytask', state: st, createdAt: Date.now() };
+        ? { ...ex, state: st, stateSize: typeof st === 'string' ? st.length : undefined, createdAt: Date.now() }
+        : { id: uid('save'), romId: rom.id, slot, name: 'Моё задание', kind: 'mytask', state: st, stateSize: typeof st === 'string' ? st.length : undefined, createdAt: Date.now() };
       await idbPut('saves', sv.id, sv);
       await refresh();
       sfx.success();
@@ -497,7 +504,7 @@ export default function EmulatorLauncher() {
       return;
     }
     const name = kind === 'level' ? `Уровень ${nextNum('level')}` : kind === 'boss' ? `Босс ${nextNum('boss')}` : `Назови меня ${nextNum('private')}`;
-    const sv: SaveDef = { id: uid('save'), romId: rom.id, slot, name, kind, state: st, createdAt: Date.now() };
+    const sv: SaveDef = { id: uid('save'), romId: rom.id, slot, name, kind, state: st, stateSize: typeof st === 'string' ? st.length : undefined, createdAt: Date.now() };
     await idbPut('saves', sv.id, sv);
     await refresh();
     sfx.success();
@@ -511,15 +518,18 @@ export default function EmulatorLauncher() {
     const name = renameVal.trim().slice(0, 40);
     setRenamingId(null);
     if (!name || name === s.name) return;
-    await idbPut('saves', s.id, { ...s, name });
-    await refresh();
+    /* v0.166: переименование поверх ПОЛНОЙ записи из базы — лёгкая копия из ОЗУ не имеет state,
+       и запись её целиком стёрла бы состояние сохранения */
+    const full = await idbGet<SaveDef>('saves', s.id);
+    if (full) { await idbPut('saves', s.id, { ...full, name }); await refresh(); }
     sfx.coin();
     toast(`Сохранение переименовано: «${name}»`, 'ok');
   };
 
   const delRom = async (r: RomDef) => {
     // для Ctrl+Z: запоминаем ром, его данные и сохранения ДО удаления
-    const linked = saves.filter((s) => s.romId === r.id);
+    // v0.166: сохранения запоминаются ПОЛНЫМИ записями из базы (в ОЗУ — без state)
+    const linked = (await Promise.all(saves.filter((s) => s.romId === r.id).map((s) => idbGet<SaveDef>('saves', s.id)))).filter((s): s is SaveDef => !!s);
     const blob = await getRomData(r.id);
     rememberDeleted({
       label: `ром «${r.name}»${linked.length ? ` и его сохранения (${linked.length})` : ''}`,
@@ -571,7 +581,9 @@ export default function EmulatorLauncher() {
     }
     const items: { rom: RomDef; blob: ArrayBuffer | null; saves: SaveDef[] }[] = [];
     for (const r of inF) {
-      items.push({ rom: r, blob: await getRomData(r.id), saves: saves.filter((s) => s.romId === r.id) });
+      /* v0.166: для Ctrl+Z сохранения читаются ПОЛНЫМИ записями из базы */
+      const fullSaves = (await Promise.all(saves.filter((s) => s.romId === r.id).map((s) => idbGet<SaveDef>('saves', s.id)))).filter((s): s is SaveDef => !!s);
+      items.push({ rom: r, blob: await getRomData(r.id), saves: fullSaves });
     }
     rememberDeleted({
       label: `папку ромов «${folder}» (${inF.length})`,
@@ -633,13 +645,17 @@ export default function EmulatorLauncher() {
   };
 
   const delSave = async (s: SaveDef) => {
-    rememberDeleted({
-      label: `сохранение «${s.name}» (слот ${s.slot})`,
-      restore: async () => {
-        await idbPut('saves', s.id, { ...s });
-        await refresh();
-      },
-    });
+    /* v0.166: в Ctrl+Z уходит ПОЛНАЯ запись из базы (с состоянием) */
+    const full = await idbGet<SaveDef>('saves', s.id);
+    if (full) {
+      rememberDeleted({
+        label: `сохранение «${s.name}» (слот ${s.slot})`,
+        restore: async () => {
+          await idbPut('saves', full.id, full);
+          await refresh();
+        },
+      });
+    }
     await idbDel('saves', s.id);
     await refresh();
     sfx.fail();
@@ -651,11 +667,13 @@ export default function EmulatorLauncher() {
      удаления из Опций (подтверждение/удержание), а Ctrl+Z возвращает ВСЕ слоты разом */
   const delAllSaves = async () => {
     if (!rom || !romSaves.length) return;
-    const list = romSaves;
+    /* v0.166: в Ctrl+Z уходят ПОЛНЫЕ записи из базы (с состояниями) */
+    const list = (await Promise.all(romSaves.map((s) => idbGet<SaveDef>('saves', s.id)))).filter((s): s is SaveDef => !!s);
+    if (!list.length) return;
     rememberDeleted({
       label: `все сохранения рома «${rom.name}» (${list.length})`,
       restore: async () => {
-        for (const s of list) await idbPut('saves', s.id, { ...s });
+        for (const s of list) await idbPut('saves', s.id, s);
         await refresh();
       },
     });
@@ -1176,9 +1194,10 @@ export default function EmulatorLauncher() {
                           <>
                             <div className="min-w-0 flex-1">
                               <div className="font-display text-[11px] uppercase text-paper truncate">{s.name}</div>
-                              <div className="tick-label text-faint">S{s.slot} · {new Date(s.createdAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</div>
+                              {/* v0.166: вес состояния сохранения — видно, какие записи тяжёлые */}
+                              <div className="tick-label text-faint">S{s.slot} · {new Date(s.createdAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}{s.stateSize ? ` · ${fmtSize(s.stateSize)}` : ''}</div>
                             </div>
-                            <GhostBtn small onClick={(e) => { e.stopPropagation(); loadSave(s); }} title="Загрузить это сохранение прямо сейчас">{Ic.play(11)}</GhostBtn>
+                            <GhostBtn small onClick={(e) => { e.stopPropagation(); void loadSave(s); }} title="Загрузить это сохранение прямо сейчас">{Ic.play(11)}</GhostBtn>
                             {/* v0.107: ✏ у ЛЮБОГО сохранения — уровни/боссы получают слова-пометки («Уровень 2 — башня») */}
                             <GhostBtn
                               small

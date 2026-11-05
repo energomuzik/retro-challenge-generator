@@ -3,7 +3,7 @@ import { useApp } from '../store';
 import { Field, GhostBtn, Ic, Modal, Panel, PxBtn, Toggle } from '../ui';
 import type { SpoilerMode } from '../types';
 import type { GameOptions, SaveDef } from '../types';
-import { idbAll, idbAllKeys, idbClear, idbDelMany, idbDelRange, exportLibrary, importLibrary } from '../db';
+import { idbAllKeys, idbClear, idbDelMany, idbDelRange, idbEach, exportLibrary, importLibrary } from '../db';
 import { STORES } from '../db';
 import { sfx } from '../sound';
 import { downloadHostBat } from '../host/hostPackage';
@@ -129,9 +129,15 @@ export default function OptionsScreen() {
      даже если список отстал от хранилища; блобы ромов удаляем ДИАПАЗОНОМ «rom-…» —
      так уйдут и осиротевшие блобы, оставшиеся от сбоев прежних версий. */
   const doWipeRoms = async () => {
-    const [romKeys, allSaves] = await Promise.all([idbAllKeys('roms'), idbAll<SaveDef>('saves')]);
+    const romKeys = await idbAllKeys('roms');
     const romSet = new Set(romKeys);
-    const orphanSaves = allSaves.filter((e) => e.value.romId && romSet.has(e.value.romId)).map((e) => e.key);
+    /* v0.166: сохранения проходим КУРСОРОМ (idbEach) — раньше idbAll тащил ВСЕ состояния
+       эмулятора в память прямо в момент «лечения», и на тяжёлой базе кнопка сама могла
+       задушить вкладку; теперь пик памяти — одна запись */
+    const orphanSaves: string[] = [];
+    await idbEach<SaveDef>('saves', (key, value) => {
+      if (value?.romId && romSet.has(value.romId)) orphanSaves.push(key);
+    });
     await idbDelRange('blobs', 'rom-', 'rom-\uffff');
     await idbDelMany('saves', orphanSaves);
     await idbClear('roms');

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../store';
 import { Field, GhostBtn, Ic, Panel, PxBtn } from '../ui';
 import { openRoom, dispatch } from '../useGame';
@@ -266,7 +266,10 @@ export function CreateScreen() {
     frendy: { label: 'FRENDY', cls: 'border-[#ff6b35]/70 text-[#ff6b35]' }, // v0.123: хеллоуинский хоррор
   };
 
-  const shown = ready
+  /* v0.166: фильтр/сортировка/сводки карт считаются ОДИН раз на смену данных или фильтра
+     (useMemo) — раньше mapFacts прогонялся по всем ячейкам ВСЕХ карт при каждом чихе стора
+     (тост, сетевой тик, курсор), и на большой библиотеке «Создать игру» подтормаживало */
+  const shown = useMemo(() => ready
     .filter((m) => {
       const f = mapFacts(m);
       if (fMode !== 'all' && f.mode !== fMode) return false;
@@ -290,7 +293,7 @@ export function CreateScreen() {
         return d !== 0 ? d : a.name.localeCompare(b.name, 'ru');
       }
       return b.updatedAt - a.updatedAt;
-    });
+    }), [maps, roms, fMode, fCons, fExtra, sortBy]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const chip = (on: boolean, label: string, onClick: () => void, tone = 'gold') => (
     <button
