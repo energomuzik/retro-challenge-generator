@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../store';
 import { dispatch } from '../useGame';
 import { GhostBtn, Ic, PxBtn } from '../ui';
-import { PLAYER_COLORS } from '../types';
+import { PLAYER_COLORS, isQuizovoMode } from '../types';
 import { sfx } from '../sound';
 
 /* детерминированная перетасовка: у ВСЕХ игроков одинаковый порядок (сид из quizId+startedAt) */
@@ -97,6 +97,9 @@ export default function QuizOverlay() {
   if (!session || !q || !quiz || !mePlayer || !mePlayer.alive) return null;
 
   const isMystery = quiz.type === 'mystery';
+  /* v0.163 QUIZowo: конкурс квизов — вопрос у ВСЕХ, каждый отвечает ОДИН раз,
+     таймер идёт до конца (первый верный ответ квиз НЕ закрывает), очки по скорости. */
+  const isQuizovo = isQuizovoMode(map?.mode);
   const picking = isMystery && !q.startedAt;
   const limit = Math.max(5, quiz.timeLimit);
   const remain = q.startedAt && localStartRef.current
@@ -108,12 +111,21 @@ export default function QuizOverlay() {
   const wrongList = q.answered ?? [];
   const pendingList = q.pending ?? [];
   const correctList = q.correctBy ?? [];
-  const meWrong = wrongList.some((x) => x.id === me);
-  const mePending = pendingList.some((x) => x.id === me);
-  const meCorrect = correctList.includes(me);
-  // гонка: каждый отвечает один раз (после ошибки или верного — выбыл); «кот»: получивший может пробовать снова
-  const canAnswer = !q.resolved && q.startedAt > 0 && (isMystery ? iAmTarget && (!sent || meWrong) : !sent && !meWrong && !meCorrect);
-  const seesQuestion = !isMystery || iAmTarget || q.resolved;
+  const scores = q.scores ?? [];
+  const meScore = scores.find((x) => x.id === me);
+  const meWrong = isQuizovo ? !!meScore && !meScore.correct : wrongList.some((x) => x.id === me);
+  const mePending = isQuizovo ? !!meScore?.correct : pendingList.some((x) => x.id === me);
+  const meCorrect = isQuizovo ? !!meScore?.correct : correctList.includes(me);
+  // гонка: каждый отвечает один раз (после ошибки или верного — выбыл); «кот»: получивший может пробовать снова.
+  // v0.163: только в QUIZowo зрители НЕ отвечают (в остальных режимах поведение прежнее)
+  const canAnswer = !q.resolved && q.startedAt > 0 && (!isQuizovo || !mePlayer.spect) && (isMystery && !isQuizovo ? iAmTarget && (!sent || meWrong) : !sent && !meWrong && !meCorrect);
+  const seesQuestion = !isMystery || isQuizovo || iAmTarget || q.resolved;
+  /* QUIZowo: сколько уже ответило и сколько всего ответить должно (живые игроки, не зрители) */
+  const quizovoTotal = session?.players.filter((p) => p.alive && !p.spect).length ?? 0;
+  const quizovoAnswered = scores.length;
+  /* QUIZowo: номер вопроса (сейчас звучит последний из usedQuizzes) */
+  const quizovoNo = map ? (session?.usedQuizzes ?? []).length : 0;
+  const quizovoAll = map?.quizzes?.length ?? 0;
 
   const submit = (answer: number | string) => {
     if (!canAnswer) return;
@@ -121,8 +133,11 @@ export default function QuizOverlay() {
     setSent(true);
     sfx.click();
     // sentAt — время нажатия по часам игрока: хост определит «кто быстрее» честно,
-    // не по порядку прихода сообщений (иначе у хоста было бы преимущество по пингу)
-    dispatch({ t: 'quizAnswer', id: me, answer, sentAt: Date.now() });
+    // не по порядку прихода сообщений (иначе у хоста было бы преимущество по пингу).
+    // v0.163 QUIZowo: ещё и elapsedMs — сколько мс прошло от ПОКАЗА вопроса ПО ЧАСАМ
+    // ИГРОКА: очки по скорости считаются без рассинхрона часов двух ПК.
+    const elapsedMs = isQuizovo && localStartRef.current ? Math.max(0, Date.now() - localStartRef.current) : undefined;
+    dispatch({ t: 'quizAnswer', id: me, answer, sentAt: Date.now(), elapsedMs });
   };
 
   /* сдвинуть пункт с позиции from на позицию to (в списке показа) */
@@ -137,7 +152,7 @@ export default function QuizOverlay() {
     sfx.hover();
   };
 
-  const accent = isMystery ? '#ff8b3f' : '#5aa9ff';
+  const accent = isQuizovo ? '#ffcf3f' : isMystery ? '#ff8b3f' : '#5aa9ff';
   const isOrder = quiz.type === 'order';
   const correctText =
     isOrder ? (quiz.items ?? []).map((it) => it.text).join(' → ')
@@ -151,16 +166,24 @@ export default function QuizOverlay() {
       <div className="relative pixel-panel pixel-corners pop-in w-full max-w-2xl max-h-[92vh] overflow-y-auto" style={{ borderColor: accent }}>
         {/* шапка */}
         <div className="flex items-center gap-3 px-5 py-3 border-b-[3px] border-edge" style={{ background: 'rgba(0,0,0,0.25)' }}>
-          <span style={{ color: accent }}>{isMystery ? Ic.cart(20) : Ic.bolt(20)}</span>
+          <span style={{ color: accent }}>{isQuizovo ? Ic.bolt(20) : isMystery ? Ic.cart(20) : Ic.bolt(20)}</span>
           <div className="flex-1">
             <div className="font-display uppercase tracking-wider text-sm" style={{ color: accent }}>
-              {isMystery ? 'Кот в мешке' : 'Квиз-гонка'}
+              {isQuizovo ? 'QUIZowo' : isMystery ? 'Кот в мешке' : 'Квиз-гонка'}
             </div>
             <div className="tick-label text-faint mt-0.5">
-              {iAmAsker ? `Вы встали на ячейку квиза` : `Спросил: ${asker?.name ?? '—'}`}
+              {isQuizovo
+                ? `Вопрос ${quizovoNo} из ${quizovoAll} · кто встал на ячейку: ${asker?.name ?? '—'}`
+                : iAmAsker ? `Вы встали на ячейку квиза` : `Спросил: ${asker?.name ?? '—'}`}
               {isMystery && !picking && victim ? ` · отвечает ${victim.name}` : ''}
             </div>
           </div>
+          {isQuizovo && q.startedAt > 0 && !q.resolved && (
+            <div className="text-right">
+              <div className="font-display text-[11px] uppercase text-paper">{quizovoAnswered}/{quizovoTotal}</div>
+              <div className="tick-label text-faint">ответили</div>
+            </div>
+          )}
           {q.startedAt > 0 && !q.resolved && (
             <div className="text-right">
               <div className={`font-pixel text-lg ${remain <= 5 ? 'text-coral blink-hard' : 'text-paper'}`}>{Math.ceil(remain)}</div>
@@ -229,25 +252,36 @@ export default function QuizOverlay() {
 
                   {!q.resolved && (
                     <>
-                      {!isMystery && (
+                      {!isMystery && !isQuizovo && (
                         <p className="text-center text-[11px] text-sky">
                           Гонка: вопрос видят все. Первый верный ответ забирает бонус, ошибка — штраф ответившему.
                           Квиз идёт, пока кто-то не ответит верно, не ошибутся все или не выйдет время!
                         </p>
                       )}
+                      {isQuizovo && (
+                        <p className="text-center text-[11px] text-gold">
+                          QUIZowo: вопрос у всех, отвечает каждый. Верный ответ быстрее = больше очков (до 1000),
+                          неверный или не успел — 0. Квиз закроется, когда ответят ВСЕ или выйдет время!
+                        </p>
+                      )}
                       {meWrong && !q.resolved && (
                         <div className="hud-chip pixel-corners border-coral px-3 py-2 text-center">
                           <span className="font-display text-[11px] uppercase text-coral">
-                            Ваш ответ неверный{quiz.noPenalty ? ' (без штрафа).' : ' — −5 ресурсов.'}{' '}
-                            {isMystery ? 'Таймер идёт — пробуйте снова!' : 'Ждём остальных игроков…'}
+                            {isQuizovo ? 'Неверно — 0 очков за этот вопрос.' : `Ваш ответ неверный${quiz.noPenalty ? ' (без штрафа).' : ' — −5 ресурсов.'}`}{' '}
+                            {isMystery && !isQuizovo ? 'Таймер идёт — пробуйте снова!' : 'Ждём остальных игроков…'}
                           </span>
                         </div>
                       )}
                       {meCorrect && !q.resolved && (
                         <div className="hud-chip pixel-corners border-teal px-3 py-2 text-center">
                           <span className="font-display text-[11px] uppercase text-teal">
-                            Верно! +5 ресурсов — ждём остальных игроков…
+                            {isQuizovo ? `Верно! +${meScore?.pts ?? 0} очков — ждём остальных…` : 'Верно! +5 ресурсов — ждём остальных игроков…'}
                           </span>
+                        </div>
+                      )}
+                      {isQuizovo && mePlayer?.spect && !q.resolved && (
+                        <div className="hud-chip pixel-corners border-sky px-3 py-2 text-center">
+                          <span className="font-display text-[11px] uppercase text-sky">Вы зритель — отвечать нельзя, смотрите и ждите табло</span>
                         </div>
                       )}
                       {!isMystery && wrongList.length > 0 && (
@@ -382,46 +416,71 @@ export default function QuizOverlay() {
                   q.result.correct ? 'text-teal' : q.result.reason === 'timeout' ? 'text-gold' : 'text-coral'
                 }`}
               >
-                {q.result.correct ? 'ВЕРНО!' : q.result.reason === 'timeout' ? 'ВРЕМЯ ВЫШЛО' : 'ОШИБЛИСЬ ВСЕ'}
+                {isQuizovo ? 'РАУНД ЗАВЕРШЁН' : q.result.correct ? 'ВЕРНО!' : q.result.reason === 'timeout' ? 'ВРЕМЯ ВЫШЛО' : 'ОШИБЛИСЬ ВСЕ'}
               </div>
 
-              {q.result.correct ? (
-                <p className="text-[13px] text-paper mt-3">
-                  {q.result.targetName} — верный ответ:{' '}
-                  <span className="text-teal">
-                    {q.result.deltaMin !== 0 ? `+${q.result.deltaMin} минут` : `+${q.result.deltaTries} попыток`}
-                  </span>
-                </p>
-              ) : q.result.reason === 'timeout' ? (
-                <p className="text-[13px] text-paper mt-3">
-                  Вопрос повис на игроке {q.result.targetName}:{' '}
-                  <span className="text-coral">
-                    {q.result.deltaMin !== 0 ? `−${Math.abs(q.result.deltaMin)} минут` : `−${Math.abs(q.result.deltaTries)} попыток`}
-                  </span>
-                </p>
+              {/* v0.163 QUIZowo: ТАБЛО ОЧКОВ РАУНДА — каждый со своими очками, лидер сверху */}
+              {isQuizovo ? (
+                <>
+                  <div className="mt-4 space-y-1.5 max-w-sm mx-auto text-left">
+                    {[...scores].sort((x, y) => y.pts - x.pts || x.name.localeCompare(y.name)).map((sc) => {
+                      const pl = session?.players.find((p) => p.id === sc.id);
+                      const col = PLAYER_COLORS[pl?.color ?? 0] ?? '#e8e2d0';
+                      return (
+                        <div key={sc.id} className={`flex items-center gap-2 px-3 py-1.5 border-2 ${sc.id === me ? 'border-gold' : 'border-edge'} ${sc.correct ? 'bg-teal/5' : 'bg-coral/5'}`}>
+                          <span className="w-3 h-3 shrink-0 border border-abyss" style={{ background: col }} />
+                          <span className="font-display uppercase text-[11px] text-paper flex-1 truncate">{sc.name}{sc.id === me ? ' (вы)' : ''}</span>
+                          <span className={`font-pixel text-[10px] ${sc.correct ? 'text-teal' : 'text-coral'}`}>
+                            {sc.correct ? `✔ +${sc.pts}` : '✖ 0'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                    {scores.length === 0 && <p className="text-[12px] text-dim text-center py-2">Никто не успел ответить — очков в раунде нет</p>}
+                  </div>
+                  <p className="text-[11px] text-faint mt-3">Верный ответ быстрее = больше очков (до 1000). Не ответившие получают 0.</p>
+                </>
               ) : (
-                <p className="text-[13px] text-dim mt-3">Каждый ответивший потерял по 5 ресурсов — бонус никто не забрал</p>
-              )}
+                <>
+                  {q.result.correct ? (
+                    <p className="text-[13px] text-paper mt-3">
+                      {q.result.targetName} — верный ответ:{' '}
+                      <span className="text-teal">
+                        {q.result.deltaMin !== 0 ? `+${q.result.deltaMin} минут` : `+${q.result.deltaTries} попыток`}
+                      </span>
+                    </p>
+                  ) : q.result.reason === 'timeout' ? (
+                    <p className="text-[13px] text-paper mt-3">
+                      Вопрос повис на игроке {q.result.targetName}:{' '}
+                      <span className="text-coral">
+                        {q.result.deltaMin !== 0 ? `−${Math.abs(q.result.deltaMin)} минут` : `−${Math.abs(q.result.deltaTries)} попыток`}
+                      </span>
+                    </p>
+                  ) : (
+                    <p className="text-[13px] text-dim mt-3">Каждый ответивший потерял по 5 ресурсов — бонус никто не забрал</p>
+                  )}
 
-              {wrongList.length > 0 && (
-                <div className="flex items-center justify-center gap-2 flex-wrap mt-3">
-                  <span className="tick-label text-faint">Штрафы за ошибки:</span>
-                  {wrongList.map((w) => (
-                    <span key={w.id} className="hud-chip pixel-corners px-2 py-0.5 font-pixel text-[8px] text-coral">
-                      ✖ {w.name}{quiz.noPenalty ? '' : ' −5'}
-                    </span>
-                  ))}
-                </div>
-              )}
-              {(q.result.winners ?? []).length > 0 && (
-                <div className="flex items-center justify-center gap-2 flex-wrap mt-3">
-                  <span className="tick-label text-faint">Ответили верно (+5):</span>
-                  {q.result.winners!.map((nm, i) => (
-                    <span key={i} className="hud-chip pixel-corners px-2 py-0.5 font-pixel text-[8px] text-teal">
-                      ✔ {nm}
-                    </span>
-                  ))}
-                </div>
+                  {wrongList.length > 0 && (
+                    <div className="flex items-center justify-center gap-2 flex-wrap mt-3">
+                      <span className="tick-label text-faint">Штрафы за ошибки:</span>
+                      {wrongList.map((w) => (
+                        <span key={w.id} className="hud-chip pixel-corners px-2 py-0.5 font-pixel text-[8px] text-coral">
+                          ✖ {w.name}{quiz.noPenalty ? '' : ' −5'}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {(q.result.winners ?? []).length > 0 && (
+                    <div className="flex items-center justify-center gap-2 flex-wrap mt-3">
+                      <span className="tick-label text-faint">Ответили верно (+5):</span>
+                      {q.result.winners!.map((nm, i) => (
+                        <span key={i} className="hud-chip pixel-corners px-2 py-0.5 font-pixel text-[8px] text-teal">
+                          ✔ {nm}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
 
               {correctText && (
@@ -430,7 +489,9 @@ export default function QuizOverlay() {
                 </p>
               )}
               <p className="text-[11px] text-faint mt-3">
-                {iAmAsker ? 'Нажмите «Дальше», чтобы передать ход' : 'Ход передаст тот, кто встал на ячейку квиза'}
+                {isQuizovo
+                  ? (iAmAsker ? 'Нажмите «Дальше» — фишки снова пойдут (все квизы прозвучат — игра завершится!)' : '«Дальше» нажмёт тот, кто встал на ячейку квиза')
+                  : iAmAsker ? 'Нажмите «Дальше», чтобы передать ход' : 'Ход передаст тот, кто встал на ячейку квиза'}
               </p>
               {iAmAsker && (
                 <div className="mt-4">

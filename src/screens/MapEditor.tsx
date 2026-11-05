@@ -3485,6 +3485,15 @@ export default function MapEditor() {
       startCoins: pr.startCoins,    // монетные пресеты (QUEST) ставят капитал, остальные — undefined
     };
     let extra = '';
+    if (id === 'quizovo') {
+      /* QUIZowo: ресурс — ОЧКИ (старт 0), вылета нет; монеты/время/попытки не нужны,
+         экономика заданий отключается, остаются только квизы */
+      patch.coinsOnly = undefined;
+      patch.startCoins = undefined;
+      patch.taskWinCoins = undefined;
+      patch.skipCoins = undefined;
+      extra = ' Ресурс — ОЧКИ (старт 0): верный ответ быстрее = до 1000, вылета нет. Добавьте КВИЗЫ в редакторе квизов и ячейки-квизы на поле — без них QUIZowo не сохранить.';
+    }
     if (pr.resMode === 'coins') {
       /* МОНЕТНЫЙ ПРЕСЕТ (QUEST): та же экономика, что у кнопки «Монеты» в панели ресурса —
          награда за победу 10, пропуск 5, квизы 5/5 (уже заданные автором значения сохраняются). */
@@ -3553,6 +3562,22 @@ export default function MapEditor() {
       sfx.fail();
       toast('Поставьте стартовую ячейку: выберите ячейку и задайте тип «Старт» — с неё начнут все игроки', 'err');
       return;
+    }
+    /* v0.163 QUIZowo: карта без квизов не сохраняется — в этом режиме играются ТОЛЬКО они.
+       Подсказываем и ячейки-квизы: без них вопросы никогда не звучат. */
+    if ((map.mode ?? 'classic') === 'quizovo') {
+      const qCount = (map.quizzes ?? []).length;
+      if (qCount === 0) {
+        sfx.fail();
+        toast('QUIZowo: на карте нет ни одного квиза — создайте их в редакторе квизов (кнопка «Квизы»), без них QUIZowo не сыграть', 'err');
+        return;
+      }
+      const quizCells = map.cells.filter((c) => c.type === 'quiz').length;
+      if (quizCells === 0) {
+        sfx.fail();
+        toast(`QUIZowo: квизы есть (${qCount}), но на поле нет ни одной ЯЧЕЙКИ-КВИЗА — поставьте хотя бы одну (тип ячейки «Квиз»), иначе вопросы не запустятся`, 'err');
+        return;
+      }
     }
     if (starts > 1) {
       sfx.fail();
@@ -3802,7 +3827,7 @@ export default function MapEditor() {
             {(() => {
               const id = baseModeOf(map.mode ?? 'classic');
               const solo = isSoloMode(map.mode ?? 'classic');
-              const soloLocked = id === 'skill' || id === 'rubg' || id === 'bogach' || id === 'frendy'; // v0.123: FRENDY — соло-вариант не нужен (играется хоть одним)
+              const soloLocked = id === 'skill' || id === 'rubg' || id === 'bogach' || id === 'frendy' || id === 'quizovo'; // v0.123: FRENDY — соло-вариант не нужен (играется хоть одним); v0.163: QUIZowo — тоже
               const sv = soloVariantOf(id);
               return (
                 <button
@@ -3816,7 +3841,9 @@ export default function MapEditor() {
                         ? 'В VERSUS соло нет — гонка на опережение, минимум два игрока'
                         : id === 'frendy'
                           ? 'FRENDY: галочка SOLO не нужна — играй хоть один, хоть с компанией (все сражаются сами)'
-                          : 'SOLO: играет только хост, остальные — зрители трансляции. В RETROPOLIA/JOURNEY меняется условие победы: пройти ВСЕ задания карты'}
+                          : id === 'quizovo'
+                            ? 'QUIZowo: галочка SOLO не нужна — можно начать хоть одному (потестировать конкурс), хоть всем скопом'
+                            : 'SOLO: играет только хост, остальные — зрители трансляции. В RETROPOLIA/JOURNEY меняется условие победы: пройти ВСЕ задания карты'}
                   className={`px-2.5 py-1 border-2 font-display text-[9px] uppercase transition-colors whitespace-nowrap ${solo ? 'border-sky text-sky bg-sky/10 cursor-pointer' : soloLocked ? 'border-edge text-faint/50 cursor-not-allowed' : 'border-edge text-faint hover:text-sky cursor-pointer'}`}
                 >{solo ? '☑ ' : '☐ '}SOLO</button>
               );
@@ -4250,6 +4277,15 @@ export default function MapEditor() {
                       <div className="text-[10px] text-dim mt-1 leading-tight">В RUBG ресурс всегда ПОЛОСКА HP: победа в задании +10%, поражение −5%; вне зоны HP тает каждый секунду. Выбор заблокирован.</div>
                     </div>
                     <p className="text-[9px] text-faint leading-tight">Монеты/время/попытки в RUBG не используются — в игре показывается только полоска HP.</p>
+                  </div>
+                ) : (map.mode ?? 'classic') === 'quizovo' ? (
+                  /* v0.163 QUIZowo: ресурс ВСЕГДА ОЧКИ — выбор заблокирован */
+                  <div className="space-y-2">
+                    <div className="border-2 border-gold/60 bg-gold/10 px-3 py-2.5">
+                      <div className="font-display uppercase text-[12px] text-gold">⭐ Очки</div>
+                      <div className="text-[10px] text-dim mt-1 leading-tight">В QUIZowo ресурс всегда ОЧКИ: старт у всех 0, верный ответ быстрее = до 1000 очков (мгновенно — 1000, к концу таймера меньше, минимум 100), неверный ответ или не успел — 0. Вылета НЕТ — игроки не выбывают.</div>
+                    </div>
+                    <p className="text-[9px] text-faint leading-tight">Минуты/попытки/монеты в QUIZowo не используются — в игре показываются только очки. Когда все квизы карты прозвучат — партия завершится, победит самый большой счёт.</p>
                   </div>
                 ) : (
                   <div className="space-y-2">

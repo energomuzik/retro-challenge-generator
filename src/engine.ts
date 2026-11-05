@@ -1,5 +1,5 @@
 import type { BgEv, CardDef, FrendyBossState, FrendyChipState, FrendyState, GameFx, GameMap, GameOptions, GameSession, MapMode, NpcReward, NpcShopOffer, PlayerState, QuestGoal, RubgItemKind, RubgZonePhasePlan, TaskDef, TradeOffer, TokenDir, WallRect } from './types';
-import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_ENERGETIC_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_BURN_SHIELD_MS, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, cartFitsConsole, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, rubgItemSize, rubgGridFits, rubgGridFirstFit, FRENDY_INV_COLS, FRENDY_INV_ROWS, playerPx, doorKeyName, frameWallsOf } from './types';
+import { APP_VERSION, SKIP_COST, SKIP_COINS_DEFAULT, COINS_MAX, START_SEC, START_TRIES, JOY_LIST, mkJoyCard, SKILL_TURNS, isJourneyLike, isSoloMode, isQuestMode, isBossCatchMode, isBogachMode, isFrendyMode, isQuizovoMode, MAX_PLAYERS, MAX_SPECTATORS, PLAYER_COLORS, FRENDY_PHRASES, FRENDY_CHIPS_MIN, FRENDY_CHIPS_MAX, FRENDY_FIRST_WAKE_MS, FRENDY_SPEED_BASE, FRENDY_SPEED_RAGE, FRENDY_HIT_DMG, FRENDY_HIT_DMG_RAGE, FRENDY_HIT_CD, FRENDY_HIT_RANGE, FRENDY_CATCH_RANGE, FRENDY_CATCH_HOLD, FRENDY_HUNT_MAX_MS, FRENDY_COFFEE_MS, FRENDY_ENERGETIC_MS, FRENDY_RESPAWN_MS, FRENDY_RESPAWN_MIN_MS, FRENDY_STRONG_MS, FRENDY_BURN_SHIELD_MS, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, FRENDY_TASK_GRACE_MS, FRENDY_FURY_MS, FRENDY_FURY_SPEED, FRENDY_ULTRA_SPEED, FRENDY_ULTRA_TP_MS, FRENDY_ULTRA_HIT_CD, FRENDY_UIBUSY_MS, FRENDY_BUSY_TP_MS, BOGACH_WIN_COINS, taskPlatLabel, questGoalText, tileAt, tileRectOf, tilePlayPorts, coinsStr, normResMode, cartFitsConsole, RUBG_ITEMS, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_ZONE_PHASES, RUBG_ZONE_TOTAL, RUBG_ZONE_DEFAULT_SEC, rubgFmtZone, RUBG_STEAL_RANGE, RUBG_STOP_CD, RUBG_BELT_SLOTS, rubgMkItem, rubgRandomKind, rubgItemSize, rubgGridFits, rubgGridFirstFit, FRENDY_INV_COLS, FRENDY_INV_ROWS, playerPx, doorKeyName, frameWallsOf } from './types';
 import type { TaskPlat } from './types';
 import type { RubgItem } from './types';
 import type { JoyId } from './types';
@@ -52,7 +52,7 @@ export type Action =
   | { t: 'tradeOffer'; id: string; to: string; cardId?: string; cellIdx?: number; priceMin: number; priceTries: number }
   | { t: 'tradeReply'; id: string; offerId: string; kind: 'accept' | 'counter' | 'decline'; counterMin?: number; counterTries?: number }
   | { t: 'tradeResolve'; id: string; offerId: string; accept: boolean }
-  | { t: 'quizAnswer'; id: string; answer: number | string | null; sentAt?: number }
+  | { t: 'quizAnswer'; id: string; answer: number | string | null; sentAt?: number; elapsedMs?: number } // v0.163 QUIZowo: elapsedMs — сколько мс прошло от ПОКАЗА вопроса до нажатия ПО ЧАСАМ САМОГО игрока (очки по скорости без рассинхрона часов ПК)
   | { t: 'quizTarget'; id: string; target: string }
   | { t: 'quizTimeout' }
   | { t: 'quizDone'; id: string }
@@ -116,7 +116,7 @@ function mkPlayer(id: string, name: string, color: number, isHost: boolean): Pla
   return {
     id, name: name.slice(0, 14).toUpperCase() || 'ИГРОК', color, ready: isHost, isHost,
     secLeft: START_SEC, triesLeft: START_TRIES, coinsLeft: 0, hp: RUBG_HP_MAX, pos: 0, alive: true, skipTurns: 0, extraTurn: false,
-    inventory: [], oneDie: false, dicePlus: false, freeSkip: false, joyTurn: -1,
+    inventory: [], oneDie: false, dicePlus: false, freeSkip: false, joyTurn: -1, points: 0, // v0.163 QUIZowo: очки стартуют с нуля
   };
 }
 
@@ -132,6 +132,7 @@ function normPlayer(p: PlayerState) {
   if (p.hp === undefined) p.hp = RUBG_HP_MAX;
   if (!Array.isArray(p.items)) p.items = [];
   if (p.stealth === undefined) p.stealth = false;
+  if (p.points === undefined) p.points = 0; // v0.163 QUIZowo
 }
 
 /* v0.114: ПЕРЕМАПЛИВАНИЕ id игрока во ВСЕХ структурах состояния. getNew возвращает
@@ -645,7 +646,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
        только когда погибли ВСЕ (al.length === 0, проверка ниже по потоку в checkElim)
        или сожжены все микросхемы (frendyBurn). Раньше nextTurn «закрывал» партию после
        первой же смерти с надписью «КОШМАР ПОБЕДИЛ», хотя на карте оставался игрок. */
-    if (al.length === 0 || (!isFrendyMode(map.mode) && al.length <= 1 && map.mode !== 'skill' && !isSoloMode(map.mode))) {
+    if (al.length === 0 || (!isFrendyMode(map.mode) && !isQuizovoMode(map.mode) && al.length <= 1 && map.mode !== 'skill' && !isSoloMode(map.mode))) { // v0.163: QUIZowo — вылета нет, один игрок тоже норма (партию можно потестировать одному)
       s.phase = 'over';
       s.winner = al[0]?.id ?? null;
       if (s.winner) log(`🏆 ${al[0].name} — ПОБЕДИТЕЛЬ!`);
@@ -673,6 +674,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
   };
 
   const checkElim = () => {
+    /* v0.163 QUIZowo: вылета НЕТ — очки не выбивают, никто не погибает (победителя определит
+       счёт в конце; следующий вопрос никто не ждёт). Проверка ресурсов пропускается целиком. */
+    if (isQuizovoMode(map.mode)) return;
     /* монеты-единственный ресурс (coinsOnly): вылетает тот, у кого кончились МОНЕТЫ;
        в смешанном режиме монеты не убивают — вылет по времени+попыткам как раньше.
        v0.55 QUEST: монеты НЕ убивают НИКОГДА (денег нет — ничего не происходит);
@@ -1569,6 +1573,33 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     }
   };
 
+  /* ---------- v0.163 QUIZowo: очки и финал ---------- */
+  /* Очки за верный ответ по скорости: мгновенно = 1000, к концу таймера меньше
+     (пропорция остатка времени), минимум 100 за сам факт верного ответа.
+     elapsedMs — время от ПОКАЗА вопроса по часам САМОГО игрока (клиент шлёт в quizAnswer):
+     рассинхрон часов двух ПК не влияет. limitMs — тот же лимит, что у таймера на экране. */
+  const quizovoPointsFor = (elapsedMs: number, limitMs: number): number => {
+    const left = Math.max(0, Math.min(1, 1 - Math.max(0, elapsedMs) / Math.max(1, limitMs)));
+    return Math.max(100, Math.round(1000 * left));
+  };
+  /* Все квизы прозвучали — КОНЕЦ QUIZowo: победитель — самый большой счёт
+     (строго больше остальных; при равенстве — НИЧЬЯ). */
+  const quizovoMaybeFinish = () => {
+    if (!isQuizovoMode(map.mode) || s.phase !== 'playing') return;
+    const pool = (map.quizzes ?? []).filter((qz) => !(s.usedQuizzes ?? []).includes(qz.id));
+    if (pool.length > 0) return; // ещё есть не звучавшие вопросы — играем дальше
+    s.phase = 'over';
+    const ranked = [...s.players].filter((p) => !p.spect).sort((a, b) => (b.points ?? 0) - (a.points ?? 0));
+    const top = ranked[0];
+    const tie = ranked.length > 1 && (ranked[1].points ?? 0) === (top?.points ?? 0);
+    s.winner = top && !tie ? top.id : null;
+    if (tie) {
+      log(`🏁 ВСЕ КВИЗЫ ПРОЗВУЧАЛИ! НИЧЬЯ — лидеры по ${top?.points ?? 0} очк: ${ranked.filter((p) => (p.points ?? 0) === (top?.points ?? 0)).map((p) => p.name).join(', ')}`);
+    } else if (top) {
+      log(`🏁 ВСЕ КВИЗЫ ПРОЗВУЧАЛИ! 🏆 ${top.name} — ПОБЕДИТЕЛЬ с ${top.points} очками!`);
+    }
+  };
+
   /* ---------- v0.123 FRENDY: хоррор-режим — разброс микросхем, BFS-ИИ босса, тик ---------- */
   /* v0.152: стены берутся по активному варианту карты (A/B) — s.bgB?.map */
   const frendyCellFree = (x: number, y: number): boolean => !pointInWall(map, x, y, undefined, undefined, !!s.bgB?.map);
@@ -2357,10 +2388,15 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     if (pool.length === 0) return 'usedup';
     const q = pool[Math.floor(Math.random() * pool.length)];
     s.usedQuizzes = [...(s.usedQuizzes ?? []), q.id];
-    if (q.type === 'mystery') {
+    /* v0.163 QUIZowo: «кот в мешке» тоже гонка — вопрос получают ВСЕ (задание «передать
+       одному» в конкурсе квизов не нужно); очки считает ветка quizAnswer. */
+    if (q.type === 'mystery' && !isQuizovoMode(map.mode)) {
       // «кот в мешке»: игрок сам выбирает, кому передать вопрос
       s.quiz = { quizId: q.id, askerId: p.id, targetId: '', startedAt: 0, resolved: false };
       log(`🎁 ${p.name} на ячейке-квизе ${posName(idx)} («кот в мешке») — выбирает, кому передать вопрос`);
+    } else if (isQuizovoMode(map.mode)) {
+      s.quiz = { quizId: q.id, askerId: p.id, targetId: p.id, startedAt: Date.now(), resolved: false };
+      log(`🎯 QUIZowo (вопрос ${(s.usedQuizzes ?? []).length} из ${all.length}, ячейка ${posName(idx)})! Вопрос У ВСЕХ — верный ответ быстрее = больше очков. Таймер пошёл!`);
     } else {
       // гонка: вопрос видят все, отвечает кто быстрее
       s.quiz = { quizId: q.id, askerId: p.id, targetId: p.id, startedAt: Date.now(), resolved: false };
@@ -2743,9 +2779,10 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         return s0;
       }
       if (s.players.some((p) => p.id === a.id)) return s0;
-      if (!spectJoin && s.players.length >= 4) return s0;
-      if (spectJoin && s.players.length >= 8) return s0;
-      const np = mkPlayer(a.id, a.name, s.players.length % 4, false);
+      /* v0.165 QUIZowo: до 8 игроков + 16 зрителей, QUEST — до 8 (MAX_PLAYERS/MAX_SPECTATORS), остальные режимы — прежние 4 + 8 */
+      if (!spectJoin && s.players.length >= MAX_PLAYERS(map.mode)) return s0;
+      if (spectJoin && s.players.length >= MAX_SPECTATORS(map.mode)) return s0;
+      const np = mkPlayer(a.id, a.name, s.players.length % PLAYER_COLORS.length, false); // v0.163: палитра 12 цветов — в QUIZowo цвета не повторяются (с запасом)
       if (spectJoin) { np.spect = true; np.ready = true; }
       s.players.push(np);
       log(spectJoin ? `👁 ${a.name.toUpperCase()} подключается зрителем` : `${a.name.toUpperCase()} подключается`);
@@ -2790,7 +2827,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         одиночку — остальные в лобби станут зрителями; в остальных режимах партия
         на двоих и более */
       const soloMode = isSoloMode(map.mode);
-      if (s.players.length < 2 && !soloMode && !isFrendyMode(map.mode)) break; // v0.123: FRENDY можно начать и ОДНОМУ — игрок против Френди
+      if (s.players.length < 2 && !soloMode && !isFrendyMode(map.mode) && !isQuizovoMode(map.mode)) break; // v0.123: FRENDY можно начать и ОДНОМУ — игрок против Френди; v0.163: QUIZowo — тоже (конкурс можно потестировать одному)
       /* Стартовые ресурсы — из карты (одинаковые для всех игроков).
          Старые карты без настроек получают прежние значения (60 мин / 60 попыток).
          SKILL CHALLENGE: ресурсы ВСЕГДА фиксированы — 60 минут и 60 попыток,
@@ -2816,6 +2853,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         if (map.mode === 'rubg') { p.hp = RUBG_HP_MAX; p.items = [{ ...rubgMkItem('lockpick'), belt: true }]; p.stealth = false; } // стартовая ОТМЫЧКА на поясе — механику взлома можно пробовать сразу
         /* v0.123 FRENDY: у всех полоска HP, инвентарь пуст, зрителей внутри партии нет (соло — тоже сражается сам) */
         if (isFrendyMode(map.mode)) { p.hp = RUBG_HP_MAX; p.items = []; p.spect = false; }
+        /* v0.163 QUIZowo: ресурс — ОЧКИ (старт 0), вылета нет, все играют (зрителей внутри партии нет) */
+        if (isQuizovoMode(map.mode)) { p.points = 0; p.spect = false; p.alive = true; }
       }
       /* RUBG: САМОЛЁТ через карту — бойцы выпрыгивают, ГДЕ ХОЧУТ (стартовая ячейка НЕ нужна:
          в редакторе RUBG-карту можно завершить без неё). Зона — когда все выпрыгнут. */
@@ -2885,6 +2924,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
               ? `🧭 JOURNEY SOLO! Играет только хост (${sm} мин / ${st} поп.) — остальные зрители. Победа: пройти ВСЕ задания карты (заданий: ${taskTotal}).`
               : map.mode === 'frendy'
           ? `🎃 FRENDY! Микросхем из кости Френди на карте: ${s.frendy?.total ?? '?'} — ищите и ПОДНИМАЙТЕ (подойдите и нажмите E / кнопку подъёма) и несите к ПЕЧИ: жгут ИЗ ИНВЕНТАРЯ у печи (перетащите микросхему НА ПЕЧЬ в открывшемся окне). НО: печь на СЛАБОМ огне — микросхемы в нём НЕ горят! На карте ПРИСТАВКИ, и в каждой ВСТАВЛЕН КАРТРИДЖ с заданием: подойди к приставке, жми E — перетащи любой картридж из рюкзака на приставку (или играй тот, что уже вставлен) и жми POWER ON. ПОБЕДИЛ — картридж ПЕРЕХОДИТ В ТВОЙ РЮКЗАК: брось его в ПЕЧЬ (2 МИНУТЫ СИЛЬНОГО ОГОНЯ — жгите микросхемы!) или вставь в другую пустую приставку. Ресурс — полоска HP. Через ${Math.round(FRENDY_FIRST_WAKE_MS / 1000)} с проснётся ОН — появится прямо на ком-то из вас. Поймает — утащит к ПРИСТАВКЕ с картриджем и включит её, заберёт микросхему, а КАРТРИДЖ отберёт и вставит в приставку ОБРАТНО. Кофе — 5 минут без поимки. Сожжёте ВСЕ — победа; погибнут все — кошмар победил!`
+          : isQuizovoMode(map.mode)
+          ? `🎯 QUIZowo! ${s.players.length} игроков ходят свободно. Вбежал на ЯЧЕЙКУ-КВИЗ — вопрос стартует У ВСЕХ ОДНОВРЕМЕННО, у каждого свой таймер: верный ответ = очки ПО СКОРОСТИ (мгновенно — 1000, к концу таймера меньше), неверный или не успел — 0. ВЫЛЕТА НЕТ: после раунда все снова ходят. Все квизы карты (их ${(map.quizzes ?? []).length}) прозвучат — игра завершится, ПОБЕДИТ САМЫЙ БОЛЬШОЙ СЧЁТ!`
           : isJourneyLike(map.mode)
                 ? `🧭 JOURNEY! У каждого: ${sm} мин и ${st} поп. Все фишки стартуют ОДНОВРЕМЕННО — кто первый пересечёт ячейку задания, тот и играет.`
                 : `Игра начинается! У каждого: ${sm} мин и ${st} поп. Бросок за первый ход…`);
@@ -3307,11 +3348,18 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           if (inOld) continue; // уже стоял в ней — вход был раньше
           p.pos = i;
           revealCell(s, p.id, i);
-          tryStartQuizAt(p, i);
+          /* v0.163 QUIZowo: квизы кончились (или на карте их нет) — партия завершается прямо тут:
+             «когда все квизы будут заданы — это завершение игры» (страховка на случай,
+             если quizDone никто не нажал после последнего раунда) */
+          const whyQ = tryStartQuizAt(p, i);
+          if (isQuizovoMode(map.mode) && (whyQ === 'usedup' || whyQ === 'noquiz')) {
+            if (whyQ === 'noquiz') log('🎯 На карте нет ни одного квиза — QUIZowo завершается: победителя нет (счёт 0 у всех)');
+            quizovoMaybeFinish();
+          }
           break;
         }
       }
-      if (!s.challenge) {
+      if (!s.challenge && !isQuizovoMode(map.mode)) { // v0.163: в QUIZowo задания не играются — ячейки заданий молчат
         for (let i = 0; i < map.cells.length; i++) {
           const c = map.cells[i];
           if (c.type !== 'task') continue;
@@ -5318,8 +5366,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!qd) { s.quiz = null; endTurnNow(); break; }
       const answerer = s.players.find((x) => x.id === a.id);
       if (!answerer || !answerer.alive) break;
-      // «кот в мешке» отвечает только получивший; в гонке — любой живой игрок
-      if (qd.type === 'mystery' && q.targetId !== a.id) break;
+      // «кот в мешке» отвечает только получивший; в гонке — любой живой игрок.
+      // v0.163 QUIZowo: «кот в мешке» здесь ТОЖЕ гонка — вопрос получают все (targetId = вошедший).
+      if (qd.type === 'mystery' && !isQuizovoMode(map.mode) && q.targetId !== a.id) break;
 
       const answered = q.answered ?? (q.answered = []);
       const pending = q.pending ?? (q.pending = []);
@@ -5328,6 +5377,47 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const correctBy = q.correctBy ?? (q.correctBy = []);
       if (qd.type !== 'mystery' && (answered.some((x) => x.id === answerer.id) || pending.some((x) => x.id === answerer.id) || correctBy.includes(answerer.id))) break;
       if (qd.type === 'mystery' && pending.some((x) => x.id === answerer.id)) break;
+
+      /* ---------- v0.163 QUIZowo: свой ответ у каждого, очки по скорости ----------
+         Квиз НЕ заканчивается на первом верном ответе: таймер идёт до конца,
+         отвечают все живые игроки (не зрители), потом раунд закрывается табло. */
+      if (isQuizovoMode(map.mode)) {
+        if (answerer.spect) break; // зрители не отвечают и очков не получают
+        const limitMs = Math.max(5, qd.timeLimit) * 1000;
+        const elapsedMs = Math.max(0, Math.min(limitMs, typeof a.elapsedMs === 'number' ? a.elapsedMs : Math.max(0, Date.now() - q.startedAt)));
+        const normQ = (x: string) => x.trim().toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ');
+        let ok = false;
+        if (a.answer !== null && a.answer !== undefined && String(a.answer).trim() !== '') {
+          if (qd.type === 'text' || qd.type === 'music') ok = (qd.answers ?? []).some((ans) => normQ(ans) === normQ(String(a.answer)));
+          else if (qd.type === 'order') ok = String(a.answer) === (qd.items ?? []).map((_, i) => String(i)).join('|');
+          else ok = Number(a.answer) === qd.correct;
+        }
+        const pts = ok ? quizovoPointsFor(elapsedMs, limitMs) : 0;
+        q.scores = q.scores ?? [];
+        if (!q.scores.some((x) => x.id === answerer.id)) q.scores.push({ id: answerer.id, name: answerer.name, pts, correct: ok });
+        if (ok) {
+          answerer.points = (answerer.points ?? 0) + pts;
+          if (!correctBy.includes(answerer.id)) correctBy.push(answerer.id);
+          log(`✔ QUIZowo: ${answerer.name} верно! +${pts} очк — счёт ${answerer.points}`);
+        } else {
+          if (!answered.some((x) => x.id === answerer.id)) answered.push({ id: answerer.id, name: answerer.name });
+          log(`✖ QUIZowo: ${answerer.name} — неверно, 0 очк (счёт ${answerer.points ?? 0})`);
+        }
+        // все живые ответили — закрываем раунд сразу (не дожидаясь таймера)
+        const doneIds = [...answered.map((x) => x.id), ...correctBy];
+        const aliveIds = s.players.filter((pl) => pl.alive && !pl.spect).map((pl) => pl.id);
+        if (aliveIds.every((id) => doneIds.includes(id))) {
+          q.resolved = true;
+          const best = [...(q.scores ?? [])].sort((x, y) => y.pts - x.pts)[0];
+          q.result = {
+            correct: correctBy.length > 0, deltaMin: 0, deltaTries: 0, targetName: '',
+            reason: correctBy.length > 0 ? 'correct' : 'allWrong',
+            winners: (q.scores ?? []).filter((x) => x.correct).sort((x, y) => y.pts - x.pts).map((x) => x.name),
+          };
+          log(best && best.pts > 0 ? `🎯 Раунд закрыт — лучший: ${best.name} (+${best.pts} очк). Все снова ходят!` : '🎯 Раунд закрыт — верных ответов не было. Все снова ходят!');
+        }
+        break;
+      }
 
       const norm = (x: string) => x.trim().toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ');
       let correct = false;
@@ -5425,6 +5515,19 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const qd = (map.quizzes ?? []).find((x) => x.id === q.quizId);
       if (!qd) { s.quiz = null; endTurnNow(); break; }
       if (Date.now() - q.startedAt < qd.timeLimit * 1000) break;
+      /* v0.163 QUIZowo: время вышло — раунд закрывается как есть: кто ответил, у того
+         очки уже записаны; не ответившие получают 0 (их просто нет в табло раунда). */
+      if (isQuizovoMode(map.mode)) {
+        q.resolved = true;
+        const correctNames = (q.scores ?? []).filter((x) => x.correct).sort((x, y) => y.pts - x.pts);
+        q.result = {
+          correct: correctNames.length > 0, deltaMin: 0, deltaTries: 0, targetName: '',
+          reason: correctNames.length > 0 ? 'correct' : 'timeout',
+          winners: correctNames.map((x) => x.name),
+        };
+        log(correctNames.length > 0 ? `⏱ Время вышло — раунд закрыт (верных: ${correctNames.length}). Все снова ходят!` : '⏱ Время вышло — никто не ответил верно. Все снова ходят!');
+        break;
+      }
       // марафон: штрафы уже выданы за ошибки — таймаут просто закрывает квиз
       if (qd.continueOnCorrect && qd.type !== 'mystery') {
         const names = (q.correctBy ?? [])
@@ -5470,6 +5573,8 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!q || !q.resolved || s.phase !== 'playing') break;
       if (a.id !== q.askerId) break; // ход передаёт тот, кто встал на ячейку
       s.quiz = null;
+      /* v0.163 QUIZowo: после раунда фишки сразу ходят; все квизы прозвучали — КОНЕЦ игры */
+      if (isQuizovoMode(map.mode)) { quizovoMaybeFinish(); break; }
       const p = current();
       p.extraTurn = false;
       if (!isJourneyLike(map.mode)) log(`${p.name} передаёт ход после квиза`); // v0.122: в походных режимах ходов нет

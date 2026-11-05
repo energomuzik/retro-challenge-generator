@@ -2,8 +2,8 @@ import { useApp, getRomData } from './store';
 import { createRoom, type Room } from './net';
 import { createHubRoom } from './hub';
 import { applyAction, type Action } from './engine';
-import type { GameMap, GameSession, NetMsg, RomDef, SaveDef, SessionSnapshot } from './types';
-import { APP_VERSION } from './types';
+import type { GameMap, GameOptions, GameSession, NetMsg, RomDef, SaveDef, SessionSnapshot, TokenDir } from './types';
+import { APP_VERSION, isJourneyMoveOnly, markersHash } from './types';
 import { idbGet, idbPut } from './db';
 import { startDoor, loadPool, isDoorWanted } from './bogach';
 
@@ -179,12 +179,70 @@ export const streamBus = {
   emit: (p: StreamPacket) => { streamListeners.forEach((cb) => cb(p)); },
 };
 
+/* ---------- v0.163: ЛЁГКИЕ ОБНОВЛЕНИЯ ДВИЖЕНИЯ (jpos) ----------
+   Раньше КАЖДЫЙ шаг фишки (journeyMove, ~6 сообщений/с на игрока) заставлял хоста
+   рассылать ВСЁ состояние партии (сотни КБ с историей) каждому игроку — при 12
+   идущих одновременно это десятки МБ/с: хост-стример захлёбывается, «кто первый
+   нажал» в квизе плывёт. Теперь если шаг ТОЛЬКО сдвинул фишку (без событий —
+   квиз/задание/карточка/босс/починка ячейки/лог), хост шлёт крошечный jpos
+   (id,x,y,dir,mv,tp ≈ 0.1 КБ) батчем раз в 120 мс; полное состояние уходит только
+   на СОБЫТИЯ. isJourneyMoveOnly сравнивает компактные маркеры состояния. */
+interface JposItem { id: string; x: number; y: number; dir?: TokenDir; mv?: boolean; tp?: boolean; }
+const jposPending = new Map<string, JposItem>();
+let jposTimer: number | null = null;
+function queueJpos(room: Room, jp: JposItem) {
+  jposPending.set(jp.id, jp); // последняя позиция игрока — предыдущие не нужны
+  if (jposTimer !== null) return;
+  jposTimer = window.setTimeout(() => {
+    jposTimer = null;
+    const list = [...jposPending.values()];
+    jposPending.clear();
+    if (list.length) room.send('jposBatch', { list });
+  }, 120);
+}
+/* ---------- v0.164: СВЕРКА ПАРТИИ (sig/needState) — самолечение сети ----------
+   Страховка лёгкой сети: хост каждые 3 с шлёт подпись маркеров состояния (~10 байт),
+   гость сверяет со своей. Совпало — тишина; разошлось (потерянный пакет невозможен —
+   каналы надёжные, но любой будущий механизм, изменивший состояние мимо маркеров,
+   или лаг при входе в комнату) — гость сам просит полный state ('needState', не чаще
+   раза в 2.5 с) и снова становится идентичен хосту. Позиции фишек в подпись НЕ
+   входят — ходьба не вызывает сверок; события и так едут полным state мгновенно. */
+let sigTimer: number | null = null;
+let lastStateSentAt = 0;
+let lastNeedStateAt = 0;
+const SIG_EVERY = 3000;
+function sigBeatStart(room: Room) {
+  if (sigTimer !== null) window.clearInterval(sigTimer);
+  const myRoom = room;
+  sigTimer = window.setInterval(() => {
+    const st = useApp.getState();
+    if (st.room !== myRoom) { window.clearInterval(sigTimer!); sigTimer = null; return; } // комната закрыта/сменена — тишина
+    if (!st.session || Date.now() - lastStateSentAt < 2000) return; // полный state только что ушёл — подпись излишня
+    myRoom.send('sig', { h: markersHash(st.session) });
+  }, SIG_EVERY);
+}
+
+/* ---------- v0.165: ТУМБЛЕР СИНХРОНИЗАЦИИ ФИШЕК (опции → «Как устроена связь», решает ХОСТ) ----------
+   classic — КАК ГОДАМИ: каждый чистый шаг фишки рассылает ПОЛНОЕ состояние партии всем (механика ровно та,
+   что была до v0.163; тяжело по сети только при большой компании). light — всегда лёгкие jpos-пакеты.
+   auto (по умолчанию) — ДО 4 ИГРОКОВ ВКЛЮЧИТЕЛЬНО = classic (прежняя привычная механика),
+   5 и больше = light (иначе хост захлёбывается при одновременном хождении).
+   Сверка партии (sig/needState) работает при ЛЮБОМ положении — стоит килобайты и только лечит рассинхрон. */
+export function lightSyncActive(opts: GameOptions, s: GameSession | null | undefined): boolean {
+  const mode = opts.netSync ?? 'auto';
+  if (mode === 'classic') return false;
+  if (mode === 'light') return true;
+  const n = s ? s.players.filter((p) => !p.spect).length : 1; // зрители не ходят — не считаем
+  return n > 4;
+}
+
 export function dispatch(a: Action) {
   const st = useApp.getState();
   const room = st.room;
   if (!room) return;
   if (room.isHost) {
     if (!st.session || !st.sessionMap) return;
+    const prev = st.session;
     const next = applyAction(st.session, a, st.sessionMap, st.options);
     st.setSession(next);
     /* при восстановлении партии сначала рассылаем карту и библиотеку ромов,
@@ -193,14 +251,43 @@ export function dispatch(a: Action) {
       sendBig(room, 'map', st.sessionMap);
       void sendLibrary(room, st.sessionMap);
     }
+    /* v0.163/v0.165: чистый шаг фишки — лёгкий jpos вместо полного состояния (ТУМБЛЕР в опциях:
+       авто — до 4 игроков классика «полное состояние», 5+ — лёгкая; classic — всегда полное;
+       light — всегда лёгкая). События (квиз, карточка, босс…) идут полным state как раньше */
+    if (a.t === 'journeyMove' && isJourneyMoveOnly(prev, next) && lightSyncActive(st.options, next)) {
+      const jp = next.journeyPos?.[a.id];
+      if (jp) queueJpos(room, { id: a.id, x: jp.x, y: jp.y, dir: jp.dir, mv: jp.mv, tp: jp.tp });
+      void autosaveSession(next);
+      return;
+    }
+    jposPending.clear(); // полный state уже несёт свежие позиции — батч не нужен
     room.send('state', next);
+    lastStateSentAt = Date.now();
     void autosaveSession(next);
   } else {
     room.send('action', a);
   }
 }
 
+/* применить jpos к ЛОКАЛЬНОЙ сессии (гость): только позиция фишки — без полной замены состояния.
+   Пока идёт квиз (движение замерло) — запоздалые обновления игнорируем, чтобы фишки не дёргались. */
+function applyJposLocal(jp: JposItem) {
+  if (!jp || typeof jp.id !== 'string') return;
+  const cur = useApp.getState().session;
+  if (!cur) return;
+  if (cur.quiz && cur.quiz.startedAt && !cur.quiz.resolved) return;
+  useApp.setState({
+    session: {
+      ...cur,
+      journeyPos: { ...(cur.journeyPos ?? {}), [jp.id]: { x: jp.x, y: jp.y, dir: jp.dir, ts: Date.now(), mv: jp.mv !== false, tp: jp.tp || undefined } },
+    },
+  });
+}
+
 export function openRoom(code: string, isHost: boolean, initial: { session: GameSession | null; map: GameMap | null }): Room {
+  jposPending.clear(); // новая комната — старый батч движения не нужен
+  if (jposTimer !== null) { clearTimeout(jposTimer); jposTimer = null; }
+  lastStateSentAt = 0; lastNeedStateAt = 0; // v0.164: новая комната — сверка с чистого листа
   const st = useApp.getState();
   st.leaveRoom();
   const app = useApp.getState();
@@ -322,9 +409,19 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
         const h = useApp.getState();
         if (h.session && h.sessionMap) {
           const act = m.p as Action;
+          const prevA = h.session;
           const next = applyAction(h.session, act, h.sessionMap, h.options);
           h.setSession(next);
           void autosaveSession(next);
+          /* v0.163/v0.165: чистый шаг фишки от гостя — лёгкий jpos вместо полного состояния
+             (решает тумблер синхронизации в опциях хоста — lightSyncActive) */
+          if (act.t === 'journeyMove' && isJourneyMoveOnly(prevA, next) && lightSyncActive(h.options, next)) {
+            const jp = next.journeyPos?.[act.id];
+            if (jp) queueJpos(room, { id: act.id, x: jp.x, y: jp.y, dir: jp.dir, mv: jp.mv, tp: jp.tp });
+            if (h.screen === 'lobby' && next.phase !== 'lobby') h.setScreen('game');
+            break;
+          }
+          jposPending.clear(); // полный state уже несёт свежие позиции — батч не нужен
           if (h.screen === 'lobby' && next.phase !== 'lobby') h.setScreen('game');
           // карту рассылаем только когда она реально нужна/меняется: новому игроку (hello)
           // или при создании задания на лету (setCellTask). Это резко снижает трафик.
@@ -348,6 +445,7 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
             }
           }
           room.send('state', next);
+          lastStateSentAt = Date.now();
         }
         break;
       }
@@ -413,6 +511,42 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
         if (pi.id) useApp.getState().setIcon(pi.id, pi.icon);
         break;
       }
+      /* v0.163: лёгкие обновления движения от хоста — сдвигаем фишку в ЛОКАЛЬНОЙ сессии
+         без полной замены состояния (квиз/задание приходят полным state как раньше). */
+      case 'jposBatch': {
+        if (room.isHost) break; // хост применил позиции сам — своё сообщение ему не нужно
+        const list = ((m.p ?? {}) as { list?: JposItem[] }).list ?? [];
+        for (const jp of list) applyJposLocal(jp);
+        break;
+      }
+      case 'jpos': {
+        if (room.isHost) break;
+        applyJposLocal((m.p ?? {}) as JposItem);
+        break;
+      }
+      /* v0.164: подпись состояния от хоста — гость сверяет СО СВОЕЙ копией; любое
+         расхождение = «я мог что-то пропустить» → прошу полный state (не чаще 2.5 с). */
+      case 'sig': {
+        if (room.isHost) break;
+        const h = (m.p ?? {}) as { h?: unknown };
+        const myS = cur.session;
+        if (!myS || typeof h.h !== 'string') break;
+        if (markersHash(myS) !== h.h && Date.now() - lastNeedStateAt > 2500) {
+          lastNeedStateAt = Date.now();
+          room.send('needState', {});
+        }
+        break;
+      }
+      /* v0.164: гость просит полный state — хост отдаёт текущую партию целиком. */
+      case 'needState': {
+        if (!room.isHost) break;
+        const sNow = useApp.getState().session;
+        if (sNow) {
+          room.send('state', sNow);
+          lastStateSentAt = Date.now();
+        }
+        break;
+      }
       default:
         break;
     }
@@ -434,6 +568,9 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
   if (isHost && initial.session && initial.map) {
     sendBig(room, 'map', initial.map);
     room.send('state', initial.session);
+    lastStateSentAt = Date.now();
   }
+  /* v0.164: хост начинает сверку партии (гости сверяются по подписи сами) */
+  if (isHost) sigBeatStart(room);
   return room;
 }

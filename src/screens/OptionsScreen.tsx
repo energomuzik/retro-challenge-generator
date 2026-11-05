@@ -624,6 +624,31 @@ export default function OptionsScreen() {
                 <span className="text-teal font-display uppercase">Локально:</span> параллельно работает tab-канал
                 (BroadcastChannel) — откройте две вкладки браузера, чтобы мгновенно протестировать мультиплеер на одной машине.
               </p>
+              {/* v0.165: ТУМБЛЕР СИНХРОНИЗАЦИИ ФИШЕК — решает хост комнаты (auto / classic / light) */}
+              <div className="border-t-2 border-edge pt-3 mt-2">
+                <div className="tick-label mb-1.5">Синхронизация фишек в онлайн-партии (переключатель хоста)</div>
+                <div className="grid sm:grid-cols-3 gap-2">
+                  {([
+                    ['auto', 'Авто (рекомендуется)', 'До 4 игроков включительно — СТАРАЯ механика: каждый шаг фишки рассылает полное состояние партии (как годами). 5 и больше — лёгкая: шаги едут крошечными пакетами, полное состояние — только на события (квиз, карточка, босс…).'],
+                    ['classic', 'Классика (полное состояние)', 'ВСЕГДА старая механика: полный state на каждый шаг — точь-в-точь как до v0.163. Самая прямолинейная синхронизация; при 6+ одновременно идущих хосту тяжело по сети.'],
+                    ['light', 'Лёгкая (малые пакеты)', 'ВСЕГДА лёгкие пакеты движения: позиции едут якорями ~8 раз/с (батч 120 мс), события — полным состоянием, сверка партии каждые 3 секунды. Для больших компаний (QUIZowo, QUEST на 8).'],
+                  ] as [NonNullable<GameOptions['netSync']>, string, string][]).map(([mode, lbl, hint]) => (
+                    <button
+                      key={mode}
+                      onClick={() => { setOptions({ netSync: mode }); sfx.hover(); }}
+                      title={hint}
+                      className={`text-left px-3 py-2 border-2 transition-colors cursor-pointer ${(options.netSync ?? 'auto') === mode ? 'border-sky bg-sky/10' : 'border-edge hover:border-edge2'}`}
+                    >
+                      <div className={`font-display text-[11px] uppercase ${(options.netSync ?? 'auto') === mode ? 'text-sky' : 'text-paper'}`}>{lbl}</div>
+                      <div className="text-[10px] text-dim mt-0.5 leading-snug">{hint}</div>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-faint mt-2 leading-relaxed">
+                  Действует, когда ты ХОСТ комнаты — хост решает, как рассылать шаги фишек всем игрокам. Сверка партии
+                  (самолечение рассинхрона раз в 3 секунды) работает при любом положении. Зрители не считаются: в «Авто» важны только игроки.
+                </p>
+              </div>
               <div className="border-t-2 border-edge pt-3 mt-2">
                 <Field label="Игровой хаб — приоритетный канал (если заполнен, PeerJS не используется)">
                   <input

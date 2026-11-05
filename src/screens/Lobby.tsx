@@ -262,6 +262,7 @@ export function CreateScreen() {
     quest: { label: 'QUEST', cls: 'border-teal/60 text-teal' },
     quest1p: { label: 'QUEST SOLO', cls: 'border-sky/60 text-sky' },
     bogach: { label: 'VERSUS', cls: 'border-gold/70 text-gold' },
+    quizovo: { label: 'QUIZowo', cls: 'border-gold/70 text-gold' }, // v0.165: QUIZowo (бывш. «Квизово») — конкурс квизов на очки, до 8 игроков
     frendy: { label: 'FRENDY', cls: 'border-[#ff6b35]/70 text-[#ff6b35]' }, // v0.123: хеллоуинский хоррор
   };
 
@@ -398,6 +399,7 @@ export function CreateScreen() {
               {chip(fMode === 'all', 'Все', () => setFMode('all'))}
               {chip(fMode === 'classic', 'Retropolia', () => setFMode('classic'))}
               {chip(fMode === 'bogach', 'VERSUS', () => setFMode('bogach'), 'magma')}
+              {chip(fMode === 'quizovo', 'QUIZowo', () => setFMode('quizovo'), 'magma')}
               {chip(fMode === 'journey', 'Journey', () => setFMode('journey'), 'teal')}
               {chip(fMode === 'journey1p', 'Journey Solo', () => setFMode('journey1p'), 'sky')}
               {chip(fMode === 'quest', 'Quest', () => setFMode('quest'), 'teal')}
@@ -1450,7 +1452,7 @@ export function LobbyScreen() {
             </PxBtn>
           )}
           {isHost && !resumeSnap && (() => {
-            const soloGame = isSoloMode(sessionMap?.mode) || (sessionMap?.mode === 'frendy' && session.players.length < 2); // v0.123: FRENDY можно начать одному — против Френди
+            const soloGame = isSoloMode(sessionMap?.mode) || (sessionMap?.mode === 'frendy' && session.players.length < 2) || (sessionMap?.mode === 'quizovo' && session.players.length < 2); // v0.123: FRENDY можно начать одному — против Френди; v0.163: QUIZowo — потестировать конкурс одному
             const fewPlayers = session.players.length < 2 && !soloGame;
             const notReady = soloGame && session.players.length < 2 ? false : session.players.some((p) => !p.ready);
             const notLoaded = soloGame && session.players.length < 2 ? false : session.players.some((p) => !p.isHost && (sync[p.id] ?? 0) < 100);

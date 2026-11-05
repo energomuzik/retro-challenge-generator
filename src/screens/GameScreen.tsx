@@ -22,7 +22,7 @@ import {
 import { saveSessionSnapshot } from './Lobby';
 import QuizOverlay from './QuizOverlay';
 import { AnimPreview, EmuVolumeChip, Field, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin, CoinRow } from '../ui';
-import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isBossCatchMode, isSoloMode, isFrendyMode, FRENDY_PHRASES, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf, cartRegionOfRom } from '../types';
+import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isQuizovoMode, isBossCatchMode, isSoloMode, isFrendyMode, FRENDY_PHRASES, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf, cartRegionOfRom } from '../types';
 import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, TaskDef, TokenDef, TokenDir, RubgItem, RubgItemKind, CartRegion } from '../types';
 import Randomizer from './Randomizer';
 import TradeWindow from './TradeWindow';
@@ -363,6 +363,8 @@ export default function GameScreen() {
   const isQuestSolo = map?.mode === 'quest1p';
   /* v0.104 БОГАЧ: монетная битва — задания общие (qJobs), окна личного задания и выбор вариантов переиспользованы */
   const isBogach = isBogachMode(map?.mode);
+  /* v0.163 QUIZowo: конкурс квизов на очки — свой HUD (⭐ очки), свой финал (таблица мест) */
+  const isQuizovo = isQuizovoMode(map?.mode);
   /* ---------- v0.123 FRENDY: хеллоуинский хоррор (Freddy Krueger × Dendy) ---------- */
   const isFrendy = isFrendyMode(map?.mode);
   const frendy = s?.frendy;
@@ -384,6 +386,7 @@ export default function GameScreen() {
   const questMixed = isQuest;
   const hpRes = isRubg || map?.resMode === 'hp' || questMixed || isFrendy; // v0.123: во FRENDY тоже показываем полоску HP
   const coinsRes = !hpRes && coinsOnly;
+  const pointsRes = isQuizovo; // v0.163: в QUIZowo ресурс — ОЧКИ (⭐) — время/попытки/монеты не показываются
   const skipCoinsNeed = Math.max(0, Math.floor(map?.skipCoins ?? SKIP_COINS_DEFAULT)); // цена пропуска в бронзе
   /* v0.104 БОГАЧ: ячейка, где Я выбираю задание (первый вошедший) + список её вариантов */
   const myPick = isBogach && s && map ? (Object.entries(s.qPicks ?? {}).find(([, pk]) => pk.by === me)?.[0] ?? null) : null;
@@ -3750,6 +3753,7 @@ export default function GameScreen() {
         {isQuestSolo && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-sky">QUEST SOLO</span>}
         {/* v0.105 VERSUS: чип режима у игрока */}
         {isBogach && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="VERSUS: гонка на опережение — кончились монеты, вылетел. Победит последний на ногах">VERSUS</span>}
+        {isQuizovo && <span className="hud-chip pixel-corners px-2 py-1 font-pixel text-[8px] text-gold" title="QUIZowo: конкурс квизов на очки — верный ответ быстрее = до 1000 очков, вылета нет, до 8 игроков">QUIZowo</span>}
         {isQuest && s?.phase === 'playing' && map && (() => {
           const total = map.cells.filter((c) => c.type === 'task').length;
           const done = (s.qDone?.[me] ?? []).length;
@@ -3821,6 +3825,12 @@ export default function GameScreen() {
                 <div className="tick-label text-faint mt-1 flex items-center gap-1.5">
                   {p.spect ? (
                     <span className="text-sky">смотрит трансляцию</span>
+                  ) : pointsRes ? (
+                    <>
+                      {/* v0.163 QUIZowo: главный ресурс — ОЧКИ */}
+                      <span className="text-gold" title="Очки: верный ответ быстрее = больше (до 1000 за вопрос)">⭐ {p.points ?? 0} очк</span>
+                      <span>№{p.pos + 1}</span>
+                    </>
                   ) : hpRes ? (
                     <>
                       <span className="text-coral flex items-center gap-1" title="Ресурс — полоска HP">
@@ -4766,7 +4776,7 @@ export default function GameScreen() {
                 className="confetti-bit w-2.5 h-2.5"
                 style={{
                   left: `${(i * 137) % 100}%`,
-                  background: PLAYER_COLORS[i % 4],
+                  background: PLAYER_COLORS[i % PLAYER_COLORS.length],
                   animationDuration: `${2.2 + (i % 5) * 0.5}s`,
                   animationDelay: `${(i % 8) * 0.3}s`,
                 }}
@@ -4804,6 +4814,30 @@ export default function GameScreen() {
                         ? `Все ${frendy?.total ?? '?'} микросхем из кости Френди сожжены в печи — хеллоуин спасён!`
                         : 'Френди утащил последнего игрока в свой кошмар. В следующий раз жгите микросхемы быстрее… и не забывайте про кофе ☕'}
                     </p>
+                  </>
+                );
+              })() : isQuizovo ? (() => {
+                /* v0.163 QUIZowo: финал — ТАБЛИЦА МЕСТ по очкам (конкурс: победитель по счёту, равенство — ничья) */
+                const ranked = [...s.players].filter((p) => !p.spect).sort((a, b) => (b.points ?? 0) - (a.points ?? 0) || a.name.localeCompare(b.name));
+                return (
+                  <>
+                    <div className={`font-pixel text-sm mt-3 title-glow ${winner ? 'text-teal' : 'text-gold'}`}>
+                      {winner ? 'ВСЕ КВИЗЫ ПРОЗВУЧАЛИ!' : 'НИЧЬЯ'}
+                    </div>
+                    <div className="font-display uppercase text-2xl text-paper mt-2" style={{ color: winner ? PLAYER_COLORS[winner.color] : undefined }}>
+                      {winner ? `${winner.name} — ПОБЕДИТЕЛЬ!` : 'ОЧКИ РАВНЫ'}
+                    </div>
+                    <div className="mt-4 space-y-1.5 max-w-xs mx-auto text-left">
+                      {ranked.map((p, i) => (
+                        <div key={p.id} className={`flex items-center gap-2 px-3 py-1.5 border-2 ${p.id === winner?.id ? 'border-gold bg-gold/5' : 'border-edge'}`}>
+                          <span className="font-pixel text-[9px] text-faint w-5 text-center shrink-0">{i + 1}</span>
+                          <span className="w-3 h-3 shrink-0 border border-abyss" style={{ background: PLAYER_COLORS[p.color] }} />
+                          <span className="font-display uppercase text-[11px] text-paper flex-1 truncate">{p.name}{p.id === me ? ' (вы)' : ''}</span>
+                          <span className="font-pixel text-[10px] text-gold">⭐ {p.points ?? 0}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-faint mt-3">Конкурс квизов завершён — все вопросы карты прозвучали</p>
                   </>
                 );
               })() : s.ending ? (() => {
