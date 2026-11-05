@@ -4,7 +4,7 @@ import { Field, GhostBtn, Ic, Panel, PxBtn } from '../ui';
 import { openRoom, dispatch } from '../useGame';
 import { genRoomCode } from '../net';
 import { newSession, fmtClock } from '../engine';
-import { exportGame, importGame, idbAll, idbDel, idbGet, idbPut, uid } from '../db';
+import { exportGame, importGame, idbAll, idbDel, idbEach, idbGet, idbPut, uid } from '../db';
 import { downloadHostBat } from '../host/hostPackage';
 import { HoldDeleteButton, rememberDeleted } from '../delGuard';
 import type { BossAnimDef, CustomChallenge, GameMap, MapMode, NpcAnimDef, SessionSnapshot, TokenDef } from '../types';
@@ -709,55 +709,102 @@ export async function reopenSnapshot(s: SessionSnapshot, instant: boolean): Prom
 
 /* ---------- загруженные партии ---------- */
 
+/* v0.167: ЛЁГКАЯ КАРТОЧКА ПАРТИИ ДЛЯ СПИСКА — только то, что видно в списке (имя,
+   карта, код, дата, игроки, фаза). Состояние партии и карта (мегабайты в КАЖДОЙ
+   записи — карта с версии v0.114 лежит внутри сейва) в ОЗУ НЕ держатся: полная
+   запись достаётся из базы idbGet в момент клика. Раньше idbAll тащил ВСЕ партии
+   ЦЕЛИКОМ разом — на накопившейся базе «Загрузить игра» падала по памяти, страница
+   перезагружалась, а список выглядел ПУСТЫМ (экран умирал до отрисовки). */
+interface SnapLight {
+  id: string;
+  name: string;
+  mapName: string;
+  code: string;
+  createdAt: number;
+  auto?: boolean;
+  phase: string;
+  players: { name: string; isHost: boolean }[];
+}
+
 export function LoadScreen() {
-  const { maps, setScreen, toast, refresh } = useApp();
-  const [snaps, setSnaps] = useState<SessionSnapshot[]>([]);
+  const { setScreen, toast, refresh } = useApp();
+  const [snaps, setSnaps] = useState<SnapLight[]>([]);
   /* v0.116: карточка «⟳ Вернуться в партию» переехала сюда из ГЛАВНОГО ЭКРАНА
      (заказчик: с меню — убрать, в «Загрузить игру» — добавить). Тот же механизм
      v0.115: незаконченная партия этого браузера (хост с таким же именем, фаза
      playing/rollOff) — ОДИН клик, и партия продолжается с места вылета.
      v0.116: код на карточке и в строках сейвов НЕ ВИДЕН, если он скрыт глазиком. */
-  const [backSnap, setBackSnap] = useState<SessionSnapshot | null>(null);
+  const [backSnap, setBackSnap] = useState<SnapLight | null>(null);
   const [backBusy, setBackBusy] = useState(false);
   const hideCode = useApp((st) => st.options.hideRoomCode);
 
+  /* v0.167: список читается КУРСОРОМ по одной записи — из каждой берутся только
+     поля карточки; пик памяти = одна партия, а не вся база разом */
+  const loadSnaps = async () => {
+    try {
+      const light: SnapLight[] = [];
+      await idbEach<SessionSnapshot>('sessions', (key, v) => {
+        light.push({
+          id: key,
+          name: v?.name ?? 'Партия',
+          mapName: v?.mapName ?? '?',
+          code: v?.code ?? '',
+          createdAt: v?.createdAt ?? 0,
+          auto: v?.auto,
+          phase: String(v?.state?.phase ?? 'lobby'),
+          players: (v?.state?.players ?? []).map((p) => ({ name: String(p?.name ?? '?'), isHost: !!p?.isHost })),
+        });
+      });
+      light.sort((a, b) => b.createdAt - a.createdAt);
+      setSnaps(light);
+      const name = useApp.getState().options.name.trim().toUpperCase();
+      if (!name) { setBackSnap(null); return; }
+      const mine = light
+        .filter((s) => (s.phase === 'playing' || s.phase === 'rollOff') && s.players.length > 0)
+        .filter((s) => ((s.players.find((p) => p.isHost) ?? s.players[0])?.name ?? '').trim().toUpperCase() === name);
+      setBackSnap(mine[0] ?? null);
+    } catch { /* нет сохранений — карточки не будет */ }
+  };
+
   useEffect(() => {
-    void (async () => {
-      try {
-        const { idbAll } = await import('../db');
-        const all = (await idbAll<SessionSnapshot>('sessions')).map((e) => e.value);
-        setSnaps(all.sort((a, b) => b.createdAt - a.createdAt));
-        const name = useApp.getState().options.name.trim().toUpperCase();
-        if (!name) return;
-        const mine = all
-          .filter((s) => s.state && (s.state.phase === 'playing' || s.state.phase === 'rollOff') && Array.isArray(s.state.players) && s.state.players.length > 0)
-          .filter((s) => ((s.state.players.find((p) => p.isHost) ?? s.state.players[0])?.name ?? '').trim().toUpperCase() === name);
-        setBackSnap(mine[0] ?? null);
-      } catch { /* нет сохранений — карточки не будет */ }
-    })();
+    void loadSnaps();
   }, []);
 
-  const returnToParty = (s: SessionSnapshot) => {
+  /* v0.167: полная запись партии (state + map) достаётся из базы ТОЛЬКО в момент клика */
+  const fullSnap = async (id: string): Promise<SessionSnapshot | null> => {
+    const full = await idbGet<SessionSnapshot>('sessions', id);
+    return full && full.state ? full : null;
+  };
+
+  const returnToParty = (s: SnapLight) => {
     if (backBusy) return;
     setBackBusy(true);
     void (async () => {
-      const ok = await reopenSnapshot(s, true);
+      const full = await fullSnap(s.id);
+      if (!full) { setBackBusy(false); toast('Не удалось восстановить партию — сохранение повреждено', 'err'); return; }
+      const ok = await reopenSnapshot(full, true);
       if (!ok) { setBackBusy(false); toast('Не удалось восстановить партию — нет карты', 'err'); }
     })();
   };
 
-  const resume = (s: SessionSnapshot) => {
-    void reopenSnapshot(s, false);
+  const resume = (s: SnapLight) => {
+    void (async () => {
+      const full = await fullSnap(s.id);
+      if (!full) { toast('Сохранение повреждено — состояние партии не нашлось в базе', 'err'); return; }
+      await reopenSnapshot(full, false);
+    })();
   };
 
   const del = async (id: string) => {
     const snap = snaps.find((s) => s.id === id);
-    if (snap) {
+    /* v0.167: для Ctrl+Z запоминаем ПОЛНУЮ запись из базы (в списках записи без state) */
+    const full = await fullSnap(id);
+    if (full) {
       rememberDeleted({
-        label: `сохранённую партию «${snap.name}»`,
+        label: `сохранённую партию «${snap?.name ?? 'без имени'}»`,
         restore: async () => {
-          await idbPut('sessions', snap.id, JSON.parse(JSON.stringify(snap)));
-          setSnaps((prev) => [...prev.filter((x) => x.id !== id), snap].sort((a, b) => b.createdAt - a.createdAt));
+          await idbPut('sessions', full.id, JSON.parse(JSON.stringify(full)));
+          await loadSnaps();
           void refresh();
         },
       });
@@ -769,16 +816,25 @@ export function LoadScreen() {
   };
 
   /* v0.65: «УДАЛИТЬ ВСЕ СОХРАНЕНИЯ» — стирает ВСЕ сохранённые партии разом,
-     подчиняется режиму удаления из Опций (кнопка-удержание) и возвращает ВСЕ
-     партии одним Ctrl+Z — те же правила, что у «Удалить все сохранения» в лаунчере */
+     подчиняется режиму удаления из Опций (кнопка-удержание) и возвращает партии
+     одним Ctrl+Z — те же правила, что у «Удалить все сохранения» в лаунчере.
+     v0.167: полные записи для Ctrl+Z достаются из базы ПО ОДНОЙ и только для
+     последних 40 партий — держать в ОЗУ ВСЕ партии (каждая с картой) нельзя:
+     та же «нехватка памяти», от которой лечим. */
   const delAllSnaps = async () => {
     if (!snaps.length) return;
     const list = snaps;
+    const UNDO_CAP = 40;
+    const undo: SessionSnapshot[] = [];
+    for (const s of list.slice(0, UNDO_CAP)) {
+      const full = await fullSnap(s.id);
+      if (full) undo.push(JSON.parse(JSON.stringify(full)));
+    }
     rememberDeleted({
       label: `все сохранённые партии (${list.length})`,
       restore: async () => {
-        for (const s of list) await idbPut('sessions', s.id, JSON.parse(JSON.stringify(s)));
-        setSnaps((prev) => [...prev.filter((x) => !list.some((l) => l.id === x.id)), ...list].sort((a, b) => b.createdAt - a.createdAt));
+        for (const s of undo) await idbPut('sessions', s.id, JSON.parse(JSON.stringify(s)));
+        await loadSnaps();
         void refresh();
       },
     });
@@ -786,7 +842,7 @@ export function LoadScreen() {
     setSnaps([]);
     void refresh();
     sfx.fail();
-    toast(`Удалены все сохранённые партии (${list.length})`, 'err');
+    toast(list.length > UNDO_CAP ? `Удалены все сохранённые партии (${list.length}) — Ctrl+Z вернёт последние ${UNDO_CAP}` : `Удалены все сохранённые партии (${list.length})`, 'err');
   };
 
   return (
@@ -809,7 +865,7 @@ export function LoadScreen() {
           )}
         </div>
         <p className="text-[12px] text-dim mb-4 max-w-2xl">
-          Автосейвы (5 слотов, перезаписываются каждый ход) и ручные сохранения. «Собрать команду» откроет комнату:
+          Автосейвы (5 слотов на каждую карту, перезаписываются каждый ход) и ручные сохранения. «Собрать команду» откроет комнату:
           передайте код игрокам, каждый нажмёт «Это я» напротив своей роли, и хост восстановит партию с того же места.
         </p>
         {/* v0.116: карточка мгновенного возврата хоста — ПЕРЕЕХАЛА С ГЛАВНОГО ЭКРАНА.
@@ -840,7 +896,7 @@ export function LoadScreen() {
                   Карта «{s.mapName}» · комната {hideCode ? '••••' : s.code} · {new Date(s.createdAt).toLocaleString('ru-RU')}
                 </div>
                 <div className="tick-label mt-1 text-dim">
-                  Игроки: {s.state.players.map((p) => p.name).join(', ')} · фаза: {s.state.phase === 'playing' ? 'идёт игра' : s.state.phase === 'over' ? 'завершена' : s.state.phase}
+                  Игроки: {s.players.map((p) => p.name).join(', ')} · фаза: {s.phase === 'playing' ? 'идёт игра' : s.phase === 'over' ? 'завершена' : s.phase}
                 </div>
               </div>
               <div className="flex gap-2">

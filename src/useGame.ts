@@ -100,12 +100,15 @@ function takeChunk(room: Room, c: { key: string; t: string; i: number; n: number
 
 /* Автосейв партии хостом: чтобы при зависании/перезагрузке сессию можно было
    восстановить из «Загрузить игру». Пишем не чаще раза в 8 с и при смене хода. */
-/* Автосейв: 5 циклических слотов на комнату, перезаписываются по кругу на каждом
-   ходе. Идентификатор слота auto-CODE-0..4, поэтому старых копий не копится. */
+/* Автосейв: 5 циклических слотов НА КАРТУ, перезаписываются по кругу на каждом
+   ходе. Идентификатор слота auto-КАРТА-0..4, поэтому копии не копятся.
+   v0.167: раньше ключ был auto-КОД-0..4, а код комнаты НОВЫЙ у каждой партии —
+   автосейвы плодились бесконечно (5 новых записей-тяжеловесов на каждую партию)
+   и душили «Загрузить игру». */
 const AUTO_SLOTS = 5;
 let lastAutosave = 0;
 let lastAutosaveTurn = -1;
-let autoSlotByCode: Record<string, number> = {};
+let autoSlotByMap: Record<string, number> = {};
 async function autosaveSession(next: GameSession) {
   /* v0.124: партия ЗАВЕРШЕНА (победа/поражение) — автосейв НЕ пишем: на титрах
      сохраняться нельзя, финальное состояние не должно затирать автослоты */
@@ -117,12 +120,13 @@ async function autosaveSession(next: GameSession) {
   if (!turnChanged && now - lastAutosave < 8000) return;
   lastAutosave = now;
   lastAutosaveTurn = next.turn;
-  const slot = ((autoSlotByCode[next.code] ?? -1) + 1) % AUTO_SLOTS;
-  autoSlotByCode[next.code] = slot;
+  const mid = st.sessionMap.id;
+  const slot = ((autoSlotByMap[mid] ?? -1) + 1) % AUTO_SLOTS;
+  autoSlotByMap[mid] = slot;
   /* реальный номер хода партии (инкрементируется движком в endTurnNow) */
   const turnNo = next.turnNo ?? 1;
   const snap: SessionSnapshot = {
-    id: `auto-${next.code}-${slot}`,
+    id: `auto-${mid}-${slot}`,
     name: `Автосейв · ход ${turnNo}`,
     mapName: st.sessionMap.name,
     code: next.code,

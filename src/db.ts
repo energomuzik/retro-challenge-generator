@@ -150,6 +150,25 @@ export async function idbEach<T>(store: StoreName, cb: (key: string, value: T) =
   });
 }
 
+/* v0.167: курсор по ДИАПАЗОНУ ключей — «Загрузить игру» и чистка автосейвов читают
+   только нужные записи (auto-*), по одной за раз: список партий собирается из лёгких
+   карточек БЕЗ состояний и карт, пик памяти по-прежнему одна запись */
+export async function idbEachRange<T>(store: StoreName, lo: string, hi: string, cb: (key: string, value: T) => void): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(store, 'readonly');
+    const cur = t.objectStore(store).openCursor(IDBKeyRange.bound(lo, hi, false, false));
+    cur.onsuccess = () => {
+      const c = cur.result;
+      if (c) {
+        cb(String(c.key), c.value as T);
+        c.continue();
+      } else resolve();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
+}
+
 /* v0.158: удаляет все ключи в ДИАПАЗОНЕ одной транзакцией — для блобов ромов
    (все ключи блобов ромов начинаются с «rom-»), в том числе осиротевшие,
    которых нет в списке ромов (после сбоев прежних версий) */

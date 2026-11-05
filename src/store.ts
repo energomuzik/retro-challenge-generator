@@ -257,6 +257,13 @@ export async function initApp() {
     console.error('Не удалось прочитать локальную библиотеку:', e);
     useApp.getState().toast('Локальное хранилище недоступно — библиотека пуста', 'err');
   }
+  /* v0.167: одноразовая чистка накопившихся автосейвов (раньше 5 слотов на КОД
+     комнаты — каждая партия добавляла 5 записей-тяжеловесов, «Загрузить игра»
+     падала по памяти). Ручные сохранения не трогаются. */
+  try {
+    const { pruneAutosaveBloat } = await import('./snapPrune');
+    await pruneAutosaveBloat((text, kind) => useApp.getState().toast(text, kind));
+  } catch { /* noop */ }
 }
 
 export async function getRomData(romId: string): Promise<ArrayBuffer | null> {
