@@ -3,7 +3,7 @@ import { createRoom, type Room } from './net';
 import { createHubRoom } from './hub';
 import { applyAction, type Action } from './engine';
 import type { GameMap, GameOptions, GameSession, NetMsg, RomDef, SaveDef, SessionSnapshot, TokenDir } from './types';
-import { APP_VERSION, isJourneyMoveOnly, markersHash } from './types';
+import { APP_VERSION, AUTOSAVE_TIMER_MS, autosavePolicyOf, isJourneyMoveOnly, markersHash } from './types';
 import { idbGet, idbPut } from './db';
 import { startDoor, loadPool, isDoorWanted } from './bogach';
 
@@ -99,25 +99,37 @@ function takeChunk(room: Room, c: { key: string; t: string; i: number; n: number
 }
 
 /* Автосейв партии хостом: чтобы при зависании/перезагрузке сессию можно было
-   восстановить из «Загрузить игру». Пишем не чаще раза в 8 с и при смене хода. */
-/* Автосейв: 5 циклических слотов НА КАРТУ, перезаписываются по кругу на каждом
-   ходе. Идентификатор слота auto-КАРТА-0..4, поэтому копии не копятся.
+   восстановить из «Загрузить игру». */
+/* Автосейв: 5 циклических слотов НА КАРТУ, перезаписываются по кругу.
+   Идентификатор слота auto-КАРТА-0..4, поэтому копии не копятся.
    v0.167: раньше ключ был auto-КОД-0..4, а код комнаты НОВЫЙ у каждой партии —
    автосейвы плодились бесконечно (5 новых записей-тяжеловесов на каждую партию)
    и душили «Загрузить игру». */
+/* v0.168: ЧТО И КОГДА ПИШЕТ АВТОСЕЙВ — решает ПОЛИТИКА РЕЖИМА (autosavePolicyOf в types.ts):
+   • классика с ходами (Ретрополия/VERSUS/SOLO, SKILL) — при СМЕНЕ ХОДА, имя «Автосейв · ход N»;
+   • режимы без ходов, у каждого своя игра (ФРЕНДИ, QUEST, RUBG, Джёрни, Богач) — ТОЛЬКО
+     5-минутный таймер (ниже), имя «Автосейв · 14:32». Раньше здесь врата «не чаще раза
+     в 8 с и при смене хода» пропускали КАЖДЫЕ 8 секунд (turn в этих режимах не меняется),
+     а имя бралось из turnNo, который в режимах без ходов всегда 1, — отсюда «ход 1, ход 1, ход 1»;
+   • QUIZowo — ТОЛЬКО после ответа на вопрос квиза (не перед запуском квиза). */
 const AUTO_SLOTS = 5;
 let lastAutosave = 0;
 let lastAutosaveTurn = -1;
 let autoSlotByMap: Record<string, number> = {};
-async function autosaveSession(next: GameSession) {
+async function autosaveSession(next: GameSession, act?: Action, viaTimer = false) {
   /* v0.124: партия ЗАВЕРШЕНА (победа/поражение) — автосейв НЕ пишем: на титрах
      сохраняться нельзя, финальное состояние не должно затирать автослоты */
   if (next.phase === 'lobby' || next.phase === 'over') return; // в лобби сохранять нечего
   const st = useApp.getState();
   if (!st.sessionMap) return;
+  /* v0.168: политика по режиму. В режимах без ходов на действия не пишем ВООБЩЕ —
+     их партию пишет только 5-минутный таймер; в QUIZowo пишем только ответы квиза. */
+  const policy = autosavePolicyOf(st.sessionMap.mode);
+  if (policy === 'timer' && !viaTimer) return;
+  if (policy === 'answer' && act?.t !== 'quizAnswer') return;
   const now = Date.now();
   const turnChanged = next.turn !== lastAutosaveTurn;
-  if (!turnChanged && now - lastAutosave < 8000) return;
+  if (!turnChanged && now - lastAutosave < 8000) return; // демпфер: не чаще раза в 8 с
   lastAutosave = now;
   lastAutosaveTurn = next.turn;
   const mid = st.sessionMap.id;
@@ -125,9 +137,13 @@ async function autosaveSession(next: GameSession) {
   autoSlotByMap[mid] = slot;
   /* реальный номер хода партии (инкрементируется движком в endTurnNow) */
   const turnNo = next.turnNo ?? 1;
+  /* v0.168: честное имя. В классике — номер хода (там он есть и растёт); в режимах
+     без ходов и в QUIZowo — время записи: несколько одинаковых «ход 1» вводили в заблуждение */
+  const dt = new Date(now);
+  const hhmm = `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
   const snap: SessionSnapshot = {
     id: `auto-${mid}-${slot}`,
-    name: `Автосейв · ход ${turnNo}`,
+    name: policy === 'turn' ? `Автосейв · ход ${turnNo}` : `Автосейв · ${hhmm}`,
     mapName: st.sessionMap.name,
     code: next.code,
     state: next,
@@ -140,6 +156,19 @@ async function autosaveSession(next: GameSession) {
   };
   try { await idbPut('sessions', snap.id, snap); } catch { /* noop */ }
 }
+
+/* v0.168: 5-МИНУТНЫЙ АВТОСЕЙВ для режимов без ходов (ФРЕНДИ, QUEST, RUBG, Джёрни, Богач).
+   Один спокойный таймер на всё приложение: раз в 20 с проверяет — идёт ли партия,
+   режим ли «без ходов», хост ли мы и прошло ли 5 минут с последней записи.
+   Пишет только хост (гости состояние не сохраняют — как и раньше). */
+window.setInterval(() => {
+  const st = useApp.getState();
+  if (!st.room?.isHost || !st.session || !st.sessionMap) return;
+  if (st.session.phase !== 'playing') return; // сохраняем только идущую партию
+  if (autosavePolicyOf(st.sessionMap.mode) !== 'timer') return;
+  if (Date.now() - lastAutosave < AUTOSAVE_TIMER_MS) return;
+  void autosaveSession(st.session, undefined, true);
+}, 20000);
 
 /* Хост собирает ромы и сохранения, на которые ссылается карта, и отдаёт их гостю. */
 async function sendLibrary(room: Room, map: GameMap): Promise<void> {
@@ -263,13 +292,13 @@ export function dispatch(a: Action) {
     if (a.t === 'journeyMove' && isJourneyMoveOnly(prev, next) && lightSyncActive(st.options, next)) {
       const jp = next.journeyPos?.[a.id];
       if (jp) queueJpos(room, { id: a.id, x: jp.x, y: jp.y, dir: jp.dir, mv: jp.mv, tp: jp.tp });
-      void autosaveSession(next);
+      void autosaveSession(next, a);
       return;
     }
     jposPending.clear(); // полный state уже несёт свежие позиции — батч не нужен
     room.send('state', next);
     lastStateSentAt = Date.now();
-    void autosaveSession(next);
+    void autosaveSession(next, a);
   } else {
     room.send('action', a);
   }
@@ -294,6 +323,9 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
   jposPending.clear(); // новая комната — старый батч движения не нужен
   if (jposTimer !== null) { clearTimeout(jposTimer); jposTimer = null; }
   lastStateSentAt = 0; lastNeedStateAt = 0; // v0.164: новая комната — сверка с чистого листа
+  /* v0.168: новая партия — 5-минутный автосейв отсчитывает СВОИ 5 минут от открытия
+     (первая запись через 5 минут игры, а не в первый тик таймера) */
+  lastAutosave = Date.now(); lastAutosaveTurn = -1;
   const st = useApp.getState();
   st.leaveRoom();
   const app = useApp.getState();
@@ -418,7 +450,7 @@ export function openRoom(code: string, isHost: boolean, initial: { session: Game
           const prevA = h.session;
           const next = applyAction(h.session, act, h.sessionMap, h.options);
           h.setSession(next);
-          void autosaveSession(next);
+          void autosaveSession(next, act);
           /* v0.163/v0.165: чистый шаг фишки от гостя — лёгкий jpos вместо полного состояния
              (решает тумблер синхронизации в опциях хоста — lightSyncActive) */
           if (act.t === 'journeyMove' && isJourneyMoveOnly(prevA, next) && lightSyncActive(h.options, next)) {
