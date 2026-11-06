@@ -461,7 +461,7 @@ function TileMapFullscreen({ tg, tileBgs, activeId, onSelect, onMove, onClose }:
 }
 
 export default function MapEditor() {
-  const { maps, tiles, tokens, anims, bossAnims, npcAnims, challenges, setScreen, refresh, toast } = useApp();
+  const { maps, tiles, tokens, anims, bossAnims, npcAnims, challenges, setScreen, refresh, toast, setQuizTarget } = useApp();
   const spoilerMode = useApp((st) => st.options.spoilerMode); // v0.70: режим спойлеров из Опций
   const [map, setMap] = useState<GameMap | null>(null);
   const [tool, setTool] = useState<Tool>('select');
@@ -3492,7 +3492,7 @@ export default function MapEditor() {
       patch.startCoins = undefined;
       patch.taskWinCoins = undefined;
       patch.skipCoins = undefined;
-      extra = ' Ресурс — ОЧКИ (старт 0): верный ответ быстрее = до 1000, вылета нет. Добавьте КВИЗЫ в редакторе квизов и ячейки-квизы на поле — без них QUIZowo не сохранить.';
+      extra = ' Ресурс — ОЧКИ (старт 0): верный ответ быстрее = до 1000, вылета нет. Порядок: расставьте ЯЧЕЙКИ-КВИЗЫ на поле и завершите карту — квизы создаются СЛЕДУЮЩИМ ШАГОМ в редакторе квизов (кнопка «Квизы карты» в панели ресурса).';
     }
     if (pr.resMode === 'coins') {
       /* МОНЕТНЫЙ ПРЕСЕТ (QUEST): та же экономика, что у кнопки «Монеты» в панели ресурса —
@@ -3563,20 +3563,22 @@ export default function MapEditor() {
       toast('Поставьте стартовую ячейку: выберите ячейку и задайте тип «Старт» — с неё начнут все игроки', 'err');
       return;
     }
-    /* v0.163 QUIZowo: карта без квизов не сохраняется — в этом режиме играются ТОЛЬКО они.
-       Подсказываем и ячейки-квизы: без них вопросы никогда не звучат. */
+    /* v0.169 РЕВИЗИЯ ПОРЯДКА (заказчик: «сначала расставить ячейки в редакторе карт, затем
+       в редакторе квизов создать квизы»): разорван круг «без квизов карту не сохранить, а
+       редактор квизов требует готовую карту». Квизы при завершении НЕ обязательны: расставил
+       ячейки-квизы → завершил карту → создал квизы (кнопка «Квизы карты» в панели ресурса
+       QUIZowo открывает редактор квизов сразу на этой карте). Ячейки-квизы обязательны
+       как были — без них вопросы никогда не звучат. */
     if ((map.mode ?? 'classic') === 'quizovo') {
-      const qCount = (map.quizzes ?? []).length;
-      if (qCount === 0) {
-        sfx.fail();
-        toast('QUIZowo: на карте нет ни одного квиза — создайте их в редакторе квизов (кнопка «Квизы»), без них QUIZowo не сыграть', 'err');
-        return;
-      }
       const quizCells = map.cells.filter((c) => c.type === 'quiz').length;
       if (quizCells === 0) {
         sfx.fail();
-        toast(`QUIZowo: квизы есть (${qCount}), но на поле нет ни одной ЯЧЕЙКИ-КВИЗА — поставьте хотя бы одну (тип ячейки «Квиз»), иначе вопросы не запустятся`, 'err');
+        toast('QUIZowo: на поле нет ни одной ЯЧЕЙКИ-КВИЗА — расставьте хотя бы одну (тип ячейки «Квиз») и завершите карту; квизы к ним создаются в редакторе квизов ПОСЛЕ завершения', 'err');
         return;
+      }
+      if ((map.quizzes ?? []).length === 0) {
+        /* НЕ блокируем: карта сохранится, квизы автор добавит следом в редакторе квизов */
+        toast('Квизов пока нет — карта сохранится: сразу после завершения откройте «Квизы карты» и создайте вопросы, без них партию не начать', 'info');
       }
     }
     if (starts > 1) {
@@ -4286,6 +4288,10 @@ export default function MapEditor() {
                       <div className="text-[10px] text-dim mt-1 leading-tight">В QUIZowo ресурс всегда ОЧКИ: старт у всех 0, верный ответ быстрее = до 1000 очков (мгновенно — 1000, к концу таймера меньше, минимум 100), неверный ответ или не успел — 0. Вылета НЕТ — игроки не выбывают.</div>
                     </div>
                     <p className="text-[9px] text-faint leading-tight">Минуты/попытки/монеты в QUIZowo не используются — в игре показываются только очки. Когда все квизы карты прозвучат — партия завершится, победит самый большой счёт.</p>
+                    {/* v0.169: квизы создаются ПОСЛЕ завершения карты — кнопка сохраняет карту
+                        и открывает редактор квизов сразу на этой карте (без поиска в списке) */}
+                    <PxBtn color="sky" className="w-full" onClick={() => { void (async () => { sfx.click(); await persist(); setQuizTarget(map.id); setScreen('quizEditor'); })(); }}>{Ic.dice(14)} Квизы карты — создать вопросы</PxBtn>
+                    <p className="text-[9px] text-faint leading-tight">Порядок: 1) расставьте ячейки-квизы на поле, 2) «Карта создана» — карта сохранится и без квизов, 3) кнопка выше откроет редактор квизов на этой карте. Партию без квизов не начать.</p>
                   </div>
                 ) : (
                   <div className="space-y-2">

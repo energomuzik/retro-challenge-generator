@@ -37,6 +37,12 @@ interface AppState {
   toasts: Toast[];
   toast: (text: string, kind?: Toast['kind']) => void;
 
+  /* v0.169: предвыбор карты для редактора квизов — переход из редактора карт (кнопка
+     «Квизы карты»): MapEditor сохраняет карту, пишет id сюда и открывает quizEditor;
+     QuizEditor читает при монтировании и сразу сбрасывает */
+  quizTarget: string | null;
+  setQuizTarget: (id: string | null) => void;
+
   /* v0.100 МИНИ-ИКОНКИ игроков (вне состояния партии — иначе каждое действие возило бы
      картинки всем): pid → dataUrl ≤ 64×64. Наполняется сообщениями «picon» при подключении */
   icons: Record<string, string>;
@@ -199,6 +205,8 @@ export const useApp = create<AppState>()((set, get) => ({
     set((st) => ({ toasts: [...st.toasts.slice(-3), { id, text, kind }] }));
     setTimeout(() => set((st) => ({ toasts: st.toasts.filter((t) => t.id !== id) })), 4200);
   },
+  quizTarget: null,
+  setQuizTarget: (id) => set({ quizTarget: id }),
 
   icons: {},
   setIcon: (id, icon) => set((st) => {

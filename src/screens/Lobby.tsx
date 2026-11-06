@@ -1518,14 +1518,15 @@ export function LobbyScreen() {
             const fewPlayers = session.players.length < 2 && !soloGame;
             const notReady = soloGame && session.players.length < 2 ? false : session.players.some((p) => !p.ready);
             const notLoaded = soloGame && session.players.length < 2 ? false : session.players.some((p) => !p.isHost && (sync[p.id] ?? 0) < 100);
-            const blocked = fewPlayers || notReady || notLoaded;
+            const noQuizzes = sessionMap?.mode === 'quizovo' && (sessionMap?.quizzes?.length ?? 0) === 0; // v0.169: без квизов конкурс не сыграть — движок завершит такую партию «noquiz» сразу
+            const blocked = fewPlayers || notReady || notLoaded || noQuizzes;
             return (
               <PxBtn
                 big
                 color="gold"
                 onClick={() => dispatch({ t: 'start' })}
                 disabled={blocked}
-                title={fewPlayers ? 'Для партии нужно минимум два игрока (в SKILL CHALLENGE и одиночном JOURNEY можно начать и одному)' : notReady ? 'Все игроки должны быть готовы' : notLoaded ? 'Ждём, пока все игроки загрузят данные карты' : undefined}
+                title={fewPlayers ? 'Для партии нужно минимум два игрока (в SKILL CHALLENGE и одиночном JOURNEY можно начать и одному)' : notReady ? 'Все игроки должны быть готовы' : notLoaded ? 'Ждём, пока все игроки загрузят данные карты' : noQuizzes ? 'QUIZowo: на карте нет квизов — создайте вопросы в редакторе квизов («Все редакторы» → «Редактор квизов»), без них конкурс не сыграть' : undefined}
               >
                 {Ic.dice(18)} {fewPlayers ? (soloGame ? 'Начать (вы один — зрители подтянутся)' : 'Ждём игроков…') : notLoaded ? 'Загрузка данных…' : 'Начать игру'}
               </PxBtn>

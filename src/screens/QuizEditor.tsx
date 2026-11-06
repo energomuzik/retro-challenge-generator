@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../store';
 import { Field, GhostBtn, Ic, Panel, PxBtn, Stepper, Toggle } from '../ui';
 import { fileToDataUrl } from '../assets';
@@ -34,6 +34,17 @@ export default function QuizEditor() {
     setEditingId(null);
     sfx.coin();
   };
+
+  /* v0.169: предвыбор карты при переходе из редактора карт (кнопка «Квизы карты»):
+     target одноразовый — читаем и сразу сбрасываем, следующий вход начнётся со списка */
+  useEffect(() => {
+    const t = useApp.getState().quizTarget;
+    if (!t) return;
+    useApp.setState({ quizTarget: null });
+    const m = maps.find((x) => x.id === t);
+    if (m) openMap(m);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const persist = async (m: GameMap) => {
     m.updatedAt = Date.now();
