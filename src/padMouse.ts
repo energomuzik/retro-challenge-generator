@@ -25,13 +25,35 @@
      • clicksOff — «режим только курсора» на чистом поле партии (окна закрыты):
        курсор виден и двигается, но клики НЕ отправляются — случайное нажатие
        R1/R2 не откроет ячейку и не нажмёт кнопки HUD;
-     • главный тумблер «Геймпад» в Опциях (prefs.gamepad === false) — как было. */
+     • главный тумблер «Геймпад» в Опциях (prefs.gamepad === false) — как было.
+
+   v0.172 — ЛЕВЫЙ СТИК ПРОКРУЧИВАЕТ, РЕТРО-КУРСОР, ПОЛЗУНКИ И ПОЛЯ ВВОДА:
+     • ЛЕВЫЙ СТИК вверх/вниз — прокрутка меню и панелей (как колёсико мыши):
+       работает во всех окнах, списках и редакторах, отключается ТОЙ ЖЕ кнопкой
+       тумблера, что и ЛКМ/ПКМ (в окне задания игра крутится — тумблер погасил
+       и прокрутку тоже), а по канвам редакторов колесо зумит, как настоящая
+       мышь; щелчки колеса — порциями по 100 px, как у настоящего ролика;
+     • курсор больше не стандартная белая стрела — ПИКСЕЛЬНАЯ стрела в палитре
+       проекта: золото #ffcf3f с бликом и чернильным контуром, при зажатой ЛКМ
+       — коралловая #ff5d73 (крупнее системной, 20×32);
+     • ПОЛЗУНКИ (громкость, чувствительность…) — раньше молчали: синтетические
+       события не запускают нативный драг браузера. Теперь сами: клик прыгает
+       в точку, «держишь и ведёшь» — ползунок тащится (считаем value из X
+       курсора и шлём input/change — React onChange срабатывает как надо);
+     • ТЕКСТОВЫЕ ПОЛЯ (ник, названия карт…) — клик ставит фокус и каретку
+       ввода в точку клика (нативный фокус от синтетики не приходит);
+     • ГАЛОЧКИ и РАДИОКНОПКИ (в т.ч. завёрнутые в <label>) — переключаются:
+       настоящий клик делает это сам, синтетический — нет, переключаем сами и
+       шлём click в сам чекбокс; выпадающие списки <select> получают фокус
+       (раскрыть список браузер разрешает только настоящей мыши). */
 import { useEffect, useState } from 'react';
 import { listGamepads, loadEmuPrefs } from './input';
 import { sfx } from './sound';
 
 /* Подсказка для окон (одна на все; имена кнопок — PS + Xbox в скобках) */
 export const PAD_MOUSE_HINT = '🎮 Правый стик — курсор · R2 (RT) — ЛКМ · R1 (RB) — ПКМ';
+/* v0.172: расширенная подсказка для «Управления» и панелей, где есть место */
+export const PAD_MOUSE_HINT_FULL = PAD_MOUSE_HINT + ' · левый стик — прокрутка (колёсико)';
 
 /* ФИКСИРОВАННАЯ раскладка (W3C Standard Gamepad) — намеренно без настроек */
 const AXIS_X = 2;       // правый стик, горизонталь
@@ -40,6 +62,64 @@ const BTN_LMB = 7;      // R2 (PS) = RT (Xbox) — левая кнопка мы�
 const BTN_RMB = 5;      // R1 (PS) = RB (Xbox) — правая кнопка мыши
 const DEADZONE = 0.22;  // мёртвая зона стика (не ползёт от лёгкого наклона)
 const MAX_SPEED = 1150; // пикселей в секунду при полном отклонении (× padMouseSpeed)
+
+/* ---------- v0.172: ЛЕВЫЙ СТИК — ПРОКРУТКА (колёсико мыши) ---------- */
+const AXIS_LY = 1;         // левый стик, вертикаль — прокрутка меню вверх/вниз
+const SCROLL_NOTCH = 100;  // один «щелчок» колёсика — как у настоящей мыши
+const SCROLL_GAP = 55;     // мс между щелчками (не чаще ~18/с — как быстрый ролик)
+const MAX_SCROLL = 900;    // пикселей в секунду при полном отклонении (× padMouseSpeed)
+
+/* Ближайший прокручиваемый предок (окно списка, панель редактора) — синтетическое
+   колесо браузер сам не прокатывает, прокручиваем вручную. */
+function scrollableBox(el: Element): HTMLElement | null {
+  let n: HTMLElement | null = el instanceof HTMLElement ? el : el.parentElement;
+  while (n && n !== document.body) {
+    if (n.scrollHeight - n.clientHeight > 2) {
+      const oy = window.getComputedStyle(n).overflowY;
+      if (oy === 'auto' || oy === 'scroll') return n;
+    }
+    n = n.parentElement;
+  }
+  return null;
+}
+
+/* ---------- v0.172: РЕТРО-КУРСОР — пиксельная стрела в палитре проекта ----------
+   Матрица пикселей → SVG-прямоугольники (crispEdges — рёбра без сглаживания).
+   X — чернильный контур #0b0e1c, H — блик, F — золото проекта #ffcf3f;
+   зажатая ЛКМ — коралловая заливка #ff5d73. Курсор 20×32 — крупнее системного. */
+const CURSOR_PIXELS = [
+  'X.........',
+  'XX........',
+  'XHX.......',
+  'XHHX......',
+  'XHFFX.....',
+  'XHFFFX....',
+  'XHFFFFX...',
+  'XHFFFFFX..',
+  'XHFFFFFFX.',
+  'XHFFFFFFFX',
+  'XHFFFFXXXX',
+  'XHFFFX....',
+  'XXHFFX....',
+  '..XHFX....',
+  '...XHFX...',
+  '....XX....',
+];
+const CURSOR_SCALE = 2; // 10×16 пикселей × 2
+const cursorSvg = (fill: string, hi: string): string => {
+  let rects = '';
+  CURSOR_PIXELS.forEach((row, j) => {
+    for (let i = 0; i < row.length; i++) {
+      const c = row[i];
+      if (c === '.') continue;
+      const col = c === 'X' ? '#0b0e1c' : c === 'H' ? hi : fill;
+      rects += `<rect x="${i * CURSOR_SCALE}" y="${j * CURSOR_SCALE}" width="${CURSOR_SCALE}" height="${CURSOR_SCALE}" fill="${col}"/>`;
+    }
+  });
+  return `<svg width="${10 * CURSOR_SCALE}" height="${16 * CURSOR_SCALE}" viewBox="0 0 ${10 * CURSOR_SCALE} ${16 * CURSOR_SCALE}" shape-rendering="crispEdges" style="filter:drop-shadow(0 2px 2px rgba(0,0,0,0.85))">${rects}</svg>`;
+};
+const CURSOR_IDLE = cursorSvg('#ffcf3f', '#ffe9a3'); // золото проекта
+const CURSOR_LMB = cursorSvg('#ff5d73', '#ffb3a8');  // зажата ЛКМ — коралл
 
 /* ---------- v0.171: СОСТОЯНИЕ «ВЫКЛЮЧЕНО КНОПКОЙ» (userOff) + подписчики ---------- */
 let userOff = false;
@@ -116,23 +196,82 @@ export function usePadMouse(active: boolean) {
     /* SVG-курсор поверх всех окон (z-index максимальный, pointer-events нет) */
     const cur = document.createElement('div');
     cur.style.cssText = 'position:fixed;left:0;top:0;z-index:2147483000;pointer-events:none;will-change:transform;display:none';
-    cur.innerHTML =
-      '<svg width="27" height="27" viewBox="0 0 24 24" style="filter:drop-shadow(0 2px 3px rgba(0,0,0,0.9))">' +
-      '<path d="M4 1.6 L4 18.8 L8.9 14.4 L11.8 21.3 L15.1 19.9 L12.2 13.2 L18.6 13.2 Z" fill="#ffffff" fill-opacity="0.96" stroke="#0a0c14" stroke-width="1.4" stroke-linejoin="round"/></svg>';
-    document.body.appendChild(cur);
+    cur.innerHTML = CURSOR_IDLE; // v0.172: ретро-курсор проекта (пиксельная золотая стрела)
     const st = {
       x: Math.round(window.innerWidth / 2),
       y: Math.round(window.innerHeight / 2),
       lmb: false, rmb: false,
       lmbEl: null as Element | null,
+      range: null as HTMLInputElement | null, // v0.172: ползунок, который сейчас тащим
       shown: false,
     };
     const place = () => { cur.style.transform = `translate(${st.x - 1}px, ${st.y - 1}px)`; };
     const show = () => { if (!st.shown) { st.shown = true; place(); cur.style.display = 'block'; } };
     const hide = () => { if (st.shown) { st.shown = false; cur.style.display = 'none'; } };
     const markLmb = (on: boolean) => {
-      const path = cur.querySelector('path');
-      if (path) path.setAttribute('fill', on ? '#ffd25e' : '#ffffff'); // зажатая ЛКМ — курсор желтеет
+      cur.innerHTML = on ? CURSOR_LMB : CURSOR_IDLE; // v0.172: зажатая ЛКМ — курсор коралловеет
+    };
+
+    /* ---------- v0.172: ПОЛЗУНКИ (input[type=range]) ----------
+       Синтетический pointerdown не включает нативный драг браузера — значение
+       считаем из X курсора и ставим сами, React onChange слушает input. */
+    const rangeAt = (el: Element): HTMLInputElement | null =>
+      el.closest('input[type="range"]') as HTMLInputElement | null;
+    const rangeValueAt = (r: HTMLInputElement, x: number): number => {
+      const rect = r.getBoundingClientRect();
+      const min = r.min === '' ? 0 : parseFloat(r.min);
+      const max = r.max === '' ? 100 : parseFloat(r.max);
+      if (rect.width <= 0 || !isFinite(min) || !isFinite(max) || max <= min) return parseFloat(r.value) || 0;
+      const ratio = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
+      let v = min + ratio * (max - min);
+      const step = r.step && r.step !== 'any' ? parseFloat(r.step) : 0;
+      if (step > 0) v = min + Math.round((v - min) / step) * step;
+      return Math.max(min, Math.min(max, v));
+    };
+    const setRange = (r: HTMLInputElement, v: number, final: boolean): void => {
+      const s = String(v);
+      if (r.value !== s) {
+        r.value = s;
+        fire(r, 'input', st.x, st.y, 0, 1);
+      }
+      if (final) fire(r, 'change', st.x, st.y, 0, 1);
+    };
+
+    /* ---------- v0.172: ТЕКСТОВЫЕ ПОЛЯ — фокус и каретка в точку клика ----------
+       Настоящий mousedown ставит фокус сам, синтетический — нет: фокусируем
+       вручную (React onFocus сработает), каретку ставим через caretRangeFromPoint. */
+    const focusField = (f: Element, x: number, y: number): void => {
+      try { (f as HTMLElement).focus({ preventScroll: true }); } catch { /* noop */ }
+      try {
+        const d = document as Document & {
+          caretRangeFromPoint?: (x: number, y: number) => Range | null;
+          caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+        };
+        let rg: Range | null = null;
+        if (d.caretRangeFromPoint) rg = d.caretRangeFromPoint(x, y);
+        else if (d.caretPositionFromPoint) {
+          const cp = d.caretPositionFromPoint(x, y);
+          if (cp) { rg = document.createRange(); rg.setStart(cp.offsetNode, cp.offset); }
+        }
+        if (rg && f.contains(rg.startContainer)) {
+          const s = window.getSelection();
+          s?.removeAllRanges();
+          if (s) s.addRange(rg);
+        }
+      } catch { /* noop */ }
+    };
+
+    /* ---------- v0.172: ГАЛОЧКИ/РАДИО (в т.ч. завёрнутые в <label>) ----------
+       Настоящий клик переключает их сам — синтетический не умеет. Клик по label
+       переносим в сам чекбокс (label.control) и переключаем вручную. */
+    const clickTargetFor = (el: Element): { target: Element; checkbox: boolean; radio: boolean } => {
+      const lbl = el.closest('label');
+      const ctl = (lbl ? (lbl as HTMLLabelElement).control ?? lbl.querySelector('input[type="checkbox"], input[type="radio"]') : null)
+        ?? el.closest('input[type="checkbox"], input[type="radio"]');
+      if (ctl instanceof HTMLInputElement && (ctl.type === 'checkbox' || ctl.type === 'radio')) {
+        return { target: ctl, checkbox: ctl.type === 'checkbox', radio: ctl.type === 'radio' };
+      }
+      return { target: el, checkbox: false, radio: false };
     };
     const btnMask = () => (st.lmb ? 1 : 0) | (st.rmb ? 2 : 0);
     const moveCursor = () => {
@@ -147,7 +286,8 @@ export function usePadMouse(active: boolean) {
         const el = elAt(st.x, st.y);
         fire(el, 'pointerup', st.x, st.y, 0, btnMask());
         fire(el, 'mouseup', st.x, st.y, 0, btnMask());
-        st.lmbEl = null;
+        if (st.range && st.range.isConnected) fire(st.range, 'change', st.x, st.y, 0, 1); // v0.172: ползунок — финальное change
+        st.range = null; st.lmbEl = null;
       }
       if (st.rmb) {
         st.rmb = false;
@@ -159,6 +299,8 @@ export function usePadMouse(active: boolean) {
 
     let raf = 0;
     let last = performance.now();
+    let scrollAcc = 0;  // v0.172: накопленный ход левого стика до следующего «щелчка» колеса
+    let lastWheel = 0;  // v0.172: время последнего щелчка (не чаще SCROLL_GAP)
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
       const dt = Math.min(0.05, (now - last) / 1000);
@@ -185,12 +327,59 @@ export function usePadMouse(active: boolean) {
         st.y = Math.max(1, Math.min(window.innerHeight - 2, st.y + dy));
         moveCursor();
       }
-      if (clicksOff || uiLock) return; // v0.171: только курсор — клики не отправляются
+      if (clicksOff || uiLock) return; // v0.171: только курсор — клики и прокрутка не отправляются
+
+      /* ---------- v0.172: ЛЕВЫЙ СТИК — ПРОКРУТКА (колёсико мыши) ----------
+         Ход стика копится и щёлкает колесом порциями по 100 px (как настоящий
+         ролик): синтетический wheel не прокатывает браузер сам, поэтому после
+         него прокручиваем вручную ближайший прокручиваемый предок (окно
+         списка, панель). Если свой обработчик колеса уже отреагировал
+         (канва редактора — зум, свой скролл) — ничего руками не крутим.
+         Гаснет той же кнопкой тумблера, что и клики (выше — return). */
+      const sdy = curve(gp.axes[AXIS_LY] ?? 0) * MAX_SCROLL * spd * dt;
+      if (sdy) {
+        scrollAcc += sdy;
+        if (Math.abs(scrollAcc) >= SCROLL_NOTCH && now - lastWheel >= SCROLL_GAP) {
+          const notch = Math.max(-120, Math.min(120, Math.round(scrollAcc)));
+          scrollAcc = 0;
+          lastWheel = now;
+          const el = elAt(st.x, st.y);
+          const ev = new WheelEvent('wheel', {
+            bubbles: true, cancelable: true, composed: true, view: window,
+            clientX: st.x, clientY: st.y, screenX: st.x, screenY: st.y,
+            deltaY: notch, deltaMode: 0,
+          });
+          el.dispatchEvent(ev);
+          if (!ev.defaultPrevented) {
+            const box = scrollableBox(el);
+            if (box) box.scrollBy(0, notch);
+            else window.scrollBy(0, notch);
+          }
+        }
+      }
+
+      /* v0.172: ЛКМ держится на ползунке — тащим его правым стиком (значение едет за курсором) */
+      if (st.lmb && st.range) {
+        if (!st.range.isConnected) st.range = null;
+        else setRange(st.range, rangeValueAt(st.range, st.x), false);
+      }
+
       /* R2 → ЛКМ (край-триггер; пока держится — работает тащение) */
       const lmbNow = btnHeld(gp, BTN_LMB);
       if (lmbNow && !st.lmb) {
         const el = elAt(st.x, st.y);
         st.lmb = true; st.lmbEl = el; markLmb(true);
+        /* v0.172: ползунок под курсором — сразу прыгнуть в точку клика (дальше тащится выше) */
+        st.range = rangeAt(el);
+        if (st.range) {
+          setRange(st.range, rangeValueAt(st.range, st.x), false);
+        } else {
+          /* v0.172: текстовое поле — фокус и каретка в точку клика; список select — фокус */
+          const fld = el.closest('input, textarea, [contenteditable="true"], [contenteditable=""]');
+          if (fld) focusField(fld, st.x, st.y);
+          const sel = el.closest('select');
+          if (sel) { try { (sel as HTMLSelectElement).focus({ preventScroll: true }); } catch { /* noop */ } }
+        }
         fire(el, 'pointerdown', st.x, st.y, 0, btnMask());
         fire(el, 'mousedown', st.x, st.y, 0, btnMask());
       } else if (!lmbNow && st.lmb) {
@@ -198,7 +387,25 @@ export function usePadMouse(active: boolean) {
         const el = elAt(st.x, st.y);
         fire(el, 'pointerup', st.x, st.y, 0, btnMask());
         fire(el, 'mouseup', st.x, st.y, 0, btnMask());
-        if (el === st.lmbEl) fire(el, 'click', st.x, st.y, 0, 0); // клик — как у мыши: нажали и отпустили на том же месте
+        if (el === st.lmbEl) { // клик — как у мыши: нажали и отпустили на том же месте
+          const t = clickTargetFor(el);
+          if (t.checkbox || t.radio) {
+            /* v0.172: галочка/радио — переключаем сами (нативный клик от синтетики не приходит) */
+            const inp = t.target as HTMLInputElement;
+            inp.checked = t.checkbox ? !inp.checked : true;
+            fire(inp, 'click', st.x, st.y, 0, 0);
+            fire(inp, 'input', st.x, st.y, 0, 1);
+            fire(inp, 'change', st.x, st.y, 0, 1);
+          } else {
+            fire(el, 'click', st.x, st.y, 0, 0);
+            const sel = el.closest('select') as HTMLSelectElement | null;
+            if (sel) { try { sel.showPicker?.(); } catch { /* без user-активации браузер отказывает */ } }
+          }
+        }
+        if (st.range) { // v0.172: отпустили ползунок — финальное change (даже если увели курсор в сторону)
+          if (st.range.isConnected) fire(st.range, 'change', st.x, st.y, 0, 1);
+          st.range = null;
+        }
         st.lmbEl = null;
       }
       /* R1 → ПКМ (контекстное меню предметов) */

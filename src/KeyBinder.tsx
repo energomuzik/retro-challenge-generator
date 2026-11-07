@@ -14,7 +14,7 @@ import {
   PADMOUSE_SPEED_DEFAULT, padBtnName, padBtnLabel,
   type EmuPrefs, type PadFamily,
 } from './input';
-import { padMouseSetUiLock, PAD_MOUSE_HINT } from './padMouse';
+import { padMouseSetUiLock, PAD_MOUSE_HINT_FULL } from './padMouse';
 import { sfx } from './sound';
 
 type Capture = { kind: 'key' | 'gpad'; action: string } | null;
@@ -311,9 +311,12 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
       <div className="border-2 border-sky/50 bg-[rgba(70,150,255,0.06)] px-2.5 py-2 space-y-2">
         <div className="tick-label text-sky mb-1">🖱 МЫШЬ С ДЖОЙСТИКА · ФИКСИРОВАННО — НЕ ПЕРЕНАЗНАЧАЕТСЯ</div>
         <p className="text-[10px] text-dim leading-snug">
-          {PAD_MOUSE_HINT} — работает во всех меню, редакторах и окнах (инвентарь, печь, приставка,
+          {PAD_MOUSE_HINT_FULL} — работает во всех меню, редакторах и окнах (инвентарь, печь, приставка,
           меню задания). Имена у всех падов одинаковые: у Xbox R1 = RB (правый бампер), R2 = RT
-          (правый триггер). Кнопку-тумблер мыши (вкл/выкл) назначайте выше — она переназначается.
+          (правый триггер). Кнопку-тумблер мыши (вкл/выкл) назначайте выше — она переназначается,
+          и она же гасит прокрутку левым стиком во время задания. Курсор — в ретро-стиле проекта;
+          ползунки тянутся (клик — прыжок, держишь — тащится), текстовые поля открываются кликом,
+          галочки переключаются. Этот ползунок чувствительности тоже можно тянуть джойстиком.
         </p>
         <div>
           <div className="tick-label text-faint mb-1">
