@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { loadEmuPrefs, saveEmuPrefs, listGamepads, PREFS_EVENT, type EmuPrefs } from './input';
+import { loadEmuPrefs, saveEmuPrefs, listGamepads, PREFS_EVENT, QUICKSAVE_KEY_DEFAULT, type EmuPrefs } from './input';
 
 /* ---------- v0.107: БЫСТРАЯ ЗАГРУЗКА (глобальная кнопка «Управления») ----------
    Одна привязка на всё приложение (клавиша + кнопка геймпада), вне раскладок консолей.
@@ -110,4 +110,88 @@ export function useQuickLoad(onFire: () => void): void {
 export function saveQuickBind(patch: { quickKey?: string; quickPad?: number }): void {
   const p = loadEmuPrefs();
   saveEmuPrefs({ ...p, ...patch } as EmuPrefs);
+}
+
+/* ---------- v0.171: БЫСТРОЕ СОХРАНЕНИЕ (глобальная кнопка «Управления») ----------
+   Парная к «Быстрой загрузке»: по умолчанию F5 / R3 (клик правым стиком).
+   В «Запуске эмулятора» — перезаписывает ВЫДЕЛЕННОЕ кликом сохранение текущим
+   состоянием игры; в окне задания — ставит ЛОКАЛЬНУЮ точку возврата: «Перезапуск»
+   и F6 вернут именно сюда (состояние живёт только у этого игрока — чужие партии
+   не задеваются). Механика та же, что у быстрой загрузки: окно + пересылка из
+   iframe эмулятора ({type:'emu-key'}) + опрос пада по фронту. */
+
+export function quickSaveKeyLabelOf(p: EmuPrefs): string {
+  const k = (p.quickSaveKey ?? QUICKSAVE_KEY_DEFAULT).toLowerCase();
+  if (!k) return '';
+  if (/^f\d{1,2}$/.test(k)) return k.toUpperCase();
+  if (k === 'space') return 'Пробел';
+  if (k === 'shift') return 'Shift';
+  if (k === 'control') return 'Ctrl';
+  if (k === 'alt') return 'Alt';
+  if (k === 'enter') return 'Enter';
+  if (k === 'tab') return 'Tab';
+  return k.length === 1 ? k.toUpperCase() : k;
+}
+
+/** Подключает глобальную кнопку быстрого сохранения (та же проводка, что у быстрой загрузки). */
+export function useQuickSave(onFire: () => void): void {
+  const fireRef = useRef(onFire);
+  fireRef.current = onFire;
+  const [prefs, setPrefs] = useState<EmuPrefs>(() => loadEmuPrefs());
+  useEffect(() => {
+    const on = () => setPrefs(loadEmuPrefs());
+    window.addEventListener(PREFS_EVENT, on);
+    window.addEventListener('storage', on);
+    return () => { window.removeEventListener(PREFS_EVENT, on); window.removeEventListener('storage', on); };
+  }, []);
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+
+  /* клавиатура: фокус у ОКНА приложения (не в поле ввода); F5 гасим — иначе браузер перезагрузит страницу */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const qk = (prefsRef.current.quickSaveKey ?? '').toLowerCase();
+      if (!qk) return;
+      const t = e.target as HTMLElement | null;
+      const typing = !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+      if (typing) return;
+      if ((e.key ?? '').toLowerCase() !== qk) return;
+      e.preventDefault();
+      e.stopPropagation();
+      fireRef.current();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
+
+  /* клавиатура: фокус у IFRAME эмулятора — SegaBox пересылает нажатия ({type:'emu-key'}) */
+  useEffect(() => {
+    const onMsg = (ev: MessageEvent) => {
+      const d = ev.data as { type?: string; key?: string } | null;
+      if (!d || d.type !== 'emu-key') return;
+      const qk = (prefsRef.current.quickSaveKey ?? '').toLowerCase();
+      if (!qk) return;
+      if ((d.key ?? '').toLowerCase() !== qk) return;
+      fireRef.current();
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  /* геймпад: опрос с фронтом (нажатие = одно срабатывание) */
+  useEffect(() => {
+    let prev = false;
+    const t = setInterval(() => {
+      const qp = prefsRef.current.quickSavePad;
+      if (qp === undefined || qp === null || qp < 0) { prev = false; return; }
+      let pressed = false;
+      for (const gp of listGamepads()) {
+        const b = gp.buttons[qp];
+        if (b && (b.pressed || b.value > 0.5)) { pressed = true; break; }
+      }
+      if (pressed && !prev) fireRef.current();
+      prev = pressed;
+    }, 80);
+    return () => clearInterval(t);
+  }, []);
 }

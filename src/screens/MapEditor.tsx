@@ -11,6 +11,7 @@ import {
 } from '../render';
 import { extractTilesFromImage, scaleTileImg } from '../tilecut';
 import { METHOD_HINTS, METHOD_LABELS, methodFactors, runUpscale, upscaleWarn, type ScaleMethod } from '../upscaler'; // v0.98: апскейлер пиксель-картинок
+import { loadEmuPrefs, listGamepads, ZOOMIN_KEY_DEFAULT, ZOOMIN_PAD_DEFAULT, ZOOMOUT_KEY_DEFAULT, ZOOMOUT_PAD_DEFAULT } from '../input'; // v0.171: зум карты L1/L2
 import type { ExtractInfo } from '../tilecut';
 import { idbDel, idbGet, idbPut, uid } from '../db';
 import type { AnimDef, BossAnimDef, CellDef, CellType, CustomChallenge, CutsceneDef, GameMap, MapEnding, MapTileInfo, NpcAnimDef, NpcLibEntry, NpcQuest, NpcShopOffer, PatrolDef, PlacedAnim, PlacedBoss, PlacedMelody, PlacedNpc, PlateBg, PortalZone, QuestGoal, QuestGoalKind, RubgItemKind, Stamp, TaskDef, TileGrid, TilePlay, TokenDef, TileGroup, TileImg, WallRect } from '../types';
@@ -2882,6 +2883,40 @@ export default function MapEditor() {
   const zoomStep = (factor: number) => {
     setView((v) => ({ ...v, zoom: Math.min(4, Math.max(0.12, v.zoom * factor)) }));
   };
+
+  /* ---------- v0.171: ЗУМ КАРТЫ С ДЖОЙСТИКА И КЛАВИАТУРОЙ ----------
+   L1 — приблизить, L2 — отдалить (переназначается в «Управлении», «ПРИБЛИЗИТЬ/ОТДАЛИТЬ КАРТУ»);
+   клавиши по умолчанию «+»/«-». Удержание — зум шагает (~6 шагов/с), как колесо мыши. */
+  const zoomStepRef = useRef(zoomStep);
+  zoomStepRef.current = zoomStep;
+  useEffect(() => {
+    const held = (gp: Gamepad, idx: number): boolean => { const b = gp.buttons[idx]; return !!b && (b.pressed || b.value > 0.5); };
+    const prev = { in: false, out: false, tin: 0, tout: 0 };
+    const iv = window.setInterval(() => {
+      const prefs = loadEmuPrefs();
+      const gp = listGamepads()[0];
+      if (!gp) { prev.in = false; prev.out = false; return; }
+      const now = performance.now();
+      const inNow = held(gp, prefs.zoomInPad ?? ZOOMIN_PAD_DEFAULT);
+      const outNow = held(gp, prefs.zoomOutPad ?? ZOOMOUT_PAD_DEFAULT);
+      if (inNow && (!prev.in || now - prev.tin > 170)) { zoomStepRef.current(1.15); prev.tin = now; }
+      if (outNow && (!prev.out || now - prev.tout > 170)) { zoomStepRef.current(1 / 1.15); prev.tout = now; }
+      prev.in = inNow; prev.out = outNow;
+    }, 50);
+    const onKey = (e: KeyboardEvent) => {
+      const prefs = loadEmuPrefs();
+      const k = (e.key ?? '').toLowerCase();
+      const inK = (prefs.zoomInKey ?? ZOOMIN_KEY_DEFAULT).toLowerCase();
+      const outK = (prefs.zoomOutKey ?? ZOOMOUT_KEY_DEFAULT).toLowerCase();
+      if (!k || (k !== inK && k !== outK)) return;
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+      e.preventDefault();
+      zoomStepRef.current(k === inK ? 1.15 : 1 / 1.15);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => { window.clearInterval(iv); window.removeEventListener('keydown', onKey); };
+  }, []);
 
   /* ---------- горячие клавиши ---------- */
   useEffect(() => {

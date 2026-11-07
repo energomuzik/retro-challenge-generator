@@ -18,6 +18,7 @@ import TrainingScreen from './screens/TrainingScreen';
 import GameScreen from './screens/GameScreen';
 import ChallengeWizard from './screens/ChallengeWizard';
 import { CreateScreen, JoinScreen, LoadScreen, LobbyScreen } from './screens/Lobby';
+import { usePadMouse, usePadMouseToggle } from './padMouse'; // v0.171: мышь с джойстика — ВЕЗДЕ (меню, редакторы, окна)
 
 export default function App() {
   const screen = useApp((s) => s.screen);
@@ -91,6 +92,13 @@ export default function App() {
   useEffect(() => {
     setVolume(volume);
   }, [volume]);
+
+  /* v0.171: ГЛОБАЛЬНАЯ МЫШЬ С ДЖОЙСТИКА — правый стик двигает курсор, R2 (RT) — ЛКМ,
+     R1 (RB) — ПКМ (раскладка фиксированная). Работает во всех меню, редакторах и окнах;
+     на чистом поле партии GameScreen включает режим «только курсор», в окнах заданий
+     во время игры мышь выключается сама (кнопка/авто). Тумблер — F7 / L3 (padMouse.ts). */
+  usePadMouse(true);
+  usePadMouseToggle();
 
   /* ПКМ НЕ открывает контекстное меню браузера — нигде в игре, правая кнопка
      свободна для своих нужд (панорамирование карты и т.п.).

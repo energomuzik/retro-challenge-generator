@@ -11,7 +11,7 @@ import { SAVE_KIND_CLS, SAVE_KIND_SHORT, saveKindOf, saveKindNum } from '../type
 import { HoldDeleteButton, rememberDeleted } from '../delGuard';
 import { effSpoilerCollapsed, loadSpoilerRec, saveSpoilerRec } from '../spoilers';
 import {
-  keyLabel, loadEmuPrefs, PREFS_EVENT, listGamepads,
+  keyLabel, loadEmuPrefs, PREFS_EVENT, listGamepads, padBtnName,
   PAD_ACTIONS, NES_TO_RETRO, codeToEjsKey,
   SEGA_ACTIONS, SEGA_TO_RETRO,
   FAMILY_ACTIONS, FAMILY_KEYS_FIELD, FAMILY_KEY_KIND, FAMILY_RETRO,
@@ -20,7 +20,8 @@ import {
 } from '../input';
 import { sfx } from '../sound';
 import { scanYandexRoms, fetchYandexCover, fetchYandexBuf, yandexResolveHref, saveYandexRomAsLocal, findLocalRomByFile, adoptYandexFolderName, yaLibFolderOf, YA_ROMS_LINK_KEY, type YaRomEntry } from '../yandexRoms';
-import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
+import { useQuickLoad, quickKeyLabelOf, useQuickSave } from '../useQuickLoad';
+import { padMouseSetOff, PAD_MOUSE_HINT, usePadMouseOff } from '../padMouse'; // v0.171: мышь с джойстика — вкл/выкл при игре
 
 const fmtSize = (b: number) => (b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} МБ` : `${Math.max(1, Math.round(b / 1024))} КБ`);
 
@@ -470,6 +471,36 @@ export default function EmulatorLauncher() {
     toast(rom ? 'Сначала выделите сохранение — кликните по нему в списке' : 'Сначала выберите ром', 'err');
   };
   useQuickLoad(quickLoadFire);
+
+  /* ---------- v0.171: БЫСТРОЕ СОХРАНЕНИЕ ВЫДЕЛЕННОГО СОХРАНЕНИЯ ----------
+   Парная к быстрой загрузке: перезаписывает ВЫДЕЛЕННОЕ кликом сохранение ТЕКУЩИМ
+   состоянием игры (клавиша/джой из «Управления», по умолчанию F5 / R3).
+   Ничего не выделено — подсказываем. Имя/вид/слот сохранения не меняются. */
+  const quickSaveFire = () => {
+    void (async () => {
+      if (!rom || !running || !ejsApiRef.current) { toast(!rom ? 'Сначала выберите ром' : !running ? 'Сначала запустите ром' : 'Эмулятор не готов', 'err'); return; }
+      if (!selSave) { toast('Сначала выделите сохранение — кликните по нему в списке (оно перезапишется)', 'err'); return; }
+      const stv = (await ejsApiRef.current.snapshot()) ?? null;
+      if (!stv) { toast('Эмулятор ещё не готов — дайте игре запуститься и попробуйте снова', 'err'); return; }
+      const full = await idbGet<SaveDef>('saves', selSave.id);
+      if (!full) { toast('Сохранение не нашлось в базе', 'err'); return; }
+      await idbPut('saves', selSave.id, { ...full, state: stv, stateSize: typeof stv === 'string' ? stv.length : undefined, createdAt: Date.now() });
+      await refresh();
+      sfx.success();
+      toast(`⚡ Сохранено в «${selSave.name}» (слот ${selSave.slot}) — «Быстрая загрузка» теперь вернёт сюда`, 'ok');
+    })();
+  };
+  useQuickSave(quickSaveFire);
+
+  /* ---------- v0.171: МЫШЬ С ДЖОЙСТИКА — АВТО-РЕЖИМ «ЗАПУСКА ЭМУЛЯТОРА» ----------
+   Пока игра КРУТИТСЯ — мышь с джойстика выключена (триггеры R1/R2 у SNES/SEGA — игровые
+   кнопки, курсор с кликами мешает и может случайно нажать кнопки вокруг экрана);
+   игра остановлена/экран закрыт — мышь снова включена (списки, кнопки, сохранения). */
+  useEffect(() => {
+    padMouseSetOff(!!running);
+    return () => padMouseSetOff(false); // ушли с экрана — мышь снова включена
+  }, [running]);
+  const padMouseOff = usePadMouseOff();
 
   // Сброс: перезапуск ядра с начала (без состояния).
   const resetEmu = () => {
@@ -1140,16 +1171,37 @@ export default function EmulatorLauncher() {
                       и искать нужное больше не нужно */}
                   {romSaves.length > 0 && (
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <PxBtn
-                        color="gold"
-                        onClick={() => quickLoadFire()}
-                        title={selSave ? `Загрузить «${selSave.name}» прямо сейчас (слот ${selSave.slot})` : 'Сначала кликните по сохранению в списке — оно выделится обводкой'}
-                      >
-                        ⚡ Быстрая загрузка{selSave ? `: ${selSave.name}` : ''}{quickKeyLbl ? ` · ${quickKeyLbl}` : ''}
-                      </PxBtn>
-                      <span className="tick-label text-faint">выделяйте сохранение кликом — обведённое грузится кнопкой и клавишей</span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <PxBtn
+                          color="gold"
+                          onClick={() => quickLoadFire()}
+                          title={selSave ? `Загрузить «${selSave.name}» прямо сейчас (слот ${selSave.slot})` : 'Сначала кликните по сохранению в списке — оно выделится обводкой'}
+                        >
+                          ⚡ Быстрая загрузка{selSave ? `: ${selSave.name}` : ''}{quickKeyLbl ? ` · ${quickKeyLbl}` : ''}
+                        </PxBtn>
+                        {/* v0.171: быстрая сохранение в выделенное — парная кнопка (клавиша/джой — в «Управлении», F5/R3) */}
+                        <PxBtn
+                          color="teal"
+                          onClick={() => quickSaveFire()}
+                          title={selSave ? `Перезаписать «${selSave.name}» (слот ${selSave.slot}) ТЕКУЩИМ состоянием игры` : 'Сначала кликните по сохранению в списке — оно перезапишется'}
+                        >
+                          💾 Быстрое сохранение{selSave ? `: ${selSave.name}` : ''}
+                        </PxBtn>
+                      </div>
+                      <span className="tick-label text-faint">выделяйте сохранение кликом — обведённое грузится/перезаписывается кнопкой и клавишей</span>
                     </div>
                   )}
+                  {/* v0.171: подсказка мыши с джойстика и её тумблера (подписи — из настроек) */}
+                  {pads.length > 0 && (() => {
+                    const k = (prefs.padToggleKey ?? 'f7').toLowerCase();
+                    const kl = /^f\d{1,2}$/.test(k) ? k.toUpperCase() : k;
+                    const p = prefs.padTogglePad;
+                    const pl = typeof p === 'number' && p >= 0 ? (padBtnName(p) || `ДЖОЙ ${p}`) : '';
+                    const lbl = [kl, pl].filter(Boolean).join('/') || 'F7/L3';
+                    return padMouseOff
+                      ? <div className="font-pixel text-[9px] text-gold leading-snug">🎮 Мышь с джойстика ВЫКЛЮЧЕНА (идёт игра) — {lbl} включит обратно</div>
+                      : <div className="font-pixel text-[9px] text-gold leading-snug">{PAD_MOUSE_HINT} · {lbl} — мышь вкл/выкл</div>;
+                  })()}
                   {/* v0.62: стереть ВСЕ сохранения этого рома одной кнопкой
                       (режим удаления из Опций: подтверждение/удержание; Ctrl+Z вернёт всё) */}
                   {romSaves.length > 0 && (

@@ -9,6 +9,8 @@ import { sfx } from '../sound';
 import { downloadHostBat } from '../host/hostPackage';
 import { MUSIC_AUTHOR_URL, MUSIC_AUTHOR_YT, MUSIC_TITLES, probePlaylist, useMusic } from '../music';
 import { CORES_YANDEX_URL } from '../yandexCores'; // v0.160: резерв ядер с Яндекс Диска автора
+import KeyBinder from '../KeyBinder'; // v0.171: настройка управления ВСЕХ платформ прямо в Опциях
+import type { PadFamily } from '../input';
 
 const DEL_MODES: { key: 'instant' | 'confirm' | 'hold'; label: string; hint: string }[] = [
   { key: 'instant', label: 'Сразу', hint: 'клик по крестику удаляет сразу, как раньше' },
@@ -23,6 +25,36 @@ const SPOILER_MODES: { key: SpoilerMode; label: string; hint: string }[] = [
   { key: 'collapsed', label: 'Всегда свёрнуты', hint: 'при входе в редактор всё свёрнуто — дальше разворачивайте что нужно' },
   { key: 'expanded', label: 'Всегда развёрнуты', hint: 'при входе в редактор всё развёрнуто — дальше можно сворачивать' },
 ];
+
+/* v0.171: вкладки платформ в Опциях — «возможность изменения кнопок управления ВСЕХ платформ» */
+const FAM_TABS: { fam: PadFamily; label: string }[] = [
+  { fam: 'nes', label: 'NES · Game Boy' },
+  { fam: 'sega', label: 'SEGA Genesis' },
+  { fam: 'snes', label: 'SNES' },
+  { fam: 'gba', label: 'GBA' },
+  { fam: 'pce', label: 'PC Engine' },
+  { fam: 'a26', label: 'Atari 2600' },
+];
+
+function KeyBinderAllFamilies() {
+  const [fam, setFam] = useState<PadFamily>('nes');
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        {FAM_TABS.map((t) => (
+          <button
+            key={t.fam}
+            onClick={() => { setFam(t.fam); sfx.hover(); }}
+            className={`font-pixel text-[9px] px-2.5 py-1.5 border-2 transition-colors cursor-pointer ${fam === t.fam ? 'border-magma text-magma bg-magma/10' : 'border-edge2 text-dim hover:text-paper hover:border-edge2'}`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <KeyBinder mode={fam} />
+    </div>
+  );
+}
 
 export default function OptionsScreen() {
   const { options, setOptions, setScreen, toast, refresh, roms } = useApp();
@@ -607,14 +639,17 @@ export default function OptionsScreen() {
             </div>
           </Panel>
 
-          <Panel title="Управление эмулятором" icon={Ic.chip(16)} accent="var(--color-magma)" className="slide-up md:col-span-2">
+          <Panel title="Управление (все платформы)" icon={Ic.chip(16)} accent="var(--color-magma)" className="slide-up md:col-span-2">
             <div className="p-4">
-              <p className="text-[12px] text-dim leading-relaxed">
-                Раскладка клавиш и геймпад настраиваются <span className="text-paper">рядом с эмулятором</span> —
-                кнопка <span className="text-gold font-display uppercase">«Управление»</span> в «Запуске эмулятора»
-                и во время выполнения задания (откроется встроенное меню настроек). Настройки сохраняются в браузере
-                и действуют для NES и SEGA. Геймпады (PS5 / Xbox / PC) поддерживаются автоматически.
+              <p className="text-[12px] text-dim leading-relaxed mb-3">
+                Клавиши и кнопки джойстика для КАЖДОЙ консоли — выберите платформу и нажмите на кнопку,
+                которую хотите переназначить. Настройки живут в браузере, применяются сразу и действуют
+                во всех играх и заданиях. Ниже — и глобальные кнопки поля (инвентарь, подъём, печь,
+                быстрое сохранение…), и фиксированная мышь с джойстика с ползунком чувствительности.
+                Геймпады (PS5 / Xbox / PC) поддерживаются автоматически.
               </p>
+              {/* v0.171: табы платформ + живой редактор раскладок прямо в Опциях */}
+              <KeyBinderAllFamilies />
             </div>
           </Panel>
 

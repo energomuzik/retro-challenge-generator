@@ -15,6 +15,9 @@ import KeyBinder from '../KeyBinder';
 import {
   loadEmuPrefs, PREFS_EVENT, codeToEjsKey, listGamepads, collectPadButtons,
   INVBACK_KEY_DEFAULT, INVBACK_PAD_DEFAULT,
+  FURN_KEY_DEFAULT, FURN_PAD_DEFAULT,
+  ZOOMIN_KEY_DEFAULT, ZOOMIN_PAD_DEFAULT, ZOOMOUT_KEY_DEFAULT, ZOOMOUT_PAD_DEFAULT,
+  padBtnName, padBtnLabel,
   PAD_ACTIONS, SEGA_ACTIONS,
   NES_TO_RETRO, SEGA_TO_RETRO,
   FAMILY_ACTIONS, FAMILY_KEYS_FIELD, FAMILY_KEY_KIND, FAMILY_RETRO, FAMILY_HINT,
@@ -43,8 +46,10 @@ import { BogachPanel } from './BogachPanel'; // v0.109 БОГАЧ: панель 
 import { FrendyInvGrid, FrendyFurnaceModal, FrendyConsoleModal, ChipArt } from './FrendyInv'; // v0.141 FRENDY: DIABLO-инвентарь (сетка 10×6, печь + рюкзак); v0.142: + пиксельная микросхема (ChipArt)
 import { hasDice } from '../bogach'; // v0.109: проверка пакостей/радостей «только для кубиков»
 import { DONATE_DICE_ONLY } from '../types';
-import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
-import { usePadMouse, PAD_MOUSE_HINT } from '../padMouse'; // v0.170: мышь с джойстика в окнах (правый стик + R1/R2)
+import { useQuickLoad, quickKeyLabelOf, useQuickSave, quickSaveKeyLabelOf } from '../useQuickLoad';
+import {
+  PAD_MOUSE_HINT, padMouseSetOff, padMouseSetClicksOff, padMouseIsOff, usePadMouseOff,
+} from '../padMouse'; // v0.170/171: мышь с джойстика (правый стик + R1/R2) — глобальная (App.tsx), здесь авто-режим окон
 import { startLoop, stopLoop, syncLoops, stopGroup, killGroup, stopOneShot, playOneShot } from '../loopsnd';
 
 /* единичные векторы направлений фишки — для расчёта хода чужой фишки со СКОРОСТЬЮ КАРТЫ */
@@ -1049,22 +1054,28 @@ export default function GameScreen() {
      удержание пропускает; см. CUT_ESC_HOLD_MS) */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() === 'e' || e.key.toLowerCase() === 'у') {
-        /* v0.155: открыто окно МОЕГО задания (играю картридж — включил сам или Френди заставил):
-           E ничего НЕ открывает. Фокус после клика «Старт игры» может остаться на родительской
-           странице — и E открывала приставку/печь/разговоры ПОД окном задания. ESC ниже не тронут. */
-        if (taskWinRef.current) return;
-        const cur = nearNpc;
-        if (cur && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); openDialog(cur.npc.id); } // v0.56: в кат-сцене разговоров нет
-        /* v0.123 FRENDY: E у ПЕЧИ — окно сжигания микросхемы */
-        else if (isFrendy && nearFurnace && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setFurnOpen(true); }
-        /* v0.146: E у ПРИСТАВКИ — окно «приставка + рюкзак» (заказчик вернул механику 0.144:
-           «надо не пересекать её, а нажать на E или действие на джое или тыкнуть на приставку»);
-           проход по ячейке больше ничего не открывает */
-        else if (isFrendy && nearConsole && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setConsoleOpen(true); }
-        /* v0.132 ЭПИЛОГ: E у АЛЬДЕРА — начать разговор в стиле визуальной новеллы (все видят) */
-        else if (epiNearAlder && !cutActiveRef.current) { e.preventDefault(); sfx.click(); dispatch({ t: 'epiTalk', id: me }); }
-      }
+      /* v0.171: печь/приставка открываются СВОЕЙ клавишей (по умолчанию E — и русская У);
+         разговор с NPC/Альдером остаётся на E. Если «Открыть печь/приставку» переназначили —
+         работает новая клавиша, E у печи больше ничего не открывает. */
+      const prefsK = loadEmuPrefs();
+      const fk = (prefsK.furnKey ?? FURN_KEY_DEFAULT).toLowerCase();
+      const fkHit = fk ? (e.key.toLowerCase() === fk || (fk === 'e' && e.key.toLowerCase() === 'у')) : false;
+      const isE = e.key.toLowerCase() === 'e' || e.key.toLowerCase() === 'у';
+      if (!isE && !fkHit) return;
+      /* v0.155: открыто окно МОЕГО задания (играю картридж — включил сам или Френди заставил):
+         E ничего НЕ открывает. Фокус после клика «Старт игры» может остаться на родительской
+         странице — и E открывала приставку/печь/разговоры ПОД окном задания. ESC ниже не тронут. */
+      if (taskWinRef.current) return;
+      const cur = nearNpc;
+      if (isE && cur && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); openDialog(cur.npc.id); } // v0.56: в кат-сцене разговоров нет
+      /* v0.123 FRENDY: E у ПЕЧИ — окно сжигания микросхемы (v0.171: своя клавиша) */
+      else if (fkHit && isFrendy && nearFurnace && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setFurnOpen(true); }
+      /* v0.146: E у ПРИСТАВКИ — окно «приставка + рюкзак» (заказчик вернул механику 0.144:
+         «надо не пересекать её, а нажать на E или действие на джое или тыкнуть на приставку»);
+         проход по ячейке больше ничего не открывает. v0.171: своя клавиша. */
+      else if (fkHit && isFrendy && nearConsole && !dlgNpcId && !cutActiveRef.current) { e.preventDefault(); sfx.click(); setConsoleOpen(true); }
+      /* v0.132 ЭПИЛОГ: E у АЛЬДЕРА — начать разговор в стиле визуальной новеллы (все видят) */
+      else if (isE && epiNearAlder && !cutActiveRef.current) { e.preventDefault(); sfx.click(); dispatch({ t: 'epiTalk', id: me }); }
       if (e.key === 'Escape' && dlgNpcId) closeDialog();
       /* v0.56: ESC пропускает кат-сцену (если автор разрешил пропуск);
          v0.62: только ПРОДОЛЖИТЕЛЬНОЕ удержание — полоска в подсказке */
@@ -1091,59 +1102,51 @@ export default function GameScreen() {
      (или поражения) приставка снова случайно открывается — это даст дополнительное действие
      игроку, с которым он может замешкаться»). Авто-окно при входе на ячейку (v0.145) и движковое
      включение задания проходом убраны: задание стартует ТОЛЬКО кнопкой POWER ON в окне. */
-  /* v0.133 FRENDY: ПЕЧЬ С ДЖОЙСТИКА — лицевые кнопки (W3C 0/1/2/3 = A/B/X/Y всех падов)
-     и назначенные под A/B в раскладках консолей открывают окно печи рядом, как клавиша E.
+  /* v0.133→v0.171 FRENDY: ПЕЧЬ С ДЖОЙСТИКА — СВОЯ КНОПКА «Открыть печь/приставку»
+     (по умолчанию крест/A — W3C 0, клавиша E; переназначается в «Управлении»).
+     Раньше окно открывали ЛЮБЫЕ лицевые кнопки — теперь одна: лицевые раздали по делам
+     (квадрат □ — поднять предмет, круг — «назад», треугольник — инвентарь).
      Край-триггер: открывает только НОВОЕ нажатие — удержание и кнопка, зажатая ДО
-     подхода к печи, окно не хлопают.
-     v0.135: сбор кнопок вынесен в общий collectPadButtons (input.ts) — тот же набор
-     работает у печи, у Альдера и при листании реплик. */
-  const furnPadPrevRef = useRef<Set<number>>(new Set());
+     подхода к печи, окно не хлопают. Кнопка читается НАПРЯМУЮ с пада (не через
+     collectPadButtons — её можно назначить и на непривичную кнопку, хоть на L3). */
+  const padBtnDown = (idx: number): boolean => {
+    for (const gp of listGamepads()) { const b = gp.buttons[idx]; if (b && (b.pressed || b.value > 0.5)) return true; }
+    return false;
+  };
+  const furnPadPrevRef = useRef(false);
   useEffect(() => {
     if (!isFrendy || !nearFurnace || furnOpen || s?.phase !== 'playing') return;
-    const init = new Set<number>();
-    collectPadButtons(init);
-    furnPadPrevRef.current = init; // уже зажатое в момент подхода — не открывает
-    const pickPad = loadEmuPrefs().pickupPad ?? PICKUP_PAD_DEFAULT; // v0.147: X/□ у печи занят подъёмом, только если предмет рядом
+    furnPadPrevRef.current = padBtnDown(loadEmuPrefs().furnPad ?? FURN_PAD_DEFAULT); // зажатое в момент подхода — не открывает
     const iv = window.setInterval(() => {
-      const cur = new Set<number>();
-      collectPadButtons(cur);
-      /* v0.155: открыто окно МОЕГО задания (играю картридж) — лицевые кнопки это ВВОД ИГРЫ:
+      const prefs = loadEmuPrefs();
+      const cur = padBtnDown(prefs.furnPad ?? FURN_PAD_DEFAULT);
+      const pickPad = prefs.pickupPad ?? PICKUP_PAD_DEFAULT; // □ у печи занят подъёмом, только если предмет рядом
+      /* v0.155: открыто окно МОЕГО задания (играю картридж) — кнопки это ВВОД ИГРЫ:
        окно печи в фоне НЕ открываем. База нажатий продолжает обновляться — после победы/
        поражения первое НАСТОЯЩЕЕ нажатие снова откроет печь, а залипшая в игре кнопка — нет. */
       if (taskWinRef.current) { furnPadPrevRef.current = cur; return; }
-      let fresh = false;
-      for (const b of cur) if (!furnPadPrevRef.current.has(b)) { fresh = true; break; }
+      if (cur && !furnPadPrevRef.current && !(nearItemRef.current && padBtnDown(pickPad))) { sfx.click(); setFurnOpen(true); }
       furnPadPrevRef.current = cur;
-      if (fresh && !(nearItemRef.current && cur.has(pickPad))) { sfx.click(); setFurnOpen(true); }
     }, 66);
     return () => window.clearInterval(iv);
   }, [isFrendy, !!nearFurnace, furnOpen, s?.phase]);
-  /* v0.146 FRENDY: ПРИСТАВКА С ДЖОЙСТИКА — лицевые кнопки открывают окно приставки, как клавиша E
-     (край-триггер тот же, что у печи; v0.145 убирал — заказчик вернул). */
-  const consPadPrevRef = useRef<Set<number>>(new Set());
+  /* v0.146→v0.171 FRENDY: ПРИСТАВКА С ДЖОЙСТИКА — та же СВОЯ кнопка «Открыть печь/приставку»
+     (по умолчанию крест/A, клавиша E; край-триггер тот же, что у печи). */
+  const consPadPrevRef = useRef(false);
   useEffect(() => {
     if (!isFrendy || !nearConsole || consoleOpen || s?.phase !== 'playing') return;
-    const init = new Set<number>();
-    collectPadButtons(init);
-    consPadPrevRef.current = init; // уже зажатое в момент подхода — не открывает
-    const pickPad = loadEmuPrefs().pickupPad ?? PICKUP_PAD_DEFAULT; // v0.147: X/□ у приставки занят подъёмом, только если предмет рядом
+    consPadPrevRef.current = padBtnDown(loadEmuPrefs().furnPad ?? FURN_PAD_DEFAULT); // зажатое в момент подхода — не открывает
     const iv = window.setInterval(() => {
-      const cur = new Set<number>();
-      collectPadButtons(cur);
-      /* v0.155: ГЛАВНЫЙ ФИКС «фишка в фоне открывает приставку» (заказчик: «включить приставку,
-       запустить картридж и начать играть с джоя — в фоне фишка открывает приставку»). После
-       POWER ON окно закрывается, фишка ОСТАЁТСЯ у приставки — и край-триггер v0.146 ловил
-       нажатия ЛИЦЕВЫХ КНОПОК В САМОЙ МИНИ-ИГРЕ: каждая считалась «свежим нажатием у приставки»
-       и переоткрывала окно приставки ПОД окном задания (тусклая панель просвечивала в фоне +
-       щёлкал звук). То же — когда Френди сам включил приставку. Теперь пока открыто окно МОЕГО
-       задания (taskWinRef) лицевые кнопки — только ввод ИГРЫ. База нажатий продолжает
-       обновляться: после победы/поражения первое настоящее нажатие снова откроет приставку
-       (как задумано в v0.146), а залипшая в игре кнопка — нет. */
+      const prefs = loadEmuPrefs();
+      const cur = padBtnDown(prefs.furnPad ?? FURN_PAD_DEFAULT);
+      const pickPad = prefs.pickupPad ?? PICKUP_PAD_DEFAULT; // □ у приставки занят подъёмом, только если предмет рядом
+      /* v0.155: ГЛАВНЫЙ ФИКС «фишка в фоне открывает приставку»: пока открыто окно МОЕГО
+       задания (taskWinRef) кнопки — только ввод ИГРЫ. База нажатий продолжает обновляться:
+       после победы/поражения первое настоящее нажатие снова откроет приставку (как задумано
+       в v0.146), а залипшая в игре кнопка — нет. */
       if (taskWinRef.current) { consPadPrevRef.current = cur; return; }
-      let fresh = false;
-      for (const b of cur) if (!consPadPrevRef.current.has(b)) { fresh = true; break; }
+      if (cur && !consPadPrevRef.current && !(nearItemRef.current && padBtnDown(pickPad))) { sfx.click(); setConsoleOpen(true); }
       consPadPrevRef.current = cur;
-      if (fresh && !(nearItemRef.current && cur.has(pickPad))) { sfx.click(); setConsoleOpen(true); }
     }, 66);
     return () => window.clearInterval(iv);
   }, [isFrendy, !!nearConsole, consoleOpen, s?.phase]);
@@ -1439,10 +1442,44 @@ export default function GameScreen() {
     }, 66);
     return () => { window.removeEventListener('keydown', onKey); window.clearInterval(iv); };
   }, [invOpen, furnOpen, consoleOpen, s?.phase]);
-  /* v0.170: ВИРТУАЛЬНАЯ МЫШЬ ДЖОЙСТИКА — пока открыто окно (инвентарь/печь/приставка),
-     правый стик двигает курсор, R2 (RT) — ЛКМ (тащение предметов), R1 (RB) — ПКМ (меню).
-     Раскладка фиксированная — в «Управлении» не переназначается. */
-  usePadMouse(!!(invOpen || furnOpen || consoleOpen));
+  /* ---------- v0.171: МЫШЬ С ДЖОЙСТИКА В ОКНЕ ЗАДАНИЯ — авто-режим + «только курсор» ----------
+     Сама мышь глобальная (App.tsx): правый стик — курсор, R2 (RT) — ЛКМ, R1 (RB) — ПКМ
+     (раскладка фиксированная). Здесь управляется её СОСТОЯНИЕ:
+     • окно задания открыто (VERSUS/QUEST/БОГАЧ/FRENDY/RUBG) и игра КРУТИТСЯ — мышь ВЫКЛ:
+       у SNES/SEGA триггеры R1/R2 — игровые кнопки, курсор с кликами им мешает;
+     • игра на паузе / меню («Старт игры», «Чем платите?») — мышь ВКЛ: «Старт игры»,
+       «Пауза», «Победа» и все кнопки окон нажимаются с джойстика;
+     • окно закрылось (победа/поражение/уйти) — мышь ВКЛ сама (заказчик: «прошел задание
+       или проиграл — закрыл окно задания — управление джоем мышью обратно включалось»);
+     • чистое поле (окна закрыты) — «только курсор»: курсор двигается, клики гасятся —
+       случайное R1/R2 не «кликнет» ячейку и не нажмёт кнопки HUD. */
+  const [taskWinOpenUi, setTaskWinOpenUi] = useState(false);
+  useEffect(() => {
+    const open = (myQJob !== undefined && !!myQTask) || myJob !== undefined || (!!ch && myTurn);
+    setTaskWinOpenUi(open);
+    if (!open) padMouseSetOff(false); // окно задания закрылось — мышь с джойстика снова включена
+  }, [myQJob, !!myQTask, myJob, ch, myTurn]);
+  const emuRunInWin = !!taskWinOpenUi && (
+    (!!ch && myTurn && !!ch.started && ch.status === 'playing' && !ch.paused) ||
+    (!!myQJob && qArmed && !qPaused) ||
+    (!!myJob && rubgJobArmed && !rubgPaused));
+  useEffect(() => { if (taskWinOpenUi) padMouseSetOff(emuRunInWin); }, [taskWinOpenUi, emuRunInWin]);
+  const padMouseOffUi = usePadMouseOff();
+  /* «только курсор» на чистом поле — клики гасятся, пока не открыто ни одно окно/оверлей */
+  useEffect(() => {
+    const bare = s?.phase === 'playing' && !invOpen && !furnOpen && !consoleOpen && !taskWinOpenUi
+      && !peekMap && !controlsOpen && !dlgOpenId && !cutActive && !s.quiz && !s.pendingCard
+      && !s.awaitPost && !s.challenge && !pocketBlockRef.current && !myStealing && !hackBox;
+    padMouseSetClicksOff(!!bare);
+  }, [s?.phase, invOpen, furnOpen, consoleOpen, taskWinOpenUi, peekMap, controlsOpen, dlgOpenId, cutActive, s?.quiz, s?.pendingCard, s?.awaitPost, s?.challenge, !!myStealing, !!hackBox]);
+  /* подпись кнопки-тумблера для подсказок (по умолчанию «F7 / L3») — живая (prefsTick) */
+  const padToggleHint = useMemo(() => {
+    const p = loadEmuPrefs();
+    const k = (p.padToggleKey ?? '').toLowerCase();
+    const kl = /^f\d{1,2}$/.test(k) ? k.toUpperCase() : k.length === 1 ? k.toUpperCase() : k;
+    const pl = typeof p.padTogglePad === 'number' && p.padTogglePad >= 0 ? (padBtnName(p.padTogglePad) || `ДЖОЙ ${p.padTogglePad}`) : '';
+    return [kl, pl].filter(Boolean).join(' / ');
+  }, [prefsTick]);
 
   /* v0.62: отпустили ESC (или окно потеряло фокус) — отсчёт сбрасывается,
      подсказка плавно гаснет; при размонтировании таймер подчищается */
@@ -3458,6 +3495,64 @@ export default function GameScreen() {
   useQuickLoad(quickLoadFire);
   const quickKeyLbl = quickKeyLabelOf(loadEmuPrefs()); // v0.107: подпись клавиши быстрой загрузки на кнопках «Перезапуск»
 
+  /* ---------- v0.171: БЫСТРОЕ СОХРАНЕНИЕ (глобальная кнопка, по умолчанию F5 / R3) ----------
+     В окне задания — ЛОКАЛЬНАЯ точка возврата у этого игрока: «Перезапуск» и F6 вернут
+     в неё (общий сейв задания в базе и чужие окна не задеваются). В «Запуске эмулятора»
+     кнопка перезаписывает ВЫДЕЛЕННОЕ кликом сохранение (см. EmulatorLauncher). */
+  const quickSaveFire = () => {
+    void (async () => {
+      const say = (m: string, kind: 'ok' | 'err') => useApp.getState().toast(m, kind);
+      if (!ejsApiRef.current) { say('Сохранять некуда — эмулятор не запущен', 'err'); return; }
+      const st = await ejsApiRef.current.snapshot();
+      if (!st) { say('Эмулятор ещё не готов — дайте игре запуститься и попробуйте снова', 'err'); return; }
+      if (myQJob && myQTask && qArmed) { setQSaveState(st); sfx.success(); say('⚡ Быстрый сейв записан — «Перезапуск»/F6 теперь вернёт сюда', 'ok'); return; }
+      if (myJob && myRubgTask && rubgJobArmed) { setRSaveState(st); sfx.success(); say('⚡ Быстрый сейв записан — «Перезапуск»/F6 теперь вернёт сюда', 'ok'); return; }
+      if (ch && myTurn && ch.status === 'playing' && ch.started) { setSaveState(st); sfx.success(); say('⚡ Быстрый сейв записан — перезапуск задания вернёт сюда', 'ok'); return; }
+      say('Сохранять некуда — запустите задание (или перезапишите сохранение в «Запуске эмулятора»)', 'err');
+    })();
+  };
+  useQuickSave(quickSaveFire);
+
+  /* ---------- v0.171: ЗУМ КАРТЫ С ДЖОЙСТИКА — L1 приблизить / L2 отдалить (переназначается) ----------
+     Работает в «Карте мира»/«Глянуть карту мира» (общий план) и при осмотре поля со своей
+     фишки — как колесо мыши. Клавиши по умолчанию: «+» приблизить, «-» отдалить.
+     Удержание — зум продолжает шагать (~6 шагов/с), как автоповтор клавиатуры. */
+  const zoomCtxRef = useRef({ world: false, canLook: false });
+  zoomCtxRef.current = { world: viewMode === 'world' || !!peekMap, canLook: canLookAround };
+  const zoomApplyRef = useRef<(f: number) => void>(() => undefined);
+  zoomApplyRef.current = (f: number) => {
+    if (zoomCtxRef.current.world) setWorldZoom((z) => Math.min(4, Math.max(0.3, z * f)));
+    else if (zoomCtxRef.current.canLook) lookZoomRef.current = Math.min(2.5, Math.max(0.5, lookZoomRef.current * f));
+  };
+  useEffect(() => {
+    const held = (gp: Gamepad, idx: number): boolean => { const b = gp.buttons[idx]; return !!b && (b.pressed || b.value > 0.5); };
+    const prev = { in: false, out: false, tin: 0, tout: 0 };
+    const iv = window.setInterval(() => {
+      const prefs = loadEmuPrefs();
+      const gp = listGamepads()[0];
+      if (!gp) { prev.in = false; prev.out = false; return; }
+      const now = performance.now();
+      const inNow = held(gp, prefs.zoomInPad ?? ZOOMIN_PAD_DEFAULT);
+      const outNow = held(gp, prefs.zoomOutPad ?? ZOOMOUT_PAD_DEFAULT);
+      if (inNow && (!prev.in || now - prev.tin > 170)) { zoomApplyRef.current(1.16); prev.tin = now; }
+      if (outNow && (!prev.out || now - prev.tout > 170)) { zoomApplyRef.current(1 / 1.16); prev.tout = now; }
+      prev.in = inNow; prev.out = outNow;
+    }, 50);
+    const onKey = (e: KeyboardEvent) => {
+      const prefs = loadEmuPrefs();
+      const k = (e.key ?? '').toLowerCase();
+      const inK = (prefs.zoomInKey ?? ZOOMIN_KEY_DEFAULT).toLowerCase();
+      const outK = (prefs.zoomOutKey ?? ZOOMOUT_KEY_DEFAULT).toLowerCase();
+      if (!k || (k !== inK && k !== outK)) return;
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+      e.preventDefault();
+      zoomApplyRef.current(k === inK ? 1.16 : 1 / 1.16);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => { window.clearInterval(iv); window.removeEventListener('keydown', onKey); };
+  }, []);
+
   /* ---------- v0.108: ТАЙМЕР ЗАДАНИЯ (пакость редактора «Таймер М:СС») ----------
      Лимит времени на выполнение ставит АВТОР в редакторе заданий (в донате и при замене
      задания таймер недоступен). Тикает локально у каждого игрока и только пока эмулятор
@@ -5032,6 +5127,14 @@ export default function GameScreen() {
             {timerBadge}
             {taskSizeBtns}
           </div>
+          {/* v0.171: мышь с джойстика в окне задания — состояние и кнопка-тумблер (у своего задания) */}
+          {myTurn && listGamepads().length > 0 && (
+            <div className="font-pixel text-[9px] text-gold mb-1.5 leading-snug">
+              {padMouseOffUi
+                ? <>🎮 Мышь с джойстика ВЫКЛЮЧЕНА — <span className="text-paper">{padToggleHint}</span> включит обратно</>
+                : <>{PAD_MOUSE_HINT} · <span className="text-paper">{padToggleHint}</span> — выключить мышь (если триггеры заняты игрой)</>}
+            </div>
+          )}
           <div className="grid md:grid-cols-[220px_1fr] gap-4">
             <div className="space-y-3">
               <img
@@ -5691,6 +5794,14 @@ export default function GameScreen() {
                     {taskSizeBtns}
                     <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myQJob.cellIdx + 1} · {isBogach ? 'играет ВСЯ компания — гонка!' : 'играешь ТОЛЬКО ты'}</span>
                   </div>
+                  {/* v0.171: мышь с джойстика в окне задания — состояние и кнопка-тумблер */}
+                  {listGamepads().length > 0 && (
+                    <div className="font-pixel text-[9px] text-gold mt-1.5 leading-snug">
+                      {padMouseOffUi
+                        ? <>🎮 Мышь с джойстика ВЫКЛЮЧЕНА — <span className="text-paper">{padToggleHint}</span> включит обратно</>
+                        : <>{PAD_MOUSE_HINT} · <span className="text-paper">{padToggleHint}</span> — выключить мышь (если триггеры заняты игрой)</>}
+                    </div>
+                  )}
                   <div className="grid md:grid-cols-[220px_1fr] gap-4 mt-2">
                     <div className="space-y-3 min-w-0">
                       <img
@@ -5883,6 +5994,14 @@ export default function GameScreen() {
                   {taskSizeBtns}
                   <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myJob.cellIdx + 1} · играешь ТОЛЬКО ты</span>
                 </div>
+                {/* v0.171: мышь с джойстика в окне задания — состояние и кнопка-тумблер */}
+                {listGamepads().length > 0 && (
+                  <div className="font-pixel text-[9px] text-gold mt-1.5 leading-snug">
+                    {padMouseOffUi
+                      ? <>🎮 Мышь с джойстика ВЫКЛЮЧЕНА — <span className="text-paper">{padToggleHint}</span> включит обратно</>
+                      : <>{PAD_MOUSE_HINT} · <span className="text-paper">{padToggleHint}</span> — выключить мышь (если триггеры заняты игрой)</>}
+                  </div>
+                )}
                 <div className="grid md:grid-cols-[220px_1fr] gap-4 mt-2">
                   {/* левая колонка: картинка, задание, кнопки */}
                   <div className="space-y-3 min-w-0">

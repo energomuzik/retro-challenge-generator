@@ -54,6 +54,33 @@ export interface EmuPrefs {
      оно фиксированное (padMouse.ts), в «Управлении» не переназначается. */
   invBackKey?: string;
   invBackPad?: number;
+  /* v0.171: ГЛОБАЛЬНАЯ кнопка «БЫСТРОЕ СОХРАНЕНИЕ» (парная к «Быстрой загрузке» F6):
+     в «Запуске эмулятора» — перезаписывает ВЫДЕЛЕННОЕ кликом сохранение текущим
+     состоянием; в окне задания — ставит локальную точку возврата для «Перезапуска»/F6.
+     По умолчанию F5 / кнопка 11 (R3 — клик правым стиком, у консолей не занята). */
+  quickSaveKey?: string;
+  quickSavePad?: number;
+  /* v0.171: ГЛОБАЛЬНАЯ кнопка «ОТКРЫТЬ ПЕЧЬ / ПРИСТАВКУ» (режим FRENDY): раньше печь и
+     приставку открывали ЛЮБЫЕ лицевые кнопки — теперь СВОЯ кнопка (по умолчанию
+     крест/A — W3C 0, клавиша E), чтобы лицевые не конфликтовали с подъёмом (□),
+     «назад» (круг) и инвентарём (треугольник). */
+  furnKey?: string;
+  furnPad?: number;
+  /* v0.171: ГЛОБАЛЬНЫЙ ТУМБЛЕР «МЫШЬ С ДЖОЙСТИКА ВКЛ/ВЫКЛ» — на случай, когда триггеры
+     R1/R2 заняты игрой (SNES/SEGA): нажал — курсор и клики с джойстика выключились,
+     окно задания закрылось — мышь включилась сама. По умолчанию F7 / кнопка 10
+     (L3 — клик левым стиком, у консолей не занята). */
+  padToggleKey?: string;
+  padTogglePad?: number;
+  /* v0.171: ЗУМ КАРТЫ (карта мира / заглядывание / осмотр в игре, редактор карт):
+     приблизить — по умолчанию L1 (W3C 4) / «+», отдалить — L2 (W3C 6) / «-». */
+  zoomInKey?: string;
+  zoomInPad?: number;
+  zoomOutKey?: string;
+  zoomOutPad?: number;
+  /* v0.171: ЧУВСТВИТЕЛЬНОСТЬ МЫШИ С ДЖОЙСТИКА — множитель скорости курсора
+     (1 = как было; 0.3–2.5). Меняется ползунком в «Управлении». */
+  padMouseSpeed?: number;
 }
 
 /* ---------- SEGA Genesis (Megadrive): 6 кнопок + Start, без Select ---------- */
@@ -394,6 +421,38 @@ export const PICKUP_PAD_DEFAULT = 2;
    на Xbox — RB/RT (R2/RT — правый триггер, R1/RB — правый бампер). */
 export const INVBACK_KEY_DEFAULT = 'escape';
 export const INVBACK_PAD_DEFAULT = 1;
+/* v0.171: быстрая сохранение (F5 / R3), печь/приставка (E / крест-A), тумблер мыши
+   с джойстика (F7 / L3), зум карты (L1 «+» / L2 «-») */
+export const QUICKSAVE_KEY_DEFAULT = 'f5';
+export const QUICKSAVE_PAD_DEFAULT = 11; // R3 — клик правым стиком: у всех консолей свободен
+export const FURN_KEY_DEFAULT = 'e';
+export const FURN_PAD_DEFAULT = 0; // крест (PS) / A (Xbox) — как просил заказчик
+export const PADTOGGLE_KEY_DEFAULT = 'f7';
+export const PADTOGGLE_PAD_DEFAULT = 10; // L3 — клик левым стиком: у всех консолей свободен
+export const ZOOMIN_KEY_DEFAULT = '+';
+export const ZOOMIN_PAD_DEFAULT = 4; // L1 — приблизить
+export const ZOOMOUT_KEY_DEFAULT = '-';
+export const ZOOMOUT_PAD_DEFAULT = 6; // L2 — отдалить
+export const PADMOUSE_SPEED_DEFAULT = 1;
+
+/* v0.171: имена кнопок СТАНДАРТНОГО пада (W3C) — «на xbox-джое постоянно забываю,
+   как называются R1 и R2»: подписи везде — PS-имя + Xbox-эквивалент в скобках. */
+const W3C_BTN_NAMES: Record<number, string> = {
+  0: 'A (крест)', 1: 'B (круг)', 2: 'X (квадрат)', 3: 'Y (треугольник)',
+  4: 'L1 (LB)', 5: 'R1 (RB)', 6: 'L2 (LT)', 7: 'R2 (RT)',
+  8: 'Select (Share)', 9: 'Start (Options)', 10: 'L3', 11: 'R3',
+  12: '↑', 13: '↓', 14: '←', 15: '→', 16: 'PS (гайд)', 17: 'Тачпад',
+};
+export function padBtnName(idx: number | undefined | null): string {
+  return idx !== undefined && idx !== null && W3C_BTN_NAMES[idx] ? W3C_BTN_NAMES[idx] : '';
+}
+/** «ДЖОЙ 4 · L1 (LB)» — подпись кнопки пада с человеческим именем. */
+export function padBtnLabel(idx: number | undefined | null, def?: number): string {
+  const v = typeof idx === 'number' && idx >= 0 ? idx : def;
+  if (v === undefined) return 'ДЖОЙ —';
+  const nm = padBtnName(v);
+  return `ДЖОЙ ${v}${nm ? ` · ${nm}` : ''}${idx === undefined && def !== undefined ? ' (по умолч.)' : ''}`;
+}
 
 /* Самовосстановление раскладки: ОДИН физический индекс = ОДНО действие.
    Если в сохранённых настройках несколько действий висят на одной кнопке
@@ -430,6 +489,17 @@ export function loadEmuPrefs(): EmuPrefs {
     pickupPad: PICKUP_PAD_DEFAULT,
     invBackKey: INVBACK_KEY_DEFAULT, // v0.170: Esc — выход из инвентаря/печи/приставки
     invBackPad: INVBACK_PAD_DEFAULT, // v0.170: B/круг — «назад» на джойстике
+    quickSaveKey: QUICKSAVE_KEY_DEFAULT, // v0.171: F5 — быстрое сохранение (парная к F6)
+    quickSavePad: QUICKSAVE_PAD_DEFAULT, // v0.171: R3
+    furnKey: FURN_KEY_DEFAULT, // v0.171: E — открыть печь/приставку (FRENDY)
+    furnPad: FURN_PAD_DEFAULT, // v0.171: крест/A
+    padToggleKey: PADTOGGLE_KEY_DEFAULT, // v0.171: F7 — мышь с джойстика вкл/выкл
+    padTogglePad: PADTOGGLE_PAD_DEFAULT, // v0.171: L3
+    zoomInKey: ZOOMIN_KEY_DEFAULT, // v0.171: «+» — приблизить карту
+    zoomInPad: ZOOMIN_PAD_DEFAULT, // v0.171: L1
+    zoomOutKey: ZOOMOUT_KEY_DEFAULT, // v0.171: «-» — отдалить карту
+    zoomOutPad: ZOOMOUT_PAD_DEFAULT, // v0.171: L2
+    padMouseSpeed: PADMOUSE_SPEED_DEFAULT, // v0.171: чувствительность мыши стиком
   };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
@@ -458,6 +528,17 @@ export function loadEmuPrefs(): EmuPrefs {
       pickupPad: typeof p.pickupPad === 'number' && p.pickupPad >= 0 ? p.pickupPad : PICKUP_PAD_DEFAULT,
       invBackKey: typeof p.invBackKey === 'string' && p.invBackKey ? p.invBackKey.toLowerCase() : INVBACK_KEY_DEFAULT,
       invBackPad: typeof p.invBackPad === 'number' && p.invBackPad >= 0 ? p.invBackPad : INVBACK_PAD_DEFAULT,
+      quickSaveKey: typeof p.quickSaveKey === 'string' && p.quickSaveKey ? p.quickSaveKey.toLowerCase() : QUICKSAVE_KEY_DEFAULT,
+      quickSavePad: typeof p.quickSavePad === 'number' && p.quickSavePad >= 0 ? p.quickSavePad : QUICKSAVE_PAD_DEFAULT,
+      furnKey: typeof p.furnKey === 'string' && p.furnKey ? p.furnKey.toLowerCase() : FURN_KEY_DEFAULT,
+      furnPad: typeof p.furnPad === 'number' && p.furnPad >= 0 ? p.furnPad : FURN_PAD_DEFAULT,
+      padToggleKey: typeof p.padToggleKey === 'string' && p.padToggleKey ? p.padToggleKey.toLowerCase() : PADTOGGLE_KEY_DEFAULT,
+      padTogglePad: typeof p.padTogglePad === 'number' && p.padTogglePad >= 0 ? p.padTogglePad : PADTOGGLE_PAD_DEFAULT,
+      zoomInKey: typeof p.zoomInKey === 'string' && p.zoomInKey ? p.zoomInKey.toLowerCase() : ZOOMIN_KEY_DEFAULT,
+      zoomInPad: typeof p.zoomInPad === 'number' && p.zoomInPad >= 0 ? p.zoomInPad : ZOOMIN_PAD_DEFAULT,
+      zoomOutKey: typeof p.zoomOutKey === 'string' && p.zoomOutKey ? p.zoomOutKey.toLowerCase() : ZOOMOUT_KEY_DEFAULT,
+      zoomOutPad: typeof p.zoomOutPad === 'number' && p.zoomOutPad >= 0 ? p.zoomOutPad : ZOOMOUT_PAD_DEFAULT,
+      padMouseSpeed: typeof p.padMouseSpeed === 'number' && p.padMouseSpeed >= 0.3 && p.padMouseSpeed <= 2.5 ? p.padMouseSpeed : PADMOUSE_SPEED_DEFAULT,
     };
   } catch {
     return base;

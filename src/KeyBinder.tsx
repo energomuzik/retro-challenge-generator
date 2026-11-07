@@ -7,27 +7,52 @@ import {
   DEFAULT_PCE_KEYS, DEFAULT_PCE_GPAD, DEFAULT_A26_KEYS, DEFAULT_A26_GPAD,
   INV_KEY_DEFAULT, INV_PAD_DEFAULT, PICKUP_KEY_DEFAULT, PICKUP_PAD_DEFAULT,
   INVBACK_KEY_DEFAULT, INVBACK_PAD_DEFAULT,
+  QUICKSAVE_KEY_DEFAULT, QUICKSAVE_PAD_DEFAULT,
+  FURN_KEY_DEFAULT, FURN_PAD_DEFAULT,
+  PADTOGGLE_KEY_DEFAULT, PADTOGGLE_PAD_DEFAULT,
+  ZOOMIN_KEY_DEFAULT, ZOOMIN_PAD_DEFAULT, ZOOMOUT_KEY_DEFAULT, ZOOMOUT_PAD_DEFAULT,
+  PADMOUSE_SPEED_DEFAULT, padBtnName, padBtnLabel,
   type EmuPrefs, type PadFamily,
 } from './input';
+import { padMouseSetUiLock, PAD_MOUSE_HINT } from './padMouse';
 import { sfx } from './sound';
 
 type Capture = { kind: 'key' | 'gpad'; action: string } | null;
 
 /* v0.141: глобальные кнопки на поле (вне раскладок консолей) — список захвата;
-   v0.170: + «выход из окна / назад» (инвентарь/печь/приставка) */
-const GLOBAL_ACTIONS = ['quickLoad', 'invOpen', 'itemPickup', 'invBack'] as const;
+   v0.170: + «выход из окна / назад» (инвентарь/печь/приставка);
+   v0.171: + быстрое сохранение, открыть печь/приставку, тумблер мыши с джойстика, зум карты */
+const GLOBAL_ACTIONS = ['quickLoad', 'quickSave', 'invOpen', 'itemPickup', 'furnOpen', 'invBack', 'padToggle', 'zoomIn', 'zoomOut'] as const;
 type GlobalAction = (typeof GLOBAL_ACTIONS)[number];
+const GLOBAL_FIELDS: Record<GlobalAction, string> = {
+  quickLoad: 'quickKey', quickSave: 'quickSaveKey', invOpen: 'invKey', itemPickup: 'pickupKey',
+  furnOpen: 'furnKey', invBack: 'invBackKey', padToggle: 'padToggleKey', zoomIn: 'zoomInKey', zoomOut: 'zoomOutKey',
+};
+const GLOBAL_PAD_FIELDS: Record<GlobalAction, string> = {
+  quickLoad: 'quickPad', quickSave: 'quickSavePad', invOpen: 'invPad', itemPickup: 'pickupPad',
+  furnOpen: 'furnPad', invBack: 'invBackPad', padToggle: 'padTogglePad', zoomIn: 'zoomInPad', zoomOut: 'zoomOutPad',
+};
 const GLOBAL_TITLES: Record<GlobalAction, string> = {
   quickLoad: '⚡ Быстрая загрузка · одна на все консоли',
+  quickSave: '💾 Быстрое сохранение · одна на все консоли',
   invOpen: '🎒 Открыть/закрыть ИНВЕНТАРЬ · на поле и в окне печи',
   itemPickup: '✋ ПОДНЯТЬ ПРЕДМЕТ с земли · режим FRENDY',
+  furnOpen: '🔥 ОТКРЫТЬ ПЕЧЬ / ПРИСТАВКУ · режим FRENDY',
   invBack: '🚪 ВЫХОД ИЗ ОКНА / НАЗАД · инвентарь, печь, приставка',
+  padToggle: '🖱 МЫШЬ С ДЖОЙСТИКА вкл/выкл · для игр с триггерами',
+  zoomIn: '🔍 ПРИБЛИЗИТЬ КАРТУ · L1 по умолчанию',
+  zoomOut: '🔍 ОТДАЛИТЬ КАРТУ · L2 по умолчанию',
 };
 const GLOBAL_DESCS: Record<GlobalAction, string> = {
-  quickLoad: 'В «Запуске эмулятора» — мгновенно грузит ВЫДЕЛЕННОЕ кликом сохранение; во время задания — перезапускает задание (в VERSUS — за 1 бронзу, как кнопка «Перезапуск»). Работает и когда фокус у эмулятора.',
+  quickLoad: 'В «Запуске эмулятора» — мгновенно грузит ВЫДЕЛЕННОЕ кликом сохранение; во время задания — перезапускает задание (в VERSUS — за 1 бронзу, как кнопка «Перезапуск»). Работает и когда фокус у эмулятора. По умолчанию F6.',
+  quickSave: 'Парная к быстрой загрузке: в «Запуске эмулятора» — перезаписывает ВЫДЕЛЕННОЕ кликом сохранение текущим состоянием игры; в окне задания — ставит СВОЮ точку возврата: «Перезапуск» и F6 вернут именно сюда (чужие игроки и общий сейв задания не задеваются). По умолчанию F5 / R3 (клик правым стиком).',
   invOpen: 'Открывает и закрывает ИНВЕНТАРЬ на поле игры. В FRENDY — рюкзак-сетка в стиле Diablo (перетаскивайте предметы, ПКМ — меню). Закрывает и окно ПЕЧИ. По умолчанию Tab / кнопка 3 (Y / треугольник).',
   itemPickup: 'Поднимает предмет, на котором стоит фишка (режим FRENDY): микросхемы, картриджи, аптечки, кофе. Нет места в рюкзаке — предмет не поднять! Работает и рядом с печью/приставкой (с v0.147). По умолчанию F / кнопка 2 (X / квадрат).',
-  invBack: 'Закрывает открытые окна на поле: ИНВЕНТАРЬ, окно ПЕЧИ, окно ПРИСТАВКИ — «назад», как на консолях. По умолчанию Esc / кнопка 1 (B / круг). Управление мышью с джойстика в этих окнах ФИКСИРОВАНО (правый стик — курсор, R2/RT — ЛКМ, R1/RB — ПКМ) и в «Управлении» не переназначается.',
+  furnOpen: 'Открывает окно ПЕЧИ или ПРИСТАВКИ, когда фишка рядом с ними (режим FRENDY). По умолчанию E / крест (A на Xbox) — как просили: «поднять — квадрат, а печь/приставку — крестик». Раньше открывали любые лицевые кнопки — теперь одна, чтобы лицевые не спорили между собой.',
+  invBack: 'Закрывает открытые окна на поле: ИНВЕНТАРЬ, окно ПЕЧИ, окно ПРИСТАВКИ — «назад», как на консолях. По умолчанию Esc / кнопка 1 (B / круг).',
+  padToggle: 'Выключает/включает мышь с джойстика (правый стик + R2/R1). Нужна, когда триггеры заняты игрой (у SNES плечи R/L, у SEGA — Z/Y): нажали — курсор с кликами выключился, играете спокойно; окно задания закрыли (победа/поражение/«Уйти») — мышь включилась САМА. По умолчанию F7 / L3 (клик левым стиком).',
+  zoomIn: 'Приближает карту: «Карта мира», «Глянуть карту мира» и осмотр поля со своей фишки (как колесо мыши). Также работает в редакторе карт. По умолчанию L1 / «+».',
+  zoomOut: 'Отдаляет карту: «Карта мира», «Глянуть карту мира» и осмотр поля со своей фишки. Также работает в редакторе карт. По умолчанию L2 / «-».',
 };
 
 const MODES: PadFamily[] = ['nes', 'sega', 'snes', 'gba', 'pce', 'a26'];
@@ -99,16 +124,18 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
 
   /* захват клавиши: NES — e.code; остальные — e.key (нижний регистр, как читает ядро).
      v0.107: action 'quickLoad' — глобальная клавиша «Быстрой загрузки» (e.key, вне семейств).
-     v0.141: 'invOpen' / 'itemPickup' — глобальные кнопки поля (e.key, вне семейств). */
+     v0.141: 'invOpen' / 'itemPickup' — глобальные кнопки поля (e.key, вне семейств).
+     v0.171: + quickSave/furnOpen/padToggle/zoomIn/zoomOut (e.key, вне семейств). */
   useEffect(() => {
     if (!capture || capture.kind !== 'key') return;
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault();
       if (e.code === 'Escape') { setCapture(null); return; }
-      if (capture.action === 'quickLoad' || capture.action === 'invOpen' || capture.action === 'itemPickup' || capture.action === 'invBack') {
+      const gi = capture.kind === 'key' && (GLOBAL_ACTIONS as readonly string[]).includes(capture.action)
+        ? (capture.action as GlobalAction) : null;
+      if (gi) {
         const keyName = e.key === ' ' ? 'space' : e.key.toLowerCase();
-        const field = capture.action === 'quickLoad' ? 'quickKey' : capture.action === 'invOpen' ? 'invKey' : capture.action === 'invBack' ? 'invBackKey' : 'pickupKey';
-        update({ ...prefs, [field]: keyName } as EmuPrefs);
+        update({ ...prefs, [GLOBAL_FIELDS[gi]]: keyName } as EmuPrefs);
         setCapture(null);
         sfx.coin();
         return;
@@ -126,6 +153,13 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
     return () => window.removeEventListener('keydown', onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capture, prefs, fam]);
+
+  /* v0.171: пока «Управление» ловит кнопку/клавишу — тумблер мыши с джойстика заблокирован:
+   нажатие, которым назначают кнопку, не гасит курсор посреди настройки */
+  useEffect(() => {
+    padMouseSetUiLock(!!capture);
+    return () => padMouseSetUiLock(false);
+  }, [capture]);
 
   /* захват кнопки геймпада + список подключённых падов.
      Ждём только НОВОЕ нажатие: на старте захвата запоминаем уже зажатые кнопки
@@ -153,12 +187,11 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
         const bi = gp.buttons.findIndex((b, i) => !st.baseline[i] && (b.pressed || b.value > 0.5));
         if (bi >= 0) {
           setPrefs((prev) => {
-            /* v0.107: quickLoad — глобальная кнопка пада (вне семейств); v0.141: + инвентарь и подъём */
+            /* v0.107: quickLoad — глобальная кнопка пада (вне семейств); v0.141: + инвентарь и подъём;
+               v0.171: + быстрое сохранение, печь/приставка, тумблер мыши, зум карты */
             let next = prev;
-            if (c.action === 'quickLoad') next = { ...prev, quickPad: bi } as EmuPrefs;
-            else if (c.action === 'invOpen') next = { ...prev, invPad: bi } as EmuPrefs;
-            else if (c.action === 'itemPickup') next = { ...prev, pickupPad: bi } as EmuPrefs;
-            else if (c.action === 'invBack') next = { ...prev, invBackPad: bi } as EmuPrefs;
+            const gi = (GLOBAL_ACTIONS as readonly string[]).includes(c.action) ? (c.action as GlobalAction) : null;
+            if (gi) next = { ...prev, [GLOBAL_PAD_FIELDS[gi]]: bi } as EmuPrefs;
             else next = { ...prev, [padField]: { ...(prev[padField] as Record<string, number>), [c.action]: bi } } as EmuPrefs;
             saveEmuPrefs(next);
             return next;
@@ -179,29 +212,41 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
     sfx.fail();
   };
 
-  /* v0.107: подписи глобальной «Быстрой загрузки» */
-  const quickKeyLabel = (() => {
-    const k = (prefs.quickKey ?? '').toLowerCase();
+  /* v0.107–v0.171: подписи клавиш глобальных кнопок (e.key в нижнем регистре → человекочитаемо) */
+  const gKeyLabel = (v: string | undefined, def: string): string => {
+    const k = (v ?? def).toLowerCase();
     if (!k) return '—';
     if (/^f\d{1,2}$/.test(k)) return k.toUpperCase();
+    if (k === '+') return '+';
+    if (k === '-') return '-';
     return globalKeyLabel(k);
-  })();
-  /* v0.141: подписи клавиш инвентаря и подъёма предмета */
-  const invKeyLabel = (() => {
-    const k = (prefs.invKey ?? INV_KEY_DEFAULT).toLowerCase();
-    return globalKeyLabel(k);
-  })();
-  const pickupKeyLabel = (() => {
-    const k = (prefs.pickupKey ?? PICKUP_KEY_DEFAULT).toLowerCase();
-    return globalKeyLabel(k);
-  })();
-  /* v0.170: подписи кнопки «выход из окна / назад» */
-  const invBackKeyLabel = (() => {
-    const k = (prefs.invBackKey ?? INVBACK_KEY_DEFAULT).toLowerCase();
-    return globalKeyLabel(k);
-  })();
-  const globalPadLabel = (v: number | undefined, def: number): string =>
-    (v !== undefined && v >= 0) ? `ДЖОЙ ${v}` : `ДЖОЙ ${def} (по умолч.)`;
+  };
+  const quickKeyLabel = gKeyLabel(prefs.quickKey, '');
+  const quickSaveKeyLabel = gKeyLabel(prefs.quickSaveKey, QUICKSAVE_KEY_DEFAULT);
+  const invKeyLabel = gKeyLabel(prefs.invKey, INV_KEY_DEFAULT);
+  const pickupKeyLabel = gKeyLabel(prefs.pickupKey, PICKUP_KEY_DEFAULT);
+  const furnKeyLabel = gKeyLabel(prefs.furnKey, FURN_KEY_DEFAULT);
+  const invBackKeyLabel = gKeyLabel(prefs.invBackKey, INVBACK_KEY_DEFAULT);
+  const padToggleKeyLabel = gKeyLabel(prefs.padToggleKey, PADTOGGLE_KEY_DEFAULT);
+  const zoomInKeyLabel = gKeyLabel(prefs.zoomInKey, ZOOMIN_KEY_DEFAULT);
+  const zoomOutKeyLabel = gKeyLabel(prefs.zoomOutKey, ZOOMOUT_KEY_DEFAULT);
+  const globalKeyLbl: Record<GlobalAction, string> = {
+    quickLoad: quickKeyLabel, quickSave: quickSaveKeyLabel, invOpen: invKeyLabel, itemPickup: pickupKeyLabel,
+    furnOpen: furnKeyLabel, invBack: invBackKeyLabel, padToggle: padToggleKeyLabel,
+    zoomIn: zoomInKeyLabel, zoomOut: zoomOutKeyLabel,
+  };
+  /* v0.171: подписи кнопок пада глобальных действий — с именами (ДЖОЙ 4 · L1 (LB)):
+   заказчик: «на иксбоксовском джое постоянно забываю как называются R1 и R2» */
+  const globalPadDef: Record<GlobalAction, number | undefined> = {
+    quickLoad: undefined, quickSave: QUICKSAVE_PAD_DEFAULT, invOpen: INV_PAD_DEFAULT, itemPickup: PICKUP_PAD_DEFAULT,
+    furnOpen: FURN_PAD_DEFAULT, invBack: INVBACK_PAD_DEFAULT, padToggle: PADTOGGLE_PAD_DEFAULT,
+    zoomIn: ZOOMIN_PAD_DEFAULT, zoomOut: ZOOMOUT_PAD_DEFAULT,
+  };
+  const globalPadLbl = (ga: GlobalAction): string => {
+    if (ga === 'quickLoad') return prefs.quickPad !== undefined && prefs.quickPad >= 0 ? padBtnLabel(prefs.quickPad) : 'ДЖОЙ —';
+    const v = (prefs as unknown as Record<string, unknown>)[GLOBAL_PAD_FIELDS[ga]] as number | undefined;
+    return padBtnLabel(v, globalPadDef[ga]);
+  };
 
   const btnCls = (active: boolean) =>
     `font-pixel text-[9px] px-2 py-1.5 border-2 transition-colors cursor-pointer min-w-[64px] text-center ${
@@ -227,23 +272,17 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
                 className={btnCls(capture?.kind === 'gpad' && capture.action === a)}
                 title="Назначить кнопку геймпада"
               >
-                {capture?.kind === 'gpad' && capture.action === a ? 'КНОПКУ…' : `ДЖОЙ ${padOf()[a] ?? 0}`}
+                {capture?.kind === 'gpad' && capture.action === a ? 'КНОПКУ…' : padBtnLabel(padOf()[a] ?? 0)}
               </button>
             </div>
           </div>
         ))}
       </div>
-      {/* v0.107+v0.141: ГЛОБАЛЬНЫЕ кнопки (вне раскладок консолей): быстрая загрузка, инвентарь, подъём предмета */}
+      {/* v0.107→v0.171: ГЛОБАЛЬНЫЕ кнопки (вне раскладок консолей) */}
       <div className="border-2 border-gold/50 bg-[rgba(255,207,63,0.06)] px-2.5 py-2 space-y-2">
         {GLOBAL_ACTIONS.map((ga) => {
           const isKey = capture?.kind === 'key' && capture.action === ga;
           const isPad = capture?.kind === 'gpad' && capture.action === ga;
-          const kLbl = ga === 'quickLoad' ? quickKeyLabel : ga === 'invOpen' ? invKeyLabel : ga === 'invBack' ? invBackKeyLabel : pickupKeyLabel;
-          const pLbl = ga === 'quickLoad'
-            ? (prefs.quickPad !== undefined && prefs.quickPad >= 0 ? `ДЖОЙ ${prefs.quickPad}` : 'ДЖОЙ —')
-            : ga === 'invBack'
-              ? globalPadLabel(prefs.invBackPad, INVBACK_PAD_DEFAULT)
-              : globalPadLabel(ga === 'invOpen' ? prefs.invPad : prefs.pickupPad, ga === 'invOpen' ? INV_PAD_DEFAULT : PICKUP_PAD_DEFAULT);
           return (
             <div key={ga} className={ga !== 'quickLoad' ? 'border-t-2 border-gold/20 pt-2' : ''}>
               <div className="tick-label text-gold mb-1">{GLOBAL_TITLES[ga]}</div>
@@ -254,19 +293,52 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
                   className={btnCls(isKey)}
                   title="Назначить клавишу"
                 >
-                  {isKey ? 'НАЖМИТЕ…' : kLbl}
+                  {isKey ? 'НАЖМИТЕ…' : globalKeyLbl[ga]}
                 </button>
                 <button
                   onClick={() => { setCapture({ kind: 'gpad', action: ga }); sfx.hover(); }}
                   className={btnCls(isPad)}
                   title="Назначить кнопку геймпада"
                 >
-                  {isPad ? 'КНОПКУ…' : pLbl}
+                  {isPad ? 'КНОПКУ…' : globalPadLbl(ga)}
                 </button>
               </div>
             </div>
           );
         })}
+      </div>
+      {/* v0.170/171: МЫШЬ С ДЖОЙСТИКА — раскладка ФИКСИРОВАННАЯ (показываем, не меняем) + чувствительность */}
+      <div className="border-2 border-sky/50 bg-[rgba(70,150,255,0.06)] px-2.5 py-2 space-y-2">
+        <div className="tick-label text-sky mb-1">🖱 МЫШЬ С ДЖОЙСТИКА · ФИКСИРОВАННО — НЕ ПЕРЕНАЗНАЧАЕТСЯ</div>
+        <p className="text-[10px] text-dim leading-snug">
+          {PAD_MOUSE_HINT} — работает во всех меню, редакторах и окнах (инвентарь, печь, приставка,
+          меню задания). Имена у всех падов одинаковые: у Xbox R1 = RB (правый бампер), R2 = RT
+          (правый триггер). Кнопку-тумблер мыши (вкл/выкл) назначайте выше — она переназначается.
+        </p>
+        <div>
+          <div className="tick-label text-faint mb-1">
+            Чувствительность мыши (правый стик): ×{(prefs.padMouseSpeed ?? PADMOUSE_SPEED_DEFAULT).toFixed(2).replace('.', ',')}
+          </div>
+          <div className="flex items-center gap-3 max-w-[420px]">
+            <input
+              type="range"
+              min={0.3}
+              max={2.5}
+              step={0.05}
+              value={prefs.padMouseSpeed ?? PADMOUSE_SPEED_DEFAULT}
+              onChange={(e) => update({ ...prefs, padMouseSpeed: Number(e.target.value) } as EmuPrefs)}
+              className="flex-1 accent-[var(--color-sky)] cursor-pointer"
+            />
+            <button
+              onClick={() => { update({ ...prefs, padMouseSpeed: PADMOUSE_SPEED_DEFAULT } as EmuPrefs); sfx.fail(); }}
+              className="btn-ghost pixel-corners px-2 py-1 text-[9px] uppercase font-display shrink-0"
+              title="Вернуть обычную скорость"
+            >
+              Сброс
+            </button>
+          </div>
+          <p className="text-[9px] text-faint mt-1 leading-snug">0,3 — медленно (точно по сетке рюкзака) · 1 — обычная · 2,5 — очень быстро</p>
+        </div>
       </div>
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-[11px] text-dim max-w-md leading-relaxed">
