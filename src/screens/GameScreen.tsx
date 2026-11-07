@@ -1452,26 +1452,35 @@ export default function GameScreen() {
      • окно закрылось (победа/поражение/уйти) — мышь ВКЛ сама (заказчик: «прошел задание
        или проиграл — закрыл окно задания — управление джоем мышью обратно включалось»);
      • чистое поле (окна закрыты) — «только курсор»: курсор двигается, клики гасятся —
-       случайное R1/R2 не «кликнет» ячейку и не нажмёт кнопки HUD. */
+       случайное R1/R2 не «кликнет» ячейку (v0.174: кнопки HUD при этом ДОСТУПНЫ —
+       гасятся только клики по канве карты).
+
+   v0.174 — МЫШЬ В ОКНЕ ЗАДАНИЯ БОЛЬШЕ НЕ ГАСНЕТ НА ВРЕМЯ ИГРЫ (заказчик: «во время
+   игры мышкой джоя не нажать на кнопки на панели вверху — там инвентарь, карта мира
+   и т.д.»): курсор с кликами работает ВСЕГДА, пока окно задания открыто. Конфликт
+   с триггерами разведён ГЕОМЕТРИЕЙ (см. padMouse.ts v0.174): над ЭКРАНОМ игры (iframe)
+   R1/R2 — игровые триггеры и клики не шлются, над ИНТЕРФЕЙСОМ (панель вверху, окна,
+   кнопки) R2/R1 — кнопки мыши, а насос кнопок в SegaBox не пересылает R1/R2 игре.
+   Полностью выключить мышь — тумблер «padToggleHint» (F7 / L3) — как раньше. */
   const [taskWinOpenUi, setTaskWinOpenUi] = useState(false);
   useEffect(() => {
     const open = (myQJob !== undefined && !!myQTask) || myJob !== undefined || (!!ch && myTurn);
     setTaskWinOpenUi(open);
     if (!open) padMouseSetOff(false); // окно задания закрылось — мышь с джойстика снова включена
   }, [myQJob, !!myQTask, myJob, ch, myTurn]);
-  const emuRunInWin = !!taskWinOpenUi && (
-    (!!ch && myTurn && !!ch.started && ch.status === 'playing' && !ch.paused) ||
-    (!!myQJob && qArmed && !qPaused) ||
-    (!!myJob && rubgJobArmed && !rubgPaused));
-  useEffect(() => { if (taskWinOpenUi) padMouseSetOff(emuRunInWin); }, [taskWinOpenUi, emuRunInWin]);
+  /* v0.174: мышь с джойстика в окне задания — всегда включена (игра крутится или стоит —
+     неважно): «Старт игры», «Победа», кнопки панели вверху и все окна нажимаются с джоя */
+  useEffect(() => { if (taskWinOpenUi) padMouseSetOff(false); }, [taskWinOpenUi]);
   const padMouseOffUi = usePadMouseOff();
-  /* «только курсор» на чистом поле — клики гасятся, пока не открыто ни одно окно/оверлей */
+  /* «только курсор» на чистом поле — клики по канве карты гасятся, пока не открыто ни одно окно/оверлей
+     v0.174: в списке оверлеев теперь и интро Френди (frendyIntro) — раньше оно считалось «голым полем»,
+     клики гасились и кнопка «Пропустить» в интро не нажималась с джоймоша (заказчик) */
   useEffect(() => {
     const bare = s?.phase === 'playing' && !invOpen && !furnOpen && !consoleOpen && !taskWinOpenUi
       && !peekMap && !controlsOpen && !dlgOpenId && !cutActive && !s.quiz && !s.pendingCard
-      && !s.awaitPost && !s.challenge && !pocketBlockRef.current && !myStealing && !hackBox;
+      && !s.awaitPost && !s.challenge && !pocketBlockRef.current && !myStealing && !hackBox && !frendyIntro;
     padMouseSetClicksOff(!!bare);
-  }, [s?.phase, invOpen, furnOpen, consoleOpen, taskWinOpenUi, peekMap, controlsOpen, dlgOpenId, cutActive, s?.quiz, s?.pendingCard, s?.awaitPost, s?.challenge, !!myStealing, !!hackBox]);
+  }, [s?.phase, invOpen, furnOpen, consoleOpen, taskWinOpenUi, peekMap, controlsOpen, dlgOpenId, cutActive, s?.quiz, s?.pendingCard, s?.awaitPost, s?.challenge, !!myStealing, !!hackBox, frendyIntro]);
   /* подпись кнопки-тумблера для подсказок (по умолчанию «F7 / L3») — живая (prefsTick) */
   const padToggleHint = useMemo(() => {
     const p = loadEmuPrefs();
@@ -5132,7 +5141,7 @@ export default function GameScreen() {
             <div className="font-pixel text-[9px] text-gold mb-1.5 leading-snug">
               {padMouseOffUi
                 ? <>🎮 Мышь с джойстика ВЫКЛЮЧЕНА — <span className="text-paper">{padToggleHint}</span> включит обратно</>
-                : <>{PAD_MOUSE_HINT} · <span className="text-paper">{padToggleHint}</span> — выключить мышь (если триггеры заняты игрой)</>}
+                : <>{PAD_MOUSE_HINT} — клики по панели вверху и окнам; на экране игры R1/R2 — игровые триггеры · <span className="text-paper">{padToggleHint}</span> — мышь вкл/выкл</>}
             </div>
           )}
           <div className="grid md:grid-cols-[220px_1fr] gap-4">
@@ -5799,7 +5808,7 @@ export default function GameScreen() {
                     <div className="font-pixel text-[9px] text-gold mt-1.5 leading-snug">
                       {padMouseOffUi
                         ? <>🎮 Мышь с джойстика ВЫКЛЮЧЕНА — <span className="text-paper">{padToggleHint}</span> включит обратно</>
-                        : <>{PAD_MOUSE_HINT} · <span className="text-paper">{padToggleHint}</span> — выключить мышь (если триггеры заняты игрой)</>}
+                        : <>{PAD_MOUSE_HINT} — клики по панели вверху и окнам; на экране игры R1/R2 — игровые триггеры · <span className="text-paper">{padToggleHint}</span> — мышь вкл/выкл</>}
                     </div>
                   )}
                   <div className="grid md:grid-cols-[220px_1fr] gap-4 mt-2">
@@ -5999,7 +6008,7 @@ export default function GameScreen() {
                   <div className="font-pixel text-[9px] text-gold mt-1.5 leading-snug">
                     {padMouseOffUi
                       ? <>🎮 Мышь с джойстика ВЫКЛЮЧЕНА — <span className="text-paper">{padToggleHint}</span> включит обратно</>
-                      : <>{PAD_MOUSE_HINT} · <span className="text-paper">{padToggleHint}</span> — выключить мышь (если триггеры заняты игрой)</>}
+                      : <>{PAD_MOUSE_HINT} — клики по панели вверху и окнам; на экране игры R1/R2 — игровые триггеры · <span className="text-paper">{padToggleHint}</span> — мышь вкл/выкл</>}
                   </div>
                 )}
                 <div className="grid md:grid-cols-[220px_1fr] gap-4 mt-2">

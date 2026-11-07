@@ -45,7 +45,27 @@
      • ГАЛОЧКИ и РАДИОКНОПКИ (в т.ч. завёрнутые в <label>) — переключаются:
        настоящий клик делает это сам, синтетический — нет, переключаем сами и
        шлём click в сам чекбокс; выпадающие списки <select> получают фокус
-       (раскрыть список браузер разрешает только настоящей мыши). */
+       (раскрыть список браузер разрешает только настоящей мыши).
+
+   v0.174 — КЛИКИ ВО ВРЕМЯ ИГРЫ: ПАНЕЛЬ ВВЕРХУ И «ПРОПУСТИТЬ» ИНТРО (заказчик:
+   «в начале френди, когда Френди говорит фразу — мышкой джоя не нажимается на
+   пропустить; во время игры мышкой джоя не нажать на кнопки на панели вверху —
+   там инвентарь, карта мира и т.д.»):
+     • ЭКРАН ИГРЫ — ИГРОВАЯ ЗОНА: эмулятор — <iframe> (SegaBox), синтетические
+       события в него всё равно не попадают; над ним клики/колесо гасим, зато
+       R1/R2 свободно уходят в игру как триггеры;
+     • над ИНТЕРФЕЙСОМ (панель вверху, окна, кнопки) — наоборот: R2/R1 — кнопки
+       мыши, а триггеры игре НЕ пересылаются: насос кнопок в SegaBox каждый кадр
+       читает localStorage['retropolia-pad-trig-ui'] и пока там «1», пропускает
+       физические кнопки W3C 5/7 (R1/RB, R2/RT) — конфликт триггеров разведён
+       ГЕОМЕТРИЕЙ: курсор над экраном — триггеры, курсор над интерфейсом — мышь;
+     • мышь в окне задания больше НЕ гаснет на время игры (GameScreen/запуск
+       эмулятора) — курсор всегда на месте, панель нажимается и на бегу;
+     • «только курсор» на чистом поле стал умнее: кнопки HUD («Инвентарь»,
+       «Карта мира», «Сохранить») нажимаются, гасятся только клики по КАНВЕ
+       карты (случайное R1/R2 не откроет ячейку);
+     • интро Френди было «голым полем» без галочки в списке оверлеев — клики
+       гасились и «Пропустить» не нажималась; добавлено в список. */
 import { useEffect, useState } from 'react';
 import { listGamepads, loadEmuPrefs } from './input';
 import { sfx } from './sound';
@@ -146,12 +166,33 @@ export function usePadMouseOff(): boolean {
   return off;
 }
 
-/* ---------- v0.171: РЕЖИМ «ТОЛЬКО КУРСОР» (клики выключены) ----------
-   На чистом поле партии (все окна закрыты) курсор пусть двигается, но клики
-   с джойстика не отправляются: случайное R1/R2 не «кликнет» ячейку или кнопку HUD. */
+/* ---------- v0.171: РЕЖИМ «ТОЛЬКО КУРСОР» (клики по канве поля выключены) ----------
+   На чистом поле партии (все окна закрыты) курсор двигается, клики по КАНВЕ
+   карты гасятся: случайное R1/R2 не «кликнет» ячейку. КНОПКИ HUD при этом
+   нажимаются (v0.174 — «Инвентарь», «Карта мира» работают и на чистом поле). */
 let clicksOff = false;
-/** Запретить/разрешить КЛИКИ мыши с джойстика (курсор продолжает двигаться). */
+/** Запретить/разрешить КЛИКИ мыши с джойстика по канве поля (HUD доступен всегда). */
 export function padMouseSetClicksOff(v: boolean): void { clicksOff = v; }
+
+/* ---------- v0.174: ИГРОВАЯ ЗОНА — ЭКРАН ЭМУЛЯТОРА ----------
+   Экран игры — <iframe srcDoc> (SegaBox): document.elementFromPoint возвращает
+   сам iframe, синтетические события в его документ всё равно не проходят.
+   Над iframe клики/колесо не шлём, зато R1/R2 свободно доходят до игры. */
+const inGameZone = (el: Element): boolean =>
+  el.tagName === 'IFRAME' || !!el.closest('iframe');
+
+/* ---------- v0.174: ФЛАГ ДЛЯ НАСОСА КНОПОК ИГРЫ (SegaBox) ----------
+   Насос кнопок внутри iframe каждый кадр читает localStorage['retropolia-pad-trig-ui']:
+   «1» — курсор над интерфейсом, R1/R2 сейчас кнопки мыши — игре их НЕ пересылать;
+   «0»/нет записи — R1/R2 идут в игру как триггеры. Пишем только при смене. */
+const TRIG_FLAG_KEY = 'retropolia-pad-trig-ui';
+let trigFlagPrev: string | null = null;
+const setTrigFlag = (v: boolean): void => {
+  const s = v ? '1' : '0';
+  if (trigFlagPrev === s) return;
+  trigFlagPrev = s;
+  try { localStorage.setItem(TRIG_FLAG_KEY, s); } catch { /* noop */ }
+};
 
 /* ---------- v0.171: ЗАМОК НА ВРЕМЯ НАЗНАЧЕНИЯ КНОПКИ ----------
    Пока в «Управлении» ловится кнопка/клавиша, тумблер мыши не срабатывает —
@@ -307,10 +348,10 @@ export function usePadMouse(active: boolean) {
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       const prefs = loadEmuPrefs();
-      if (prefs.gamepad === false) { hide(); return; } // главный тумблер «Геймпад» в Опциях
-      if (userOff) { releaseAll(); hide(); return; } // v0.171: выключено кнопкой/авто-режимом окон заданий
+      if (prefs.gamepad === false) { setTrigFlag(false); hide(); return; } // главный тумблер «Геймпад» в Опциях
+      if (userOff) { releaseAll(); setTrigFlag(false); hide(); return; } // v0.171: выключено кнопкой-тумблером
       const gp = listGamepads()[0];
-      if (!gp) { hide(); return; } // пада нет — курсор не показываем, мышь реальная работает сама
+      if (!gp) { setTrigFlag(false); hide(); return; } // пада нет — курсор не показываем, мышь реальная работает сама
       show();
       /* v0.171: чувствительность — множитель из «Управления» (ползунок 0.3–2.5) */
       const spd = typeof prefs.padMouseSpeed === 'number' && prefs.padMouseSpeed > 0 ? prefs.padMouseSpeed : 1;
@@ -328,7 +369,14 @@ export function usePadMouse(active: boolean) {
         st.y = Math.max(1, Math.min(window.innerHeight - 2, st.y + dy));
         moveCursor();
       }
-      if (clicksOff || uiLock) return; // v0.171: только курсор — клики и прокрутка не отправляются
+      if (uiLock) { setTrigFlag(false); return; } // захват кнопки в «Управлении» — ничего не шлём
+      /* v0.174: элемент под курсором решает, кто получает R1/R2 — мышь или игра.
+         Экран игры (iframe) — игровая зона: клики гасятся, триггеры уходят в игру.
+         На чистом поле (clicksOff) клики по канве карты гасятся, по кнопкам HUD — нет. */
+      const elNow = elAt(st.x, st.y);
+      const inZone = inGameZone(elNow);
+      const fieldCanvas = !!elNow.closest('canvas'); // канва карты/редактора под курсором
+      setTrigFlag(!inZone && !clicksOff); // над интерфейсом R1/R2 — кнопки мыши (насос их игре не пересылает)
 
       /* ---------- v0.172: ЛЕВЫЙ СТИК — ПРОКРУТКА (колёсико мыши) ----------
          Ход стика копится и щёлкает колесом порциями по 100 px (как настоящий
@@ -336,9 +384,11 @@ export function usePadMouse(active: boolean) {
          него прокручиваем вручную ближайший прокручиваемый предок (окно
          списка, панель). Если свой обработчик колеса уже отреагировал
          (канва редактора — зум, свой скролл) — ничего руками не крутим.
-         Гаснет той же кнопкой тумблера, что и клики (выше — return). */
+         Гаснет той же кнопкой тумблера, что и клики (clicksOff), а над экраном
+         игры (inZone) колесо не шлём вовсе — катим только настоящий интерфейс. */
       const sdy = curve(gp.axes[AXIS_LY] ?? 0) * MAX_SCROLL * spd * dt;
-      if (sdy) {
+      const wheelable = !clicksOff && !inZone; // v0.174: чистое поле и игровая зона — без колеса
+      if (sdy && wheelable) {
         scrollAcc += sdy;
         if (Math.abs(scrollAcc) >= SCROLL_NOTCH && now - lastWheel >= SCROLL_GAP) {
           const notch = Math.max(-120, Math.min(120, Math.round(scrollAcc)));
@@ -365,10 +415,12 @@ export function usePadMouse(active: boolean) {
         else setRange(st.range, rangeValueAt(st.range, st.x), false);
       }
 
-      /* R2 → ЛКМ (край-триггер; пока держится — работает тащение) */
+      /* R2 → ЛКМ (край-триггер; пока держится — работает тащение)
+         v0.174: нажатие гасится над игровой зоной (там R2 — триггер игры) и по
+         канве чистого поля; отпускание ВСЕГДА доходит — без «залипших» кнопок. */
       const lmbNow = btnHeld(gp, BTN_LMB);
-      if (lmbNow && !st.lmb) {
-        const el = elAt(st.x, st.y);
+      if (lmbNow && !st.lmb && !inZone && !(clicksOff && fieldCanvas)) {
+        const el = elNow;
         st.lmb = true; st.lmbEl = el; markLmb(true);
         /* v0.172: ползунок под курсором — сразу прыгнуть в точку клика (дальше тащится выше) */
         st.range = rangeAt(el);
@@ -388,7 +440,7 @@ export function usePadMouse(active: boolean) {
         const el = elAt(st.x, st.y);
         fire(el, 'pointerup', st.x, st.y, 0, btnMask());
         fire(el, 'mouseup', st.x, st.y, 0, btnMask());
-        if (el === st.lmbEl) { // клик — как у мыши: нажали и отпустили на том же месте
+        if (el === st.lmbEl) { // клик — как у мыши: нажали и отпустили на том же месте (над игровой зоной нажатия не бывает — см. выше)
           const t = clickTargetFor(el);
           if (t.checkbox || t.radio) {
             /* v0.172: галочка/радио — переключаем сами (нативный клик от синтетики не приходит) */
@@ -409,10 +461,10 @@ export function usePadMouse(active: boolean) {
         }
         st.lmbEl = null;
       }
-      /* R1 → ПКМ (контекстное меню предметов) */
+      /* R1 → ПКМ (контекстное меню предметов) — гашение как у ЛКМ (v0.174) */
       const rmbNow = btnHeld(gp, BTN_RMB);
-      if (rmbNow && !st.rmb) {
-        const el = elAt(st.x, st.y);
+      if (rmbNow && !st.rmb && !inZone && !(clicksOff && fieldCanvas)) {
+        const el = elNow;
         st.rmb = true;
         fire(el, 'pointerdown', st.x, st.y, 2, btnMask());
         fire(el, 'mousedown', st.x, st.y, 2, btnMask());
@@ -428,6 +480,8 @@ export function usePadMouse(active: boolean) {
     return () => {
       cancelAnimationFrame(raf);
       releaseAll(); // окно закрылось при зажатой кнопке — не оставляем «залипшее» тащение
+      trigFlagPrev = null;
+      try { localStorage.removeItem(TRIG_FLAG_KEY); } catch { /* noop */ } // v0.174: триггеры игре — без ограничений
       cur.remove();
     };
   }, [active]);

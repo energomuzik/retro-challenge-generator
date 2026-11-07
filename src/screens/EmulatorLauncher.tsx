@@ -492,12 +492,14 @@ export default function EmulatorLauncher() {
   };
   useQuickSave(quickSaveFire);
 
-  /* ---------- v0.171: МЫШЬ С ДЖОЙСТИКА — АВТО-РЕЖИМ «ЗАПУСКА ЭМУЛЯТОРА» ----------
-   Пока игра КРУТИТСЯ — мышь с джойстика выключена (триггеры R1/R2 у SNES/SEGA — игровые
-   кнопки, курсор с кликами мешает и может случайно нажать кнопки вокруг экрана);
-   игра остановлена/экран закрыт — мышь снова включена (списки, кнопки, сохранения). */
+  /* ---------- v0.171→v0.174: МЫШЬ С ДЖОЙСТИКА В «ЗАПУСКЕ ЭМУЛЯТОРА» ----------
+     v0.174: мышь больше НЕ гаснет на время игры — курсор с кликами работает по
+     кнопкам экрана («Перезапуск», «Быстрое сохранение»…), а над самим экраном
+     игры (iframe — игровая зона) R1/R2 остаются триггерами игры, и клики там
+     гасятся (padMouse.ts v0.174 + флаг retropolia-pad-trig-ui для насоса кнопок).
+     Полностью выключить — тумблер (lbl ниже). Ушли с экрана — мышь включена. */
   useEffect(() => {
-    padMouseSetOff(!!running);
+    padMouseSetOff(false);
     return () => padMouseSetOff(false); // ушли с экрана — мышь снова включена
   }, [running]);
   const padMouseOff = usePadMouseOff();
@@ -1199,8 +1201,8 @@ export default function EmulatorLauncher() {
                     const pl = typeof p === 'number' && p >= 0 ? (padBtnName(p) || `ДЖОЙ ${p}`) : '';
                     const lbl = [kl, pl].filter(Boolean).join('/') || 'F7/L3';
                     return padMouseOff
-                      ? <div className="font-pixel text-[9px] text-gold leading-snug">🎮 Мышь с джойстика ВЫКЛЮЧЕНА (идёт игра) — {lbl} включит обратно</div>
-                      : <div className="font-pixel text-[9px] text-gold leading-snug">{PAD_MOUSE_HINT} · {lbl} — мышь вкл/выкл</div>;
+                      ? <div className="font-pixel text-[9px] text-gold leading-snug">🎮 Мышь с джойстика ВЫКЛЮЧЕНА — {lbl} включит обратно</div>
+                      : <div className="font-pixel text-[9px] text-gold leading-snug">{PAD_MOUSE_HINT} — клики по кнопкам вокруг экрана; на экране игры R1/R2 — игровые триггеры · {lbl} — мышь вкл/выкл</div>;
                   })()}
                   {/* v0.62: стереть ВСЕ сохранения этого рома одной кнопкой
                       (режим удаления из Опций: подтверждение/удержание; Ctrl+Z вернёт всё) */}

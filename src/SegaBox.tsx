@@ -1310,12 +1310,17 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     '  var buttons=gp.buttons||[];',
     '  var ax=gp.axes||[],sx=ax[0]||0,sy=ax[1]||0;',
     // 1) физический индекс → действие; дубликат индекса молча игнорируется
+    //    v0.174: пока курсор джой-мыши над ИНТЕРФЕЙСОМ (флаг retropolia-pad-trig-ui = «1»,
+    //    пишет padMouse.ts каждый кадр), R1/R2 (W3C 5/7) — КНОПКИ МЫШИ: игре их не пересылаем;
+    //    курсор над ЭКРАНОМ игры (или мышь выключена) — флаг «0», триггеры работают как всегда.
+    '  var trigUi=false;try{trigUi=localStorage.getItem("retropolia-pad-trig-ui")==="1";}catch(e){}',
     '  var physToAct={};',
     '  for(var n=0;n<PAD_ORDER.length;n++){',
     '    var act=PAD_ORDER[n];',
     '    var phys=prefs?prefs[act]:null;',
     '    if(phys===undefined||phys===null){continue;}',
     '    phys=Number(phys);',
+    '    if(trigUi&&(phys===5||phys===7)){continue;}',
     '    if(phys>=0&&phys<buttons.length&&physToAct[phys]===undefined){physToAct[phys]=act;}',
     '  }',
     // 2) нажатия этого кадра: кнопки + стик (крестовина и стик = одно и то же действие)
