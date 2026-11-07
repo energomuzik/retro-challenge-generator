@@ -197,6 +197,7 @@ export function usePadMouse(active: boolean) {
     const cur = document.createElement('div');
     cur.style.cssText = 'position:fixed;left:0;top:0;z-index:2147483000;pointer-events:none;will-change:transform;display:none';
     cur.innerHTML = CURSOR_IDLE; // v0.172: ретро-курсор проекта (пиксельная золотая стрела)
+    document.body.appendChild(cur); // v0.173: ФИКС «курсора нигде не видно» — в v0.172 элемент создан, но не прикреплён к странице
     const st = {
       x: Math.round(window.innerWidth / 2),
       y: Math.round(window.innerHeight / 2),
