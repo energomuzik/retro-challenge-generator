@@ -1474,12 +1474,21 @@ export default function GameScreen() {
   const padMouseOffUi = usePadMouseOff();
   /* «только курсор» на чистом поле — клики по канве карты гасятся, пока не открыто ни одно окно/оверлей
      v0.174: в списке оверлеев теперь и интро Френди (frendyIntro) — раньше оно считалось «голым полем»,
-     клики гасились и кнопка «Пропустить» в интро не нажималась с джоймоша (заказчик) */
+     клики гасились и кнопка «Пропустить» в интро не нажималась с джоймоша (заказчик)
+     v0.175 ФИКС «ПРОКРУТКА ПРОПАДАЕТ В МЕНЮ ПОСЛЕ ВЫХОДА ИЗ ПАРТИИ» (заказчик: «на левый стик,
+     прокрутка, то работает, то нет… после выхода в главное меню мышь нормально передвигалась,
+     скролл на левый стик пропал… когда перезагружаешь страницу»): у эффекта НЕ БЫЛО ОЧИСТКИ при
+     размонтировании — модульный флаг clicksOff оставался «1» после выхода с чистого поля, прокрутка
+     (wheelable = !clicksOff) глохла в главном меню до перезагрузки страницы (курсор при этом
+     двигался, кнопки нажимались — v0.174 гасит только клики по канве). Cleanup добавлен: флаг
+     сбрасывается при КАЖДОМ размонтировании GameScreen (и при каждом переключении оверлеев —
+     реактор эффекта) — «залипнуть» больше нечему. */
   useEffect(() => {
     const bare = s?.phase === 'playing' && !invOpen && !furnOpen && !consoleOpen && !taskWinOpenUi
       && !peekMap && !controlsOpen && !dlgOpenId && !cutActive && !s.quiz && !s.pendingCard
       && !s.awaitPost && !s.challenge && !pocketBlockRef.current && !myStealing && !hackBox && !frendyIntro;
     padMouseSetClicksOff(!!bare);
+    return () => padMouseSetClicksOff(false); // v0.175: ушли из партии/открыли окно — «чистое поле» сброшено, прокрутка в меню и окнах жива
   }, [s?.phase, invOpen, furnOpen, consoleOpen, taskWinOpenUi, peekMap, controlsOpen, dlgOpenId, cutActive, s?.quiz, s?.pendingCard, s?.awaitPost, s?.challenge, !!myStealing, !!hackBox, frendyIntro]);
   /* подпись кнопки-тумблера для подсказок (по умолчанию «F7 / L3») — живая (prefsTick) */
   const padToggleHint = useMemo(() => {
