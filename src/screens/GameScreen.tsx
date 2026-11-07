@@ -17,6 +17,7 @@ import {
   INVBACK_KEY_DEFAULT, INVBACK_PAD_DEFAULT,
   FURN_KEY_DEFAULT, FURN_PAD_DEFAULT,
   ZOOMIN_KEY_DEFAULT, ZOOMIN_PAD_DEFAULT, ZOOMOUT_KEY_DEFAULT, ZOOMOUT_PAD_DEFAULT,
+  MAP_KEY_DEFAULT, MAP_PAD_DEFAULT,
   padBtnName, padBtnLabel,
   PAD_ACTIONS, SEGA_ACTIONS,
   NES_TO_RETRO, SEGA_TO_RETRO,
@@ -1442,6 +1443,46 @@ export default function GameScreen() {
     }, 66);
     return () => { window.removeEventListener('keydown', onKey); window.clearInterval(iv); };
   }, [invOpen, furnOpen, consoleOpen, s?.phase]);
+  /* ---------- v0.176: КНОПКА «КАРТА МИРА — БЫСТРЫЙ ВЫЗОВ» (переназначается в «Управлении») ----------
+     Заказчик: «забыл добавь в кнопки управления кнопку быстрого вызова карты мира. пусть
+     на джое это будет select и аналог иксбокса». Одна логика toggleWorldMapView для ТРЁХ
+     источников: кнопка на панели вверху (рядом с «Инвентарём»), клавиша (по умолчанию M)
+     и кнопка джойстика (по умолчанию SELECT — W3C 8; у Xbox это BACK, на новых падах VIEW).
+     Одно нажатие открывает карту (сброс «заглядывания», зума и панорамы), второе возвращает
+     «К игроку». Кнопка пада читается НАПРЯМУЮ (padBtnDown — Select НЕ лицевая, через
+     collectPadButtons не видна); край-триггер, во время кат-сцен игнор, в полях ввода M
+     печатает букву как обычно. Прокрутка/мышь не тронуты — Select не пересекается
+     с R1/R2-геометрией v0.174 и колесом v0.172. */
+  const toggleWorldMapView = () => {
+    setPeekMap(false);
+    setWorldZoom(1);
+    worldPanRef.current = { x: 0, y: 0 };
+    setViewMode((m) => (m === 'world' ? 'follow' : 'world'));
+  };
+  const mapPadPrevRef = useRef(false);
+  useEffect(() => {
+    /* клавиша (по умолчанию M) */
+    const onKey = (e: KeyboardEvent) => {
+      const prefs = loadEmuPrefs();
+      if (e.key.toLowerCase() !== (prefs.mapKey ?? MAP_KEY_DEFAULT).toLowerCase()) return;
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+      if (cutActiveRef.current) return;
+      e.preventDefault();
+      toggleWorldMapView();
+      sfx.click();
+    };
+    window.addEventListener('keydown', onKey);
+    /* кнопка джойстика (по умолчанию Select/Back) — край-триггер, как у печи и «назад» */
+    mapPadPrevRef.current = padBtnDown(loadEmuPrefs().mapPad ?? MAP_PAD_DEFAULT); // зажатое при входе на экран — не хлопает
+    const iv = window.setInterval(() => {
+      const cur = padBtnDown(loadEmuPrefs().mapPad ?? MAP_PAD_DEFAULT);
+      const was = mapPadPrevRef.current;
+      mapPadPrevRef.current = cur;
+      if (cur && !was && !cutActiveRef.current) { toggleWorldMapView(); sfx.click(); }
+    }, 66);
+    return () => { window.removeEventListener('keydown', onKey); window.clearInterval(iv); };
+  }, []);
   /* ---------- v0.171: МЫШЬ С ДЖОЙСТИКА В ОКНЕ ЗАДАНИЯ — авто-режим + «только курсор» ----------
      Сама мышь глобальная (App.tsx): правый стик — курсор, R2 (RT) — ЛКМ, R1 (RB) — ПКМ
      (раскладка фиксированная). Здесь управляется её СОСТОЯНИЕ:
@@ -4051,8 +4092,9 @@ export default function GameScreen() {
           <GhostBtn small onClick={() => { setInvOpen(true); sfx.click(); }}><span id="frendy-inv-btn" className="inline-flex items-center gap-1">
             {Ic.grid(12)} Инвентарь{invCount > 0 ? ` · ${invCount}` : ''}{incomingTrades.length > 0 ? ' 💼' : ''}{isBogach && myImmunes.length > 0 ? ` 🛡${myImmunes.length}` : ''}
           </span></GhostBtn>
-          {/* КАРТА МИРА — доступна и в режиме комнат (v0.50.0): неоткрытые плитки скрывает туман исследования */}
-          <GhostBtn small onClick={() => { setPeekMap(false); setWorldZoom(1); worldPanRef.current = { x: 0, y: 0 }; setViewMode((m) => (m === 'world' ? 'follow' : 'world')); }}>
+          {/* КАРТА МИРА — доступна и в режиме комнат (v0.50.0): неоткрытые плитки скрывает туман исследования.
+              v0.176: та же логика toggleWorldMapView у быстрого вызова (M / Select-Back) — одна кнопка, три источника */}
+          <GhostBtn small onClick={() => { toggleWorldMapView(); sfx.click(); }}>
             {Ic.map(12)} {viewMode === 'world' ? 'К игроку' : 'Карта мира'}
           </GhostBtn>
           {room.isHost && (

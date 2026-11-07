@@ -78,6 +78,12 @@ export interface EmuPrefs {
   zoomInPad?: number;
   zoomOutKey?: string;
   zoomOutPad?: number;
+  /* v0.176: ГЛОБАЛЬНАЯ КНОПКА «КАРТА МИРА — БЫСТРЫЙ ВЫЗОВ»: одним нажатием открывает
+     и закрывает карту мира — то же, что кнопка «Карта мира» на панели вверху (рядом
+     с «Инвентарём»). По умолчанию M / кнопка 8 (Select; у Xbox эта кнопка называется
+     Back, на новых падах — View). */
+  mapKey?: string;
+  mapPad?: number;
   /* v0.171: ЧУВСТВИТЕЛЬНОСТЬ МЫШИ С ДЖОЙСТИКА — множитель скорости курсора
      (1 = как было; 0.3–2.5). Меняется ползунком в «Управлении». */
   padMouseSpeed?: number;
@@ -433,6 +439,10 @@ export const ZOOMIN_KEY_DEFAULT = '+';
 export const ZOOMIN_PAD_DEFAULT = 4; // L1 — приблизить
 export const ZOOMOUT_KEY_DEFAULT = '-';
 export const ZOOMOUT_PAD_DEFAULT = 6; // L2 — отдалить
+/* v0.176: быстрый вызов КАРТЫ МИРА — по умолчанию M и кнопка 8 (Select;
+   у Xbox она называется Back/View — «аналог иксбокса», как просил заказчик) */
+export const MAP_KEY_DEFAULT = 'm';
+export const MAP_PAD_DEFAULT = 8;
 export const PADMOUSE_SPEED_DEFAULT = 1;
 
 /* v0.171: имена кнопок СТАНДАРТНОГО пада (W3C) — «на xbox-джое постоянно забываю,
@@ -440,7 +450,7 @@ export const PADMOUSE_SPEED_DEFAULT = 1;
 const W3C_BTN_NAMES: Record<number, string> = {
   0: 'A (крест)', 1: 'B (круг)', 2: 'X (квадрат)', 3: 'Y (треугольник)',
   4: 'L1 (LB)', 5: 'R1 (RB)', 6: 'L2 (LT)', 7: 'R2 (RT)',
-  8: 'Select (Share)', 9: 'Start (Options)', 10: 'L3', 11: 'R3',
+  8: 'Select (Back)', 9: 'Start (Options)', 10: 'L3', 11: 'R3',
   12: '↑', 13: '↓', 14: '←', 15: '→', 16: 'PS (гайд)', 17: 'Тачпад',
 };
 export function padBtnName(idx: number | undefined | null): string {
@@ -499,6 +509,8 @@ export function loadEmuPrefs(): EmuPrefs {
     zoomInPad: ZOOMIN_PAD_DEFAULT, // v0.171: L1
     zoomOutKey: ZOOMOUT_KEY_DEFAULT, // v0.171: «-» — отдалить карту
     zoomOutPad: ZOOMOUT_PAD_DEFAULT, // v0.171: L2
+    mapKey: MAP_KEY_DEFAULT, // v0.176: M — быстрый вызов карты мира
+    mapPad: MAP_PAD_DEFAULT, // v0.176: Select (у Xbox — Back/View)
     padMouseSpeed: PADMOUSE_SPEED_DEFAULT, // v0.171: чувствительность мыши стиком
   };
   try {
@@ -538,6 +550,8 @@ export function loadEmuPrefs(): EmuPrefs {
       zoomInPad: typeof p.zoomInPad === 'number' && p.zoomInPad >= 0 ? p.zoomInPad : ZOOMIN_PAD_DEFAULT,
       zoomOutKey: typeof p.zoomOutKey === 'string' && p.zoomOutKey ? p.zoomOutKey.toLowerCase() : ZOOMOUT_KEY_DEFAULT,
       zoomOutPad: typeof p.zoomOutPad === 'number' && p.zoomOutPad >= 0 ? p.zoomOutPad : ZOOMOUT_PAD_DEFAULT,
+      mapKey: typeof p.mapKey === 'string' && p.mapKey ? p.mapKey.toLowerCase() : MAP_KEY_DEFAULT,
+      mapPad: typeof p.mapPad === 'number' && p.mapPad >= 0 ? p.mapPad : MAP_PAD_DEFAULT,
       padMouseSpeed: typeof p.padMouseSpeed === 'number' && p.padMouseSpeed >= 0.3 && p.padMouseSpeed <= 2.5 ? p.padMouseSpeed : PADMOUSE_SPEED_DEFAULT,
     };
   } catch {

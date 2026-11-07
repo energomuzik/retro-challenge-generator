@@ -103,43 +103,27 @@ function scrollableBox(el: Element): HTMLElement | null {
   return null;
 }
 
-/* ---------- v0.172: РЕТРО-КУРСОР — пиксельная стрела в палитре проекта ----------
-   Матрица пикселей → SVG-прямоугольники (crispEdges — рёбра без сглаживания).
-   X — чернильный контур #0b0e1c, H — блик, F — золото проекта #ffcf3f;
-   зажатая ЛКМ — коралловая заливка #ff5d73. Курсор 20×32 — крупнее системного. */
-const CURSOR_PIXELS = [
-  'X.........',
-  'XX........',
-  'XHX.......',
-  'XHHX......',
-  'XHFFX.....',
-  'XHFFFX....',
-  'XHFFFFX...',
-  'XHFFFFFX..',
-  'XHFFFFFFX.',
-  'XHFFFFFFFX',
-  'XHFFFFXXXX',
-  'XHFFFX....',
-  'XXHFFX....',
-  '..XHFX....',
-  '...XHFX...',
-  '....XX....',
-];
-const CURSOR_SCALE = 2; // 10×16 пикселей × 2
-const cursorSvg = (fill: string, hi: string): string => {
-  let rects = '';
-  CURSOR_PIXELS.forEach((row, j) => {
-    for (let i = 0; i < row.length; i++) {
-      const c = row[i];
-      if (c === '.') continue;
-      const col = c === 'X' ? '#0b0e1c' : c === 'H' ? hi : fill;
-      rects += `<rect x="${i * CURSOR_SCALE}" y="${j * CURSOR_SCALE}" width="${CURSOR_SCALE}" height="${CURSOR_SCALE}" fill="${col}"/>`;
-    }
-  });
-  return `<svg width="${10 * CURSOR_SCALE}" height="${16 * CURSOR_SCALE}" viewBox="0 0 ${10 * CURSOR_SCALE} ${16 * CURSOR_SCALE}" shape-rendering="crispEdges" style="filter:drop-shadow(0 2px 2px rgba(0,0,0,0.85))">${rects}</svg>`;
-};
-const CURSOR_IDLE = cursorSvg('#ffcf3f', '#ffe9a3'); // золото проекта
-const CURSOR_LMB = cursorSvg('#ff5d73', '#ffb3a8');  // зажата ЛКМ — коралл
+/* ---------- v0.176: КУРСОР «КОРАБЛЬ ИЗ ASTEROIDS» (Atari, 1979) ----------
+   Заказчик: «крестик создан с ошибкой. хвост который должен быть по середине
+   сдвинут к левому краю стрелки. Сделай крестик джоя в более современном стиле,
+   без хвоста - в стиле корабля из какой-то игры из аркадных автоматов… очень
+   старая игра была на автоматах в восьмидесятые» — это ASTEROIDS (Atari, 1979).
+   Заказчик прав: у пиксельной стрелы v0.172 хвост матрицы прирос к ЛЕВОМУ краю —
+   ошибка генерации, а не спецдизайн. Новый курсор — векторный корабль: контур
+   нос → правое крыло → выемка кормы → левое крыло (фирменный силуэт), БЕЗ хвоста.
+   Точка клика = ОСТРИЁ НОСА (SHIP_HOT_X/Y вычитаются в place()). Современно:
+   скруглённые соединения, тонкая грань-блик, полупрозрачная тёмная подложка
+   (силуэт читается на любом фоне), тень проекта. Зажатая ЛКМ — коралл +
+   ПЛАМЯ двигателя, как тяга корабля в Asteroids. */
+const SHIP_W = 28, SHIP_H = 30, SHIP_HOT_X = 14, SHIP_HOT_Y = 2;
+const shipSvg = (stroke: string, hi: string, flame: boolean): string =>
+  `<svg width="${SHIP_W}" height="${SHIP_H}" viewBox="0 0 ${SHIP_W} ${SHIP_H}" style="filter:drop-shadow(0 2px 2px rgba(0,0,0,0.85))">` +
+  `<path d="M14 2 L25 27 L18.5 24 L9.5 24 L3 27 Z" fill="rgba(11,14,28,0.45)" stroke="${stroke}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` +
+  `<path d="M14.5 5.5 L7 23" stroke="${hi}" stroke-width="1" stroke-linecap="round" opacity="0.85" fill="none"/>` +
+  (flame ? `<path d="M11.5 25.5 L14 29.5 L16.5 25.5" fill="none" stroke="${hi}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` : '') +
+  `</svg>`;
+const CURSOR_IDLE = shipSvg('#ffcf3f', '#ffe9a3', false); // золото проекта
+const CURSOR_LMB = shipSvg('#ff5d73', '#ffb3a8', true);   // зажата ЛКМ — коралл + пламя двигателя
 
 /* ---------- v0.171: СОСТОЯНИЕ «ВЫКЛЮЧЕНО КНОПКОЙ» (userOff) + подписчики ---------- */
 let userOff = false;
@@ -237,7 +221,7 @@ export function usePadMouse(active: boolean) {
     /* SVG-курсор поверх всех окон (z-index максимальный, pointer-events нет) */
     const cur = document.createElement('div');
     cur.style.cssText = 'position:fixed;left:0;top:0;z-index:2147483000;pointer-events:none;will-change:transform;display:none';
-    cur.innerHTML = CURSOR_IDLE; // v0.172: ретро-курсор проекта (пиксельная золотая стрела)
+    cur.innerHTML = CURSOR_IDLE; // v0.176: курсор «корабль из Asteroids» (в v0.172–v0.175 была пиксельная стрела)
     document.body.appendChild(cur); // v0.173: ФИКС «курсора нигде не видно» — в v0.172 элемент создан, но не прикреплён к странице
     const st = {
       x: Math.round(window.innerWidth / 2),
@@ -247,7 +231,7 @@ export function usePadMouse(active: boolean) {
       range: null as HTMLInputElement | null, // v0.172: ползунок, который сейчас тащим
       shown: false,
     };
-    const place = () => { cur.style.transform = `translate(${st.x - 1}px, ${st.y - 1}px)`; };
+    const place = () => { cur.style.transform = `translate(${st.x - SHIP_HOT_X}px, ${st.y - SHIP_HOT_Y}px)`; }; // v0.176: hotspot — остриё носа корабля, точка клика = кончик носа
     const show = () => { if (!st.shown) { st.shown = true; place(); cur.style.display = 'block'; } };
     const hide = () => { if (st.shown) { st.shown = false; cur.style.display = 'none'; } };
     const markLmb = (on: boolean) => {

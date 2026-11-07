@@ -11,6 +11,7 @@ import {
   FURN_KEY_DEFAULT, FURN_PAD_DEFAULT,
   PADTOGGLE_KEY_DEFAULT, PADTOGGLE_PAD_DEFAULT,
   ZOOMIN_KEY_DEFAULT, ZOOMIN_PAD_DEFAULT, ZOOMOUT_KEY_DEFAULT, ZOOMOUT_PAD_DEFAULT,
+  MAP_KEY_DEFAULT, MAP_PAD_DEFAULT,
   PADMOUSE_SPEED_DEFAULT, padBtnName, padBtnLabel,
   type EmuPrefs, type PadFamily,
 } from './input';
@@ -22,15 +23,15 @@ type Capture = { kind: 'key' | 'gpad'; action: string } | null;
 /* v0.141: глобальные кнопки на поле (вне раскладок консолей) — список захвата;
    v0.170: + «выход из окна / назад» (инвентарь/печь/приставка);
    v0.171: + быстрое сохранение, открыть печь/приставку, тумблер мыши с джойстика, зум карты */
-const GLOBAL_ACTIONS = ['quickLoad', 'quickSave', 'invOpen', 'itemPickup', 'furnOpen', 'invBack', 'padToggle', 'zoomIn', 'zoomOut'] as const;
+const GLOBAL_ACTIONS = ['quickLoad', 'quickSave', 'invOpen', 'itemPickup', 'furnOpen', 'invBack', 'padToggle', 'mapOpen', 'zoomIn', 'zoomOut'] as const;
 type GlobalAction = (typeof GLOBAL_ACTIONS)[number];
 const GLOBAL_FIELDS: Record<GlobalAction, string> = {
   quickLoad: 'quickKey', quickSave: 'quickSaveKey', invOpen: 'invKey', itemPickup: 'pickupKey',
-  furnOpen: 'furnKey', invBack: 'invBackKey', padToggle: 'padToggleKey', zoomIn: 'zoomInKey', zoomOut: 'zoomOutKey',
+  furnOpen: 'furnKey', invBack: 'invBackKey', padToggle: 'padToggleKey', mapOpen: 'mapKey', zoomIn: 'zoomInKey', zoomOut: 'zoomOutKey',
 };
 const GLOBAL_PAD_FIELDS: Record<GlobalAction, string> = {
   quickLoad: 'quickPad', quickSave: 'quickSavePad', invOpen: 'invPad', itemPickup: 'pickupPad',
-  furnOpen: 'furnPad', invBack: 'invBackPad', padToggle: 'padTogglePad', zoomIn: 'zoomInPad', zoomOut: 'zoomOutPad',
+  furnOpen: 'furnPad', invBack: 'invBackPad', padToggle: 'padTogglePad', mapOpen: 'mapPad', zoomIn: 'zoomInPad', zoomOut: 'zoomOutPad',
 };
 const GLOBAL_TITLES: Record<GlobalAction, string> = {
   quickLoad: '⚡ Быстрая загрузка · одна на все консоли',
@@ -40,6 +41,7 @@ const GLOBAL_TITLES: Record<GlobalAction, string> = {
   furnOpen: '🔥 ОТКРЫТЬ ПЕЧЬ / ПРИСТАВКУ · режим FRENDY',
   invBack: '🚪 ВЫХОД ИЗ ОКНА / НАЗАД · инвентарь, печь, приставка',
   padToggle: '🖱 МЫШЬ С ДЖОЙСТИКА вкл/выкл · для игр с триггерами',
+  mapOpen: '🗺 КАРТА МИРА — БЫСТРЫЙ ВЫЗОВ · одной кнопкой',
   zoomIn: '🔍 ПРИБЛИЗИТЬ КАРТУ · L1 по умолчанию',
   zoomOut: '🔍 ОТДАЛИТЬ КАРТУ · L2 по умолчанию',
 };
@@ -51,6 +53,7 @@ const GLOBAL_DESCS: Record<GlobalAction, string> = {
   furnOpen: 'Открывает окно ПЕЧИ или ПРИСТАВКИ, когда фишка рядом с ними (режим FRENDY). По умолчанию E / крест (A на Xbox) — как просили: «поднять — квадрат, а печь/приставку — крестик». Раньше открывали любые лицевые кнопки — теперь одна, чтобы лицевые не спорили между собой.',
   invBack: 'Закрывает открытые окна на поле: ИНВЕНТАРЬ, окно ПЕЧИ, окно ПРИСТАВКИ — «назад», как на консолях. По умолчанию Esc / кнопка 1 (B / круг).',
   padToggle: 'Выключает/включает мышь с джойстика (правый стик + R2/R1). Нужна, когда триггеры заняты игрой (у SNES плечи R/L, у SEGA — Z/Y): нажали — курсор с кликами выключился, играете спокойно; окно задания закрыли (победа/поражение/«Уйти») — мышь включилась САМА. По умолчанию F7 / L3 (клик левым стиком).',
+  mapOpen: 'Открывает и закрывает КАРТУ МИРА одним нажатием — то же, что кнопка «Карта мира» на панели вверху (рядом с «Инвентарём»): сбрасывает зум и панораму, повторное нажатие возвращает «К игроку». Работает во всех режимах, где есть карта. По умолчанию M / кнопка 8 — SELECT (у Xbox эта кнопка называется BACK, на новых падах — VIEW).',
   zoomIn: 'Приближает карту: «Карта мира», «Глянуть карту мира» и осмотр поля со своей фишки (как колесо мыши). Также работает в редакторе карт. По умолчанию L1 / «+».',
   zoomOut: 'Отдаляет карту: «Карта мира», «Глянуть карту мира» и осмотр поля со своей фишки. Также работает в редакторе карт. По умолчанию L2 / «-».',
 };
@@ -228,19 +231,20 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
   const furnKeyLabel = gKeyLabel(prefs.furnKey, FURN_KEY_DEFAULT);
   const invBackKeyLabel = gKeyLabel(prefs.invBackKey, INVBACK_KEY_DEFAULT);
   const padToggleKeyLabel = gKeyLabel(prefs.padToggleKey, PADTOGGLE_KEY_DEFAULT);
+  const mapKeyLabel = gKeyLabel(prefs.mapKey, MAP_KEY_DEFAULT);
   const zoomInKeyLabel = gKeyLabel(prefs.zoomInKey, ZOOMIN_KEY_DEFAULT);
   const zoomOutKeyLabel = gKeyLabel(prefs.zoomOutKey, ZOOMOUT_KEY_DEFAULT);
   const globalKeyLbl: Record<GlobalAction, string> = {
     quickLoad: quickKeyLabel, quickSave: quickSaveKeyLabel, invOpen: invKeyLabel, itemPickup: pickupKeyLabel,
     furnOpen: furnKeyLabel, invBack: invBackKeyLabel, padToggle: padToggleKeyLabel,
-    zoomIn: zoomInKeyLabel, zoomOut: zoomOutKeyLabel,
+    mapOpen: mapKeyLabel, zoomIn: zoomInKeyLabel, zoomOut: zoomOutKeyLabel,
   };
   /* v0.171: подписи кнопок пада глобальных действий — с именами (ДЖОЙ 4 · L1 (LB)):
    заказчик: «на иксбоксовском джое постоянно забываю как называются R1 и R2» */
   const globalPadDef: Record<GlobalAction, number | undefined> = {
     quickLoad: undefined, quickSave: QUICKSAVE_PAD_DEFAULT, invOpen: INV_PAD_DEFAULT, itemPickup: PICKUP_PAD_DEFAULT,
     furnOpen: FURN_PAD_DEFAULT, invBack: INVBACK_PAD_DEFAULT, padToggle: PADTOGGLE_PAD_DEFAULT,
-    zoomIn: ZOOMIN_PAD_DEFAULT, zoomOut: ZOOMOUT_PAD_DEFAULT,
+    mapOpen: MAP_PAD_DEFAULT, zoomIn: ZOOMIN_PAD_DEFAULT, zoomOut: ZOOMOUT_PAD_DEFAULT,
   };
   const globalPadLbl = (ga: GlobalAction): string => {
     if (ga === 'quickLoad') return prefs.quickPad !== undefined && prefs.quickPad >= 0 ? padBtnLabel(prefs.quickPad) : 'ДЖОЙ —';
