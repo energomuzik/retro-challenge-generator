@@ -14,7 +14,7 @@ import { isFloatT, opOk, readAt } from '../memcode';
 import KeyBinder from '../KeyBinder';
 import {
   loadEmuPrefs, PREFS_EVENT, codeToEjsKey, listGamepads, collectPadButtons,
-  INVBACK_KEY_DEFAULT, INVBACK_PAD_DEFAULT,
+  INVBACK_KEY_DEFAULT, INVBACK_PAD_DEFAULT, INV_PAD_DEFAULT,
   FURN_KEY_DEFAULT, FURN_PAD_DEFAULT,
   ZOOMIN_KEY_DEFAULT, ZOOMIN_PAD_DEFAULT, ZOOMOUT_KEY_DEFAULT, ZOOMOUT_PAD_DEFAULT,
   MAP_KEY_DEFAULT, MAP_PAD_DEFAULT,
@@ -1331,23 +1331,47 @@ export default function GameScreen() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [s?.phase, furnOpen, consoleOpen]);
-  /* кнопка джойстика «инвентарь» — край-триггер (у печи лицевые кнопки открывают печь — не мешаем; когда инвентарь открыт — работает эффект ЗАКРЫТИЯ ниже) */
-  const invPadPrevRef = useRef(false);
+  /* ---------- v0.177: ИНВЕНТАРЬ С ДЖОЙСТИКА (Y/треугольник) — ОДИН НАДЁЖНЫЙ КРАЙ-ТРИГГЕР ----------
+     Заказчик: «вызов инвентаря на треугольник (Y) работает через раз почему то». Раньше
+     открытие и закрытие жили в ДВУХ эффектах с независимыми базами нажатий (опрос раз
+     в 66 мс), и оба перемонтировались при смене invOpen/печи/приставки — отсюда два сбоя:
+     (1) короткий тап мог целиком уложиться МЕЖДУ опросами и остаться незамеченным;
+     (2) база переснималась, пока Y ещё зажат (перемонтировка эффекта), — нажатие
+     «съедалось», а при медленной отрисовке React естественный ПОВТОРНЫЙ тап («не
+     сработало — жму ещё») попадал в эффект ЗАКРЫТИЯ с пустой базой и гасил окно сразу
+     после открытия — «нажал, а оно не открылось». ТЕПЕРЬ: ОДИН эффект, ОДИН флаг края,
+     ОПРОС КАЖДЫЕ 16 МС (~частота кадров) — короткий тап гарантированно попадает в
+     опрос; состояние читается через живые ref'ы, база снимается ОДИН раз при
+     монтировании, пересниматься нечему — нажатия строго чередуются: нажал — открылось,
+     нажал — закрылось. Открытие — с ограничениями как у клавиши Tab (кат-сцена,
+     диалог, окно задания, карман) плюс прежний приоритет печи/приставки; закрытие —
+     всегда, как у френди-инвентаря и было. Печь, приставка, подъём, «назад» и карта —
+     свои триггеры, не тронуты. */
+  const invOpenLiveRef = useRef(false);
+  useEffect(() => { invOpenLiveRef.current = invOpen; }, [invOpen]);
+  const invPhaseLiveRef = useRef<string | null>(null);
+  useEffect(() => { invPhaseLiveRef.current = s?.phase ?? null; }, [s?.phase]);
+  const invFurnConsLiveRef = useRef(false);
+  useEffect(() => { invFurnConsLiveRef.current = isFrendy && (!!nearFurnace || !!nearConsole); }, [isFrendy, !!nearFurnace, !!nearConsole]);
   useEffect(() => {
-    if (!s || s.phase !== 'playing' || invOpen || (isFrendy && !!nearFurnace) || (isFrendy && !!nearConsole)) return; // у печи/приставки — приоритет их окон
+    let prev = false;
     const init = new Set<number>();
     collectPadButtons(init);
-    invPadPrevRef.current = init.has(loadEmuPrefs().invPad ?? 3);
+    prev = init.has(loadEmuPrefs().invPad ?? INV_PAD_DEFAULT); // зажатое при монтировании — не хлопает
     const iv = window.setInterval(() => {
       const cur = new Set<number>();
       collectPadButtons(cur);
-      const now = cur.has(loadEmuPrefs().invPad ?? 3);
-      if (now && !invPadPrevRef.current) { setInvOpen((o) => !o); sfx.click(); }
-      invPadPrevRef.current = now;
-    }, 66);
+      const now = cur.has(loadEmuPrefs().invPad ?? INV_PAD_DEFAULT);
+      if (now && !prev) { // край-триггер: только НОВОЕ нажатие
+        if (invOpenLiveRef.current) { setInvOpen(false); sfx.click(); } // открыт — Y закрывает
+        else if (invPhaseLiveRef.current === 'playing' && !cutActiveRef.current && !taskWinRef.current && !dlgOpenIdRef.current && !pocketBlockRef.current && !invFurnConsLiveRef.current) { setInvOpen(true); sfx.click(); } // закрыт — Y открывает (гарды как у Tab + приоритет печи/приставки)
+      }
+      prev = now;
+    }, 16); // v0.177: 66→16 мс — короткий тап больше не теряется между опросами
     return () => window.clearInterval(iv);
-  }, [s?.phase, invOpen, isFrendy, !!nearFurnace, !!nearConsole]);
-  /* ОТКРЫТЫЕ ОКНА закрываются кнопкой джойстика: окно печи — любой лицевой, инвентарь — кнопка «инвентарь».
+  }, []);
+  /* ОТКРЫТЫЕ ОКНА закрываются кнопкой джойстика: окно печи — любой лицевой (инвентарь
+     закрывается своим единым триггером Y — v0.177, эффект выше).
      Базлайн снимается В МОМЕНТ открытия (кнопка открытия сама окно не закрывает). */
   const furnClosePadRef = useRef<Set<number>>(new Set());
   useEffect(() => {
@@ -1382,24 +1406,6 @@ export default function GameScreen() {
     }, 66);
     return () => window.clearInterval(iv);
   }, [consoleOpen]);
-  const invClosePadRef = useRef<Set<number>>(new Set());
-  useEffect(() => {
-    if (!invOpen || !isFrendy) return; // в остальных режимах инвентарь закрывается как раньше (крестик/Esc)
-    const init = new Set<number>();
-    collectPadButtons(init);
-    invClosePadRef.current = init;
-    const iv = window.setInterval(() => {
-      const cur = new Set<number>();
-      collectPadButtons(cur);
-      const padIdx = loadEmuPrefs().invPad ?? 3;
-      const now = cur.has(padIdx);
-      const prev = invClosePadRef.current.has(padIdx);
-      invClosePadRef.current = cur;
-      if (now && !prev) { sfx.click(); setInvOpen(false); }
-    }, 66);
-    return () => window.clearInterval(iv);
-  }, [invOpen, isFrendy]);
-
   /* ---------- v0.170: КНОПКА «ВЫХОД ИЗ ОКНА / НАЗАД» (переназначается в «Управлении») ----------
      Закрывает открытые окна поля: ИНВЕНТАРЬ → окно ПЕЧИ → окно ПРИСТАВКИ.
      По умолчанию Esc на клавиатуре и B/круг (W3C 1) на джойстике. Печь/приставку
