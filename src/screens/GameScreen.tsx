@@ -14,6 +14,7 @@ import { isFloatT, opOk, readAt } from '../memcode';
 import KeyBinder from '../KeyBinder';
 import {
   loadEmuPrefs, PREFS_EVENT, codeToEjsKey, listGamepads, collectPadButtons,
+  INVBACK_KEY_DEFAULT, INVBACK_PAD_DEFAULT,
   PAD_ACTIONS, SEGA_ACTIONS,
   NES_TO_RETRO, SEGA_TO_RETRO,
   FAMILY_ACTIONS, FAMILY_KEYS_FIELD, FAMILY_KEY_KIND, FAMILY_RETRO, FAMILY_HINT,
@@ -43,6 +44,7 @@ import { FrendyInvGrid, FrendyFurnaceModal, FrendyConsoleModal, ChipArt } from '
 import { hasDice } from '../bogach'; // v0.109: проверка пакостей/радостей «только для кубиков»
 import { DONATE_DICE_ONLY } from '../types';
 import { useQuickLoad, quickKeyLabelOf } from '../useQuickLoad';
+import { usePadMouse, PAD_MOUSE_HINT } from '../padMouse'; // v0.170: мышь с джойстика в окнах (правый стик + R1/R2)
 import { startLoop, stopLoop, syncLoops, stopGroup, killGroup, stopOneShot, playOneShot } from '../loopsnd';
 
 /* единичные векторы направлений фишки — для расчёта хода чужой фишки со СКОРОСТЬЮ КАРТЫ */
@@ -1393,6 +1395,54 @@ export default function GameScreen() {
     }, 66);
     return () => window.clearInterval(iv);
   }, [invOpen, isFrendy]);
+
+  /* ---------- v0.170: КНОПКА «ВЫХОД ИЗ ОКНА / НАЗАД» (переназначается в «Управлении») ----------
+     Закрывает открытые окна поля: ИНВЕНТАРЬ → окно ПЕЧИ → окно ПРИСТАВКИ.
+     По умолчанию Esc на клавиатуре и B/круг (W3C 1) на джойстике. Печь/приставку
+     лицевые кнопки и так закрывают (эффекты выше) — дубль звука не создаём.
+     Управление мышью с джойстика (правый стик + R1/R2) — ФИКСИРОВАННОЕ (padMouse.ts). */
+  const invBackPadPrevRef = useRef(false);
+  useEffect(() => {
+    const anyOpen = invOpen || furnOpen || consoleOpen;
+    /* клавиша (по умолчанию Esc) */
+    const onKey = (e: KeyboardEvent) => {
+      if (!anyOpen || s?.phase !== 'playing') return;
+      const prefs = loadEmuPrefs();
+      if (e.key.toLowerCase() !== (prefs.invBackKey ?? INVBACK_KEY_DEFAULT).toLowerCase()) return;
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+      if (cutActiveRef.current || taskWinRef.current || dlgOpenIdRef.current || pocketBlockRef.current) return;
+      e.preventDefault();
+      if (invOpen) { setInvOpen(false); sfx.click(); }
+      else if (furnOpen) { setFurnOpen(false); sfx.click(); }
+      else if (consoleOpen) { setConsoleOpen(false); sfx.click(); }
+    };
+    window.addEventListener('keydown', onKey);
+    /* кнопка джойстика (по умолчанию B/круг) — край-триггер */
+    const init = new Set<number>();
+    collectPadButtons(init);
+    invBackPadPrevRef.current = init.has(loadEmuPrefs().invBackPad ?? INVBACK_PAD_DEFAULT);
+    const iv = window.setInterval(() => {
+      if (!anyOpen || s?.phase !== 'playing') return;
+      const cur = new Set<number>();
+      collectPadButtons(cur);
+      const padIdx = loadEmuPrefs().invBackPad ?? INVBACK_PAD_DEFAULT;
+      const now = cur.has(padIdx);
+      const prev = invBackPadPrevRef.current;
+      invBackPadPrevRef.current = now;
+      if (now && !prev) {
+        const isFace = padIdx >= 0 && padIdx <= 3; // лицевые закрывают печь/приставку сами — не дублируем
+        if (invOpen) { setInvOpen(false); sfx.click(); }
+        else if (furnOpen && !isFace) { setFurnOpen(false); sfx.click(); }
+        else if (consoleOpen && !isFace) { setConsoleOpen(false); sfx.click(); }
+      }
+    }, 66);
+    return () => { window.removeEventListener('keydown', onKey); window.clearInterval(iv); };
+  }, [invOpen, furnOpen, consoleOpen, s?.phase]);
+  /* v0.170: ВИРТУАЛЬНАЯ МЫШЬ ДЖОЙСТИКА — пока открыто окно (инвентарь/печь/приставка),
+     правый стик двигает курсор, R2 (RT) — ЛКМ (тащение предметов), R1 (RB) — ПКМ (меню).
+     Раскладка фиксированная — в «Управлении» не переназначается. */
+  usePadMouse(!!(invOpen || furnOpen || consoleOpen));
 
   /* v0.62: отпустили ESC (или окно потеряло фокус) — отсчёт сбрасывается,
      подсказка плавно гаснет; при размонтировании таймер подчищается */
@@ -6708,6 +6758,12 @@ function InventoryModal({ onClose }: { onClose: () => void }) {
             : <span className="tick-label text-teal">ваш ход — торги открыты до броска кубиков</span>)}
           <GhostBtn small className="ml-auto" onClick={onClose}>{Ic.cross(12)} Закрыть</GhostBtn>
         </div>
+        {/* v0.170: управление мышью с джойстика (правый стик + R2/R1) — только когда пад подключён */}
+        {listGamepads().length > 0 && (
+          <div className="font-pixel text-[9px] text-gold mb-2 leading-snug">
+            {PAD_MOUSE_HINT} · B (круг) / Esc — назад
+          </div>
+        )}
 
         {/* ---------- RUBG: предметы (пояс/инвентарь) + «Остановить воровство» ---------- */}
         {rubgMap && (

@@ -6,6 +6,7 @@ import { frendyConsoleImg } from '../consoleAssets'; // v0.144: фото при�
 import type { RubgItem, RubgItemKind } from '../types';
 import { GhostBtn, Ic } from '../ui';
 import { sfx } from '../sound';
+import { PAD_MOUSE_HINT } from '../padMouse'; // v0.170: подсказка мыши с джойстика (правый стик + R1/R2)
 
 /* ---------- v0.141 FRENDY: DIABLO-ПОДОБНЫЙ ИНВЕНТАРЬ ----------
    • РЮКЗАК — СЕТКА 10×6, предметы лежат КАРТИНКАМИ и занимают столько клеток,
@@ -554,6 +555,10 @@ export function FrendyFurnaceModal({ onClose, items, near, strong, burned, total
           <div className="font-pixel text-[9px] text-faint mt-2 leading-snug">
             Tab · крестик · кнопка джойстика — закрыть · ПКМ по предмету — меню (использовать / сжечь / выбросить)
           </div>
+          {/* v0.170: управление мышью с джойстика (правый стик + R2/R1) */}
+          <div className="font-pixel text-[9px] text-gold mt-1 leading-snug">
+            {PAD_MOUSE_HINT} · B (круг) / Tab — закрыть
+          </div>
         </div>
       </div>
       {/* призрак предмета при перетаскивании ИЗ ЛОТКА — v0.143: тоже через ПОРТАЛ */}
@@ -734,6 +739,10 @@ export function FrendyConsoleModal({ onClose, cellIdx, items, cartTaskIdx, busy,
           />
           <div className="font-pixel text-[9px] text-faint mt-2 leading-snug">
             ПКМ по предмету — меню (сжечь в ПЕЧИ — только рядом с ней) · за окно — выбросить на землю
+          </div>
+          {/* v0.170: управление мышью с джойстика (правый стик + R2/R1) */}
+          <div className="font-pixel text-[9px] text-gold mt-1 leading-snug">
+            {PAD_MOUSE_HINT} · B (круг) / Tab — закрыть
           </div>
         </div>
       </div>

@@ -6,24 +6,28 @@ import {
   DEFAULT_SNES_KEYS, DEFAULT_SNES_GPAD, DEFAULT_GBA_KEYS, DEFAULT_GBA_GPAD,
   DEFAULT_PCE_KEYS, DEFAULT_PCE_GPAD, DEFAULT_A26_KEYS, DEFAULT_A26_GPAD,
   INV_KEY_DEFAULT, INV_PAD_DEFAULT, PICKUP_KEY_DEFAULT, PICKUP_PAD_DEFAULT,
+  INVBACK_KEY_DEFAULT, INVBACK_PAD_DEFAULT,
   type EmuPrefs, type PadFamily,
 } from './input';
 import { sfx } from './sound';
 
 type Capture = { kind: 'key' | 'gpad'; action: string } | null;
 
-/* v0.141: глобальные кнопки на поле (вне раскладок консолей) — список захвата */
-const GLOBAL_ACTIONS = ['quickLoad', 'invOpen', 'itemPickup'] as const;
+/* v0.141: глобальные кнопки на поле (вне раскладок консолей) — список захвата;
+   v0.170: + «выход из окна / назад» (инвентарь/печь/приставка) */
+const GLOBAL_ACTIONS = ['quickLoad', 'invOpen', 'itemPickup', 'invBack'] as const;
 type GlobalAction = (typeof GLOBAL_ACTIONS)[number];
 const GLOBAL_TITLES: Record<GlobalAction, string> = {
   quickLoad: '⚡ Быстрая загрузка · одна на все консоли',
   invOpen: '🎒 Открыть/закрыть ИНВЕНТАРЬ · на поле и в окне печи',
   itemPickup: '✋ ПОДНЯТЬ ПРЕДМЕТ с земли · режим FRENDY',
+  invBack: '🚪 ВЫХОД ИЗ ОКНА / НАЗАД · инвентарь, печь, приставка',
 };
 const GLOBAL_DESCS: Record<GlobalAction, string> = {
   quickLoad: 'В «Запуске эмулятора» — мгновенно грузит ВЫДЕЛЕННОЕ кликом сохранение; во время задания — перезапускает задание (в VERSUS — за 1 бронзу, как кнопка «Перезапуск»). Работает и когда фокус у эмулятора.',
   invOpen: 'Открывает и закрывает ИНВЕНТАРЬ на поле игры. В FRENDY — рюкзак-сетка в стиле Diablo (перетаскивайте предметы, ПКМ — меню). Закрывает и окно ПЕЧИ. По умолчанию Tab / кнопка 3 (Y / треугольник).',
   itemPickup: 'Поднимает предмет, на котором стоит фишка (режим FRENDY): микросхемы, картриджи, аптечки, кофе. Нет места в рюкзаке — предмет не поднять! Работает и рядом с печью/приставкой (с v0.147). По умолчанию F / кнопка 2 (X / квадрат).',
+  invBack: 'Закрывает открытые окна на поле: ИНВЕНТАРЬ, окно ПЕЧИ, окно ПРИСТАВКИ — «назад», как на консолях. По умолчанию Esc / кнопка 1 (B / круг). Управление мышью с джойстика в этих окнах ФИКСИРОВАНО (правый стик — курсор, R2/RT — ЛКМ, R1/RB — ПКМ) и в «Управлении» не переназначается.',
 };
 
 const MODES: PadFamily[] = ['nes', 'sega', 'snes', 'gba', 'pce', 'a26'];
@@ -45,7 +49,7 @@ const MODE_TITLES: Record<PadFamily, string> = {
 /* e.key-значения (нижний регистр) в человекочитаемый вид (SEGA-стиль). */
 const EKEY_LABELS: Record<string, string> = {
   arrowup: '↑', arrowdown: '↓', arrowleft: '←', arrowright: '→',
-  shift: 'Shift', control: 'Ctrl', alt: 'Alt', enter: 'Enter', space: 'Пробел', tab: 'Tab',
+  shift: 'Shift', control: 'Ctrl', alt: 'Alt', enter: 'Enter', space: 'Пробел', tab: 'Tab', escape: 'Esc',
 };
 
 function ekeyLabel(k: string): string {
@@ -101,9 +105,9 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault();
       if (e.code === 'Escape') { setCapture(null); return; }
-      if (capture.action === 'quickLoad' || capture.action === 'invOpen' || capture.action === 'itemPickup') {
+      if (capture.action === 'quickLoad' || capture.action === 'invOpen' || capture.action === 'itemPickup' || capture.action === 'invBack') {
         const keyName = e.key === ' ' ? 'space' : e.key.toLowerCase();
-        const field = capture.action === 'quickLoad' ? 'quickKey' : capture.action === 'invOpen' ? 'invKey' : 'pickupKey';
+        const field = capture.action === 'quickLoad' ? 'quickKey' : capture.action === 'invOpen' ? 'invKey' : capture.action === 'invBack' ? 'invBackKey' : 'pickupKey';
         update({ ...prefs, [field]: keyName } as EmuPrefs);
         setCapture(null);
         sfx.coin();
@@ -154,6 +158,7 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
             if (c.action === 'quickLoad') next = { ...prev, quickPad: bi } as EmuPrefs;
             else if (c.action === 'invOpen') next = { ...prev, invPad: bi } as EmuPrefs;
             else if (c.action === 'itemPickup') next = { ...prev, pickupPad: bi } as EmuPrefs;
+            else if (c.action === 'invBack') next = { ...prev, invBackPad: bi } as EmuPrefs;
             else next = { ...prev, [padField]: { ...(prev[padField] as Record<string, number>), [c.action]: bi } } as EmuPrefs;
             saveEmuPrefs(next);
             return next;
@@ -188,6 +193,11 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
   })();
   const pickupKeyLabel = (() => {
     const k = (prefs.pickupKey ?? PICKUP_KEY_DEFAULT).toLowerCase();
+    return globalKeyLabel(k);
+  })();
+  /* v0.170: подписи кнопки «выход из окна / назад» */
+  const invBackKeyLabel = (() => {
+    const k = (prefs.invBackKey ?? INVBACK_KEY_DEFAULT).toLowerCase();
     return globalKeyLabel(k);
   })();
   const globalPadLabel = (v: number | undefined, def: number): string =>
@@ -228,10 +238,12 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
         {GLOBAL_ACTIONS.map((ga) => {
           const isKey = capture?.kind === 'key' && capture.action === ga;
           const isPad = capture?.kind === 'gpad' && capture.action === ga;
-          const kLbl = ga === 'quickLoad' ? quickKeyLabel : ga === 'invOpen' ? invKeyLabel : pickupKeyLabel;
+          const kLbl = ga === 'quickLoad' ? quickKeyLabel : ga === 'invOpen' ? invKeyLabel : ga === 'invBack' ? invBackKeyLabel : pickupKeyLabel;
           const pLbl = ga === 'quickLoad'
             ? (prefs.quickPad !== undefined && prefs.quickPad >= 0 ? `ДЖОЙ ${prefs.quickPad}` : 'ДЖОЙ —')
-            : globalPadLabel(ga === 'invOpen' ? prefs.invPad : prefs.pickupPad, ga === 'invOpen' ? INV_PAD_DEFAULT : PICKUP_PAD_DEFAULT);
+            : ga === 'invBack'
+              ? globalPadLabel(prefs.invBackPad, INVBACK_PAD_DEFAULT)
+              : globalPadLabel(ga === 'invOpen' ? prefs.invPad : prefs.pickupPad, ga === 'invOpen' ? INV_PAD_DEFAULT : PICKUP_PAD_DEFAULT);
           return (
             <div key={ga} className={ga !== 'quickLoad' ? 'border-t-2 border-gold/20 pt-2' : ''}>
               <div className="tick-label text-gold mb-1">{GLOBAL_TITLES[ga]}</div>

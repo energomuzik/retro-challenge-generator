@@ -48,6 +48,12 @@ export interface EmuPrefs {
   invPad?: number;
   pickupKey?: string;
   pickupPad?: number;
+  /* v0.170: ГЛОБАЛЬНАЯ кнопка «ВЫХОД ИЗ ОКНА / НАЗАД»: закрывает открытые окна поля —
+     инвентарь, печь, приставку (как «назад» на консолях). По умолчанию Esc / кнопка 1
+     (B/круг). Само управление мышью с джойстика (правый стик + R1/R2) здесь НЕ хранится —
+     оно фиксированное (padMouse.ts), в «Управлении» не переназначается. */
+  invBackKey?: string;
+  invBackPad?: number;
 }
 
 /* ---------- SEGA Genesis (Megadrive): 6 кнопок + Start, без Select ---------- */
@@ -383,6 +389,11 @@ export const INV_PAD_DEFAULT = 3;
    кнопка джойстика — W3C 2 (X/□ Xbox/PS, была 4 = L1/LB). Переназначается в «Управлении». */
 export const PICKUP_KEY_DEFAULT = 'f';
 export const PICKUP_PAD_DEFAULT = 2;
+/* v0.170: кнопка «ВЫХОД ИЗ ОКНА / НАЗАД» — по умолчанию Esc и B/круг (W3C 1):
+   на консолях круг/B — стандартный «назад». Имена плечевых: на PlayStation R1/R2,
+   на Xbox — RB/RT (R2/RT — правый триггер, R1/RB — правый бампер). */
+export const INVBACK_KEY_DEFAULT = 'escape';
+export const INVBACK_PAD_DEFAULT = 1;
 
 /* Самовосстановление раскладки: ОДИН физический индекс = ОДНО действие.
    Если в сохранённых настройках несколько действий висят на одной кнопке
@@ -417,6 +428,8 @@ export function loadEmuPrefs(): EmuPrefs {
     invPad: INV_PAD_DEFAULT,
     pickupKey: PICKUP_KEY_DEFAULT, // v0.147: F — поднять предмет (FRENDY; была E — конфликт с печью/приставкой)
     pickupPad: PICKUP_PAD_DEFAULT,
+    invBackKey: INVBACK_KEY_DEFAULT, // v0.170: Esc — выход из инвентаря/печи/приставки
+    invBackPad: INVBACK_PAD_DEFAULT, // v0.170: B/круг — «назад» на джойстике
   };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
@@ -443,6 +456,8 @@ export function loadEmuPrefs(): EmuPrefs {
       invPad: typeof p.invPad === 'number' && p.invPad >= 0 ? p.invPad : INV_PAD_DEFAULT,
       pickupKey: typeof p.pickupKey === 'string' && p.pickupKey ? p.pickupKey.toLowerCase() : PICKUP_KEY_DEFAULT,
       pickupPad: typeof p.pickupPad === 'number' && p.pickupPad >= 0 ? p.pickupPad : PICKUP_PAD_DEFAULT,
+      invBackKey: typeof p.invBackKey === 'string' && p.invBackKey ? p.invBackKey.toLowerCase() : INVBACK_KEY_DEFAULT,
+      invBackPad: typeof p.invBackPad === 'number' && p.invBackPad >= 0 ? p.invBackPad : INVBACK_PAD_DEFAULT,
     };
   } catch {
     return base;
