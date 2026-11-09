@@ -1,16 +1,18 @@
 /* v0.178: ОБЛАЧНАЯ БАЗА СОХРАНЕНИЙ НА GITHUB (отдельный репозиторий).
    Как это устроено (решение заказчика — «план почти такой же, только убираем
    самостоятельный деплой игроку»):
-   1) Создатель жмёт «📦 Сохранить все для базы (ZIP)» внизу панели «Сохранения»
-      в «Запуске эмулятора» — собирается ZIP «Ром_Ник.zip» (ник — «Имя в комнате»
-      из Опций) с ПРАВИЛЬНЫМ РАСПОЛОЖЕНИЕМ ПАПОК базы. ПАПКИ — БЕЗ НИКА (заказчик:
-      «надо ник убрать, а то будут множиться разные сохранения — к одним и тем же
-      местам, боссам»): У КАЖДОГО СОХРАНЕНИЯ СВОЯ ПАПКА ПО ЕГО ИМЕНИ
+   1) Создатель жмёт «📦 Сохранить все для базы (ZIP)» в панели «Сохранения»
+      в «Запуске эмулятора» — собирается ZIP с именем рома с ПРАВИЛЬНЫМ
+      РАСПОЛОЖЕНИЕМ ПАПОК базы. ПАПКИ — БЕЗ НИКА (заказчик: «надо ник убрать,
+      а то будут множиться разные сохранения — к одним и тем же местам, боссам»):
+      У КАЖДОГО СОХРАНЕНИЯ СВОЯ ПАПКА ПО ЕГО ИМЕНИ
       saves/<ром>/<имя сохранения>/card.json + save.state. Два сохранения «к одному
       и тому же месту/боссу» называются одинаково → при распаковке заменяют друг
-      друга, а не множатся. Ник при этом не теряется: он лежит ВНУТРИ карточки
-      (author) и в имени ZIP-файла. Частные сохранения ТОЖЕ уходят в базу (заказчик:
-      «пускай будут частные сохранения тоже, не исключай их»).
+      друга, а не множатся. v0.180: НИКА НЕТ ВООБЩЕ (заказчик: «надо удалить
+      всетаки ник игрока, когда игрок будет сохранять свою базу. Что бы даже ник
+      игрока не записывался у меня на сайте») — ни в имени ZIP-файла, ни в
+      карточках (поле author убрано). Частные сохранения ТОЖЕ уходят в базу
+      (заказчик: «пускай будут частные сохранения тоже, не исключай их»).
    2) ZIP передаётся владельцу проекта любым мессенджером.
    3) Владелец распаковывает его в папку своего репозитория базы
       retro-challenge-saves и пушит (git add/commit/push) — единожды на пачку ZIP,
@@ -46,7 +48,7 @@ export const saveDbRawUrl = (path: string) =>
 export interface CloudCard {
   format: 2;
   game: string; // ИМЯ ФАЙЛА рома («Super Mario Bros. (E) [!].nes») — по нему идёт сверка
-  author: string; // ник создателя («Имя в комнате» из Опций) — в папках ника НЕТ
+  /* v0.180: поля author больше НЕТ — ник игрока никуда не записывается */
   name: string; // человеческое имя сохранения («Босс 2 — дракон»)
   kind?: SaveKind; // уровень/босс/моё задание/частное (частные тоже выгружаются)
   slot: number;
@@ -98,7 +100,7 @@ export async function fetchCloudIndex(force = false): Promise<CloudSaveGroup[]> 
   return groups;
 }
 
-/** Карточка сохранения — маленький JSON с именем/автором/датой (само состояние
+/** Карточка сохранения — маленький JSON с именем/датой (само состояние
  *  качается ТОЛЬКО при «⬇ Забрать»). */
 export async function fetchCloudCard(cardPath: string): Promise<CloudCard> {
   const res = await fetch(saveDbRawUrl(cardPath));
@@ -115,20 +117,19 @@ const KINDS_OK: SaveKind[] = ['level', 'boss', 'mytask', 'private'];
 /** Собрать и скачать ZIP со ВСЕМИ сохранениями рома (включая частные). Внутри —
  *  готовое расположение папок базы: saves/<ром>/<имя сохранения>/card.json + save.state.
  *  Папка называется ИМЕНЕМ СОХРАНЕНИЯ (без ника — так сохранения «к одному и тому
- *  же месту/боссу» заменяют друг друга, а не множатся), ник лежит в карточке
- *  (author) и в имени ZIP-файла. Владелец распаковывает ZIP прямо в папку
- *  репозитория — и всё лежит как надо. */
+ *  же месту/боссу» заменяют друг друга, а не множатся). v0.180: НИКА НЕТ НИГДЕ —
+ *  ни в имени ZIP, ни в карточках (author убран; заказчик: «что бы даже ник
+ *  игрока не записывался у меня на сайте»). Владелец распаковывает ZIP прямо
+ *  в папку репозитория — и всё лежит как надо. */
 export async function buildSaveDbZip(
   rom: RomDef,
   saves: SaveDef[],
-  nick: string,
 ): Promise<{ fileName: string; blob: Blob; count: number }> {
   /* v0.166: state живёт ТОЛЬКО в базе (в ОЗУ лёгкие записи) — достаём полные.
      Частные НЕ исключаем (заказчик: «пускай будут частные сохранения тоже»). */
   const fulls = (await Promise.all(saves.map((s) => idbGet<SaveDef>('saves', s.id))))
     .filter((s): s is SaveDef => !!s && typeof s.state === 'string' && !!s.state && s.state.length > 0);
   if (!fulls.length) throw new Error('нет сохранений с состоянием');
-  const nickSeg = sanitizeRepoSeg(nick) || 'ИГРОК';
   const gameSeg = sanitizeRepoSeg(rom.fileName) || 'rom';
   const files: ZipEntry[] = [];
   const used = new Set<string>(); // имена папок уникальны внутри одного ZIP
@@ -143,7 +144,7 @@ export async function buildSaveDbZip(
     const card: CloudCard = {
       format: 2,
       game: rom.fileName, // ИМЯ ФАЙЛА рома — сверка в базе идёт по нему (как в библиотеке)
-      author: nickSeg, // ник — ВНУТРИ карточки, в путях папок его нет
+      /* v0.180: author УБРАН — ник игрока никуда не записывается */
       name,
       kind: s.kind && KINDS_OK.includes(s.kind) ? s.kind : 'level',
       slot: typeof s.slot === 'number' ? s.slot : i + 1,
@@ -156,7 +157,7 @@ export async function buildSaveDbZip(
     files.push({ path: `${dir}/save.state`, data: b64ToBytes(s.state as string) });
   });
   const zip = makeZip(files);
-  const zipName = `${sanitizeRepoSeg(rom.name || gameSeg) || 'ром'}_${nickSeg}.zip`;
+  const zipName = `${sanitizeRepoSeg(rom.name || gameSeg) || 'ром'}.zip`; // v0.180: без ника
   const blob = new Blob([zip as unknown as BlobPart], { type: 'application/zip' });
   downloadBlob(blob, zipName);
   return { fileName: zipName, blob, count: fulls.length };

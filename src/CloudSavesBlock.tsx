@@ -3,8 +3,8 @@
    выбранного рома, компактный вид). Показывает СОХРАНЕНИЯ ДЛЯ ЭТОГО РОМА из базы
    на GitHub — сверка по имени файла рома, как уже реализовано в библиотеке
    (findLocalRomByFile) и в ромах с Яндекса. В базе у каждого сохранения СВОЯ
-   папка ПО ИМЕНИ СОХРАНЕНИЯ (без ника — ник лежит в карточке автором), поэтому
-   в списке видно каждое сохранение отдельно: имя, автор, вид, дата — и «⬇
+   папка ПО ИМЕНИ СОХРАНЕНИЯ (без ника; v0.180 — ника нет и в карточках), поэтому
+   в списке видно каждое сохранение отдельно: имя, вид, дата — и «⬇
    Забрать» качает ИМЕННО ЕГО и добавляет в библиотеку устройства НОВОЙ записью —
    свои сохранения никто не перезаписывает. Кнопка «⟳ обновить» перечитывает
    базу с GitHub, сбросив 5-минутный кэш. */
@@ -50,7 +50,7 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
         const idx = await fetchCloudIndex(force);
         const mine = idx.filter((g) => g.gameFolder === folder);
         /* карточки — маленькие JSON: тянем сразу все для этого рома, чтобы показать
-           имена/авторов/виды без лишних кликов (состояния качаются отдельно) */
+           имена/виды без лишних кликов (состояния качаются отдельно) */
         const cs: Record<string, CloudCard> = {};
         await Promise.all(mine.map(async (g) => {
           try { cs[g.cardPath] = await fetchCloudCard(g.cardPath); } catch { /* покажем имя папки без деталей */ }
@@ -85,7 +85,7 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
         if (n > 0) {
           await refresh();
           sfx.success();
-          toast(`☁ «${card.name || g.saveFolder}» добавлено в библиотеку (автор «${card.author}») — оно уже в списке сохранений рома`, 'ok');
+          toast(`☁ «${card.name || g.saveFolder}» добавлено в библиотеку — оно уже в списке сохранений рома`, 'ok');
         } else {
           sfx.fail();
           toast('Не получилось забрать сохранение — проверьте интернет и нажмите ⟳', 'err');
@@ -135,7 +135,8 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
                 <div className="min-w-0 flex-1">
                   <div className="font-display text-[10px] uppercase text-paper truncate">💾 {card?.name || g.saveFolder}</div>
                   <div className="tick-label text-faint mt-0.5 leading-snug">
-                    автор: {card?.author || '—'} · {KIND_RU[card?.kind || 'level'] || 'уровень'}
+                    {/* v0.180: подписи с автором больше НЕТ — ник игрока не записывается в базу */}
+                    {KIND_RU[card?.kind || 'level'] || 'уровень'}
                     {when ? ` · от ${fmtWhen(when)}` : ''}
                   </div>
                 </div>

@@ -24,7 +24,6 @@ import { useQuickLoad, quickKeyLabelOf, useQuickSave } from '../useQuickLoad';
 import { padMouseSetOff, PAD_MOUSE_HINT, usePadMouseOff } from '../padMouse'; // v0.171: мышь с джойстика — вкл/выкл при игре
 import { buildSaveDbZip } from '../saveCloud'; // v0.178: ZIP для облачной базы сохранений
 import CloudSavesBlock from '../CloudSavesBlock'; // v0.178: блок «☁ В базе сохранений»
-import { extractSaveFromZip } from '../zipStore'; // v0.179: чтение чужих ZIP-сейвов (GameFAQs отдаёт сохранения зипами)
 
 const fmtSize = (b: number) => (b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} МБ` : `${Math.max(1, Math.round(b / 1024))} КБ`);
 
@@ -54,7 +53,7 @@ const saveEmptyRomFolders = (arr: string[]) => {
 };
 
 export default function EmulatorLauncher() {
-  const { roms, saves, setScreen, refresh, toast, options } = useApp();
+  const { roms, saves, setScreen, refresh, toast } = useApp(); // v0.180: options из деструктуризации убраны (ник из базы удалён)
   const spoilerMode = useApp((st) => st.options.spoilerMode); // v0.70: режим спойлеров из Опций
   const [romId, setRomId] = useState<string | null>(null);
   const [romBuf, setRomBuf] = useState<ArrayBuffer | null>(null);
@@ -526,10 +525,12 @@ export default function EmulatorLauncher() {
      «пускай будут частные сохранения тоже, не исключай их») в ZIP с готовым
      расположением папок базы: у КАЖДОГО сохранения СВОЯ папка ПО ЕГО ИМЕНИ
      (saves/Ром/Имя сохранения/… — БЕЗ НИКА, заказчик: «надо ник убрать, а то
-     будут множиться разные сохранения»), ник лежит в карточках (author) и в
-     имени файла — «Ром_Ник.zip» (ник — «Имя в комнате» из Опций). Создателю
-     остаётся ОДНО: передать файл владельцу проекта — тот кладёт его в
-     репозиторий базы, и сохранения видны всем в блоке «☁ В базе сохранений». */
+     будут множиться разные сохранения»). v0.180: НИКА НЕТ ВООБЩЕ (заказчик:
+     «надо удалить всетаки ник игрока, когда игрок будет сохранять свою базу.
+     Что бы даже ник игрока не записывался у меня на сайте») — ни в имени ZIP
+     («Ром.zip»), ни в карточках (author убран). Создателю остаётся ОДНО:
+     передать файл владельцу проекта — тот кладёт его в репозиторий базы,
+     и сохранения видны всем в блоке «☁ В базе сохранений». */
   const [exportingDb, setExportingDb] = useState(false);
   const exportSaveDbZip = () => {
     void (async () => {
@@ -537,7 +538,7 @@ export default function EmulatorLauncher() {
       if (!romSaves.length) { toast('Выгружать нечего: у рома нет ни одного сохранения', 'err'); return; }
       setExportingDb(true);
       try {
-        const res = await buildSaveDbZip(rom, romSaves, options.name.trim() || 'ИГРОК');
+        const res = await buildSaveDbZip(rom, romSaves);
         sfx.success();
         toast(`📦 ZIP готов: «${res.fileName}» — сохранений в нём: ${res.count}. Передайте файл владельцу проекта`, 'ok');
       } catch {
@@ -548,46 +549,10 @@ export default function EmulatorLauncher() {
     })();
   };
 
-  /* ---------- v0.179: ЗАГРУЗКА ЧУЖОГО СЕЙВА (.srm/.sav или ZIP с ним) ----------
-     Сейвы других игроков (например, с GameFAQs — база сейвов живёт десятилетиями)
-     — это SRAM батарейки игры. Кнопка пишет файл в ЗАПУЩЕННЫЙ эмулятор ровно тем
-     способом, каким это делает встроенная кнопка EmulatorJS «Import Save File»
-     (FS.writeFile в путь ядра getSaveFilePath + refresh_save_files) — игра
-     подхватывает чужой прогресс СРАЗУ, без перезапуска. ZIP распаковывается на
-     лету (extractSaveFromZip — штатный DecompressionStream браузера). Дальше
-     игрок закрепляет нужное место НАШИМИ кнопками — и они уезжают в базу. */
-  const [sramBusy, setSramBusy] = useState(false);
-  const sramRef = useRef<HTMLInputElement>(null);
-  const doImportSram = (file: File) => {
-    void (async () => {
-      if (!rom) { toast('Сначала выберите ром', 'err'); return; }
-      if (!running || !ejsApiRef.current) { toast('Сначала запустите ром — чужой сейв подхватывает именно запущенная игра', 'err'); return; }
-      setSramBusy(true);
-      try {
-        const buf = await file.arrayBuffer();
-        let bytes: Uint8Array = new Uint8Array(buf);
-        let srcName = file.name;
-        if (bytes.length > 3 && bytes[0] === 0x50 && bytes[1] === 0x4b) { // «PK» — это ZIP (например, скачан с GameFAQs)
-          const ex = await extractSaveFromZip(buf);
-          bytes = ex.data;
-          srcName = `${file.name} → ${ex.name}`;
-        }
-        if (!bytes.length) throw new Error('файл пустой');
-        const res = await ejsApiRef.current.importSram(bytes);
-        if (res && res.ok) {
-          sfx.success();
-          toast(`📥 Чужой сейв загружен (${srcName}, ${fmtSize(bytes.length)}) — в игре выберите её пункт Load/Continue. Нужное место запишите нашими кнопками — и оно уедет в базу`, 'ok');
-        } else {
-          sfx.fail();
-          toast(res?.error ? `Не получилось подгрузить чужой сейв: ${res.error}` : 'Эмулятор ещё не готов — дайте игре запуститься и попробуйте снова', 'err');
-        }
-      } catch (e) {
-        sfx.fail();
-        toast(e instanceof Error ? `Не получилось прочитать сохранение: ${e.message}` : 'Не получилось прочитать сохранение — попробуйте другой файл', 'err');
-      }
-      setSramBusy(false);
-    })();
-  };
+  /* v0.180: кнопка импорта чужого SRAM (батарейный файл) УДАЛЕНА вместе со всей
+     механикой v0.179 (заказчик: «давай удалим загрузку .srm/.sav — оно будет отвлекать
+     игрока… буду делать базу сам»). База наполняется ТОЛЬКО нашими сохранениями:
+     игрок записывает места нашими кнопками → кнопка «📦 Сохранить все для базы (ZIP)». */
 
   const createSave = async (kind: SaveKind) => {
     if (!rom) return;
@@ -851,8 +816,6 @@ export default function EmulatorLauncher() {
           <GhostBtn disabled={!!upProg} onClick={() => void doExportBase()} title="Сохранить ВСЮ базу ромов одним файлом (ромы + обложки картриджей)">{Ic.download(14)} Сохранить базу</GhostBtn>
           <GhostBtn disabled={!!upProg} onClick={() => baseRef.current?.click()} title="Загрузить базу ромов из файла (ромы + обложки; уже существующие не дублируются)">{Ic.upload(14)} Загрузить базу</GhostBtn>
           <input ref={baseRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void doImportBase(f); e.target.value = ''; }} />
-          {/* v0.179: файл чужого сохранения — SRAM (.srm/.sav/…) или ZIP с ним (например, скачанный с GameFAQs) */}
-          <input ref={sramRef} type="file" accept=".srm,.sav,.sa1,.sav2,.eep,.mcd,.mcr,.vmc,.mc,.brm,.bin,.zip" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) doImportSram(f); e.target.value = ''; }} />
           <input ref={fileRef} type="file" accept=".nes,.md,.gen,.bin,.sms,.gg,.sfc,.smc,.fig,.gb,.gbc,.gba,.32x,.a26,.pce" multiple className="hidden" onChange={(e) => { void onUpload(e.target.files); e.target.value = ''; }} />
           <input ref={dirRef} type="file" multiple className="hidden" {...({ webkitdirectory: 'true', directory: 'true' } as Record<string, string>)} onChange={(e) => { void onUploadFolder(e.target.files); e.target.value = ''; }} />
         </div>
@@ -1247,9 +1210,9 @@ export default function EmulatorLauncher() {
                   {/* v0.107: БЫСТРАЯ ЗАГРУЗКА ВЫДЕЛЕННОГО — кнопка + подсказка клавиши.
                       Сохранение выделяется КЛИКОМ по карточке (обводка) — тянуться вниз
                       и искать нужное больше не нужно */}
-                  {/* v0.179: РЯД КНОПОК — ВСЕГДА виден у выбранного рома (импорт чужого
-                      сейва и ZIP для базы нужны и при нуле сохранений). Быстрые кнопки
-                      как раньше грузят/перезаписывают ВЫДЕЛЕННОЕ кликом сохранение. */}
+                  {/* v0.179: РЯД КНОПОК — ВСЕГДА виден у выбранного рома (ZIP для базы
+                      нужен и при нуле сохранений). Быстрые кнопки как раньше
+                      грузят/перезаписывают ВЫДЕЛЕННОЕ кликом сохранение. */}
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-2 flex-wrap">
                       <PxBtn
@@ -1267,17 +1230,6 @@ export default function EmulatorLauncher() {
                       >
                         💾 Быстрое сохранение{selSave ? `: ${selSave.name}` : ''}
                       </PxBtn>
-                      {/* v0.179: ИМПОРТ ЧУЖОГО СЕЙВА (.srm/.sav или ZIP с ним — например,
-                          скачанный с GameFAQs) в ЗАПУЩЕННУЮ игру официальным способом
-                          EmulatorJS: файл SRAM пишется ядру, игра сразу видит чужой прогресс */}
-                      <PxBtn
-                        color="sky"
-                        disabled={sramBusy}
-                        onClick={() => sramRef.current?.click()}
-                        title="Загрузить чужой сейв (.srm/.sav или ZIP с ним, например с GameFAQs) в запущенную игру: файл SRAM подхватится сразу — в игре выберите её пункт Load/Continue"
-                      >
-                        {sramBusy ? '⏳ Читаю…' : '📥 Загрузка .srm/.sav'}
-                      </PxBtn>
                       {/* v0.179: ZIP для базы переехал сюда снизу — заказчик: «переместить чуть
                           вверх к другим кнопкам… что было красивее» */}
                       <PxBtn
@@ -1289,7 +1241,7 @@ export default function EmulatorLauncher() {
                         {exportingDb ? '⏳ Собираю ZIP…' : '📦 Сохранить все для базы (ZIP)'}
                       </PxBtn>
                     </div>
-                    <span className="tick-label text-faint">выделяйте сохранение кликом — обведённое грузится/перезаписывается кнопкой и клавишей · 📥 — чужой сейв в запущенную игру (ZIP распакуется сам)</span>
+                    <span className="tick-label text-faint">выделяйте сохранение кликом — обведённое грузится/перезаписывается кнопкой и клавишей</span>
                   </div>
                   {/* v0.171: подсказка мыши с джойстика и её тумблера (подписи — из настроек) */}
                   {pads.length > 0 && (() => {
@@ -1379,10 +1331,10 @@ export default function EmulatorLauncher() {
                   <div className="pt-2.5 mt-1 border-t-2 border-edge space-y-2">
                     <p className="text-[10px] text-dim leading-snug">
                       📦 ZIP для базы собирается кнопкой «Сохранить все для базы (ZIP)» СВЕРХУ — в ZIP идут все сохранения
-                      рома, включая частные. ZIP называется «ром_ник» — ник берётся из Опций → «Имя в комнате»
-                      {options.name.trim() ? ` (сейчас: ${options.name.trim()})` : ' — впишите его в Опциях'}. Внутри у каждого сохранения СВОЯ папка
+                      рома, включая частные. ZIP называется именем рома. Внутри у каждого сохранения СВОЯ папка
                       saves/Игра/Имя_сохранения/ (card.json + save.state) — сохранения к одним и тем же местам и боссам
-                      называются одинаково и заменяют друг друга, а не множатся; ник при этом не теряется — он записан в карточках.
+                      называются одинаково и заменяют друг друга, а не множатся. НИК ИГРОКА НИКУДА НЕ ЗАПИСЫВАЕТСЯ —
+                      ни в имя ZIP-файла, ни в карточки (v0.180).
                       Готовый файл просто передайте владельцу проекта — он добавит его в базу, и сохранения увидят все
                       игроки в блоке «☁ В базе сохранений» ниже.
                     </p>
