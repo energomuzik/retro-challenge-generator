@@ -15,6 +15,7 @@ import { HoldDeleteButton, rememberDeleted } from '../delGuard';
 import { effSpoilerOpen, loadSpoilerFlag, loadSpoilerRec, saveSpoilerFlag, saveSpoilerRec } from '../spoilers';
 import { CartridgeBadge, CartCoverModal, CartCutModal, CoverCropBtn, CoverPickBtn, CoverRemoveBtn, PlatName, RomPicsModal, RomTile, cartLabelOf, fileToCover, storeRomCover } from '../cartridge';
 import { sfx } from '../sound';
+import CloudSavesBlock from '../CloudSavesBlock'; // v0.178: «☁ В базе сохранений» в спойлере сохранений рома
 
 const EFFECTS: { key: EffectType; label: string; hasValue?: boolean; hasTarget?: boolean; unit?: string; def: number }[] = [
   { key: 'move', label: 'Сдвиг по маршруту на N ячеек', hasValue: true, unit: 'яч. (− назад)', def: 3 },
@@ -411,8 +412,10 @@ export default function TaskEditor() {
         </div>
         </div>
         {/* СПОЙЛЕР СОХРАНЕНИЙ под выбранным ромом — как в редакторе сохранений:
-            цветные метки видов (уровень/босс/моё задание/частное), клик выбирает сохранение */}
-        {sel && svCount > 0 && (
+            цветные метки видов (уровень/босс/моё задание/частное), клик выбирает сохранение;
+            v0.178: показывается и при НУЛЕВЫХ сохранениях — в спойлере сразу видно,
+            что есть в облачной базе (забрать сохранения можно прямо отсюда) */}
+        {sel && (
           <div className="mt-1 border-2 border-edge bg-[rgba(11,14,28,0.6)] px-2 py-1.5">
             <button
               onClick={toggleRomSaves}
@@ -425,6 +428,9 @@ export default function TaskEditor() {
             </button>
             {romSavesOpen && (
               <div className="space-y-1 mt-1">
+                {svCount === 0 && (
+                  <div className="tick-label text-dim px-0.5 py-1">Сохранений у рома пока нет — ниже можно забрать их из облачной базы ☁</div>
+                )}
                 {saves.filter((sv) => sv.romId === r.id).map((sv) => {
                   const k = saveKindOf(sv);
                   const picked = fSave === sv.id;
@@ -456,6 +462,9 @@ export default function TaskEditor() {
                     </div>
                   );
                 })}
+                {/* v0.178: «☁ В базе сохранений» — наборы для ЭТОГО рома из базы на GitHub;
+                    «⬇ Забрать» добавляет сохранения в библиотеку, и они появляются в списке выше */}
+                <CloudSavesBlock rom={r} compact />
               </div>
             )}
           </div>

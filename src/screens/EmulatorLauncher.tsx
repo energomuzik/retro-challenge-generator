@@ -22,6 +22,8 @@ import { sfx } from '../sound';
 import { scanYandexRoms, fetchYandexCover, fetchYandexBuf, yandexResolveHref, saveYandexRomAsLocal, findLocalRomByFile, adoptYandexFolderName, yaLibFolderOf, YA_ROMS_LINK_KEY, type YaRomEntry } from '../yandexRoms';
 import { useQuickLoad, quickKeyLabelOf, useQuickSave } from '../useQuickLoad';
 import { padMouseSetOff, PAD_MOUSE_HINT, usePadMouseOff } from '../padMouse'; // v0.171: мышь с джойстика — вкл/выкл при игре
+import { buildSaveDbZip } from '../saveCloud'; // v0.178: ZIP для облачной базы сохранений
+import CloudSavesBlock from '../CloudSavesBlock'; // v0.178: блок «☁ В базе сохранений»
 
 const fmtSize = (b: number) => (b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} МБ` : `${Math.max(1, Math.round(b / 1024))} КБ`);
 
@@ -51,7 +53,7 @@ const saveEmptyRomFolders = (arr: string[]) => {
 };
 
 export default function EmulatorLauncher() {
-  const { roms, saves, setScreen, refresh, toast } = useApp();
+  const { roms, saves, setScreen, refresh, toast, options } = useApp();
   const spoilerMode = useApp((st) => st.options.spoilerMode); // v0.70: режим спойлеров из Опций
   const [romId, setRomId] = useState<string | null>(null);
   const [romBuf, setRomBuf] = useState<ArrayBuffer | null>(null);
@@ -513,6 +515,33 @@ export default function EmulatorLauncher() {
       return;
     }
     void launch();
+  };
+
+  /* ---------- v0.178: ZIP ДЛЯ ОБЛАЧНОЙ БАЗЫ СОХРАНЕНИЙ ----------
+     Кнопка внизу панели «Сохранения»: собирает ВСЕ сохранения рома (включая
+     частные — заказчик: «пускай будут частные сохранения тоже, не исключай их»)
+     в ZIP с готовым расположением папок базы: у КАЖДОГО сохранения СВОЯ папка ПО
+     ЕГО ИМЕНИ (saves/Ром/Имя сохранения/… — БЕЗ НИКА, заказчик: «надо ник убрать,
+     а то будут множиться разные сохранения»), ник лежит в карточках (author) и в
+     имени файла — «Ром_Ник.zip» (ник — «Имя в комнате» из Опций). Создателю
+     остаётся ОДНО: передать файл владельцу проекта — тот кладёт его в репозиторий
+     базы, и сохранения видны всем в блоке «☁ В базе сохранений» ниже. */
+  const [exportingDb, setExportingDb] = useState(false);
+  const exportSaveDbZip = () => {
+    void (async () => {
+      if (!rom) { toast('Сначала выберите ром', 'err'); return; }
+      if (!romSaves.length) { toast('Выгружать нечего: у рома нет ни одного сохранения', 'err'); return; }
+      setExportingDb(true);
+      try {
+        const res = await buildSaveDbZip(rom, romSaves, options.name.trim() || 'ИГРОК');
+        sfx.success();
+        toast(`📦 ZIP готов: «${res.fileName}» — сохранений в нём: ${res.count}. Передайте файл владельцу проекта`, 'ok');
+      } catch {
+        sfx.fail();
+        toast('Не получилось собрать ZIP — попробуйте ещё раз', 'err');
+      }
+      setExportingDb(false);
+    })();
   };
 
   const createSave = async (kind: SaveKind) => {
@@ -1275,6 +1304,29 @@ export default function EmulatorLauncher() {
                     );
                   })}
                   {romSaves.length === 0 && <div className="text-[12px] text-dim sm:col-span-2 py-3 text-center">Сохранений нет — запустите ром и запишите первое состояние</div>}
+                  </div>
+                  {/* v0.178: ZIP ДЛЯ БАЗЫ СОХРАНЕНИЙ + ОБЛАЧНЫЙ СПИСОК — внизу панели */}
+                  <div className="pt-2.5 mt-1 border-t-2 border-edge space-y-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <PxBtn
+                        color="gold"
+                        onClick={exportSaveDbZip}
+                        disabled={exportingDb}
+                        title="Собрать ZIP со ВСЕМИ сохранениями этого рома (включая частные) — файл для облачной базы сохранений"
+                      >
+                        {exportingDb ? '⏳ Собираю ZIP…' : '📦 Сохранить все для базы (ZIP)'}
+                      </PxBtn>
+                      <span className="tick-label text-faint">в ZIP идут все сохранения рома, включая частные</span>
+                    </div>
+                    <p className="text-[10px] text-dim leading-snug">
+                      ZIP называется «ром_ник»: ник берётся из Опций → «Имя в комнате»
+                      {options.name.trim() ? ` (сейчас: ${options.name.trim()})` : ' — впишите его в Опциях'}. Внутри у каждого сохранения СВОЯ папка
+                      saves/Игра/Имя_сохранения/ (card.json + save.state) — сохранения к одним и тем же местам и боссам
+                      называются одинаково и заменяют друг друга, а не множатся; ник при этом не теряется — он записан в карточках.
+                      Готовый файл просто передайте владельцу проекта — он добавит его в базу, и сохранения увидят все
+                      игроки в блоке «☁ В базе сохранений» ниже.
+                    </p>
+                    <CloudSavesBlock rom={rom} />
                   </div>
                 </div>
               </Panel>
