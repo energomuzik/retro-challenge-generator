@@ -50,6 +50,12 @@ export interface SegaApi {
   /** Перезапуск ядра с применением сохранения (null = старт с начала).
    *  Использует документированный EJS_loadStateURL — гарантированно работает. */
   loadSaveReliable: (b64: string | null) => void;
+  /** v0.179: импорт чужого SRAM-файла (.srm/.sav) в ЗАПУЩЕННЫЙ эмулятор —
+   *  официальный путь EmulatorJS (его кнопка «Import Save File»): байты пишутся
+   *  в виртуальную FS по пути ядра (getSaveFilePath), затем refresh_save_files
+   *  перечитывает SRAM в память ядра — игра видит сохранение сразу, без
+   *  перезапуска. null — ответ не пришёл (ядро не готово/таймаут). */
+  importSram: (data: Uint8Array) => Promise<SramImportResult | null>;
   pause: (p: boolean) => void; // живая пауза (без перезапуска)
   /** Снимок текущего кадра (dataURL jpeg) для трансляции соперникам. */
   captureFrame: () => Promise<string | null>;
@@ -62,6 +68,9 @@ export interface SegaApi {
    *  null — ядро ещё не поднялось (не готово). */
   getHeap: () => Uint8Array | null;
 }
+
+/* v0.179: результат импорта SRAM (Ответ iframe на import-sram). */
+export interface SramImportResult { ok: boolean; path?: string; size?: number; error?: string }
 
 function coreFor(ext: string): string {
   if (ext === 'sms') return 'segaMS';
@@ -162,6 +171,8 @@ export default function SegaBox({
   const pausedRef = useRef(paused ?? false);
   pausedRef.current = paused ?? false;
   const pendingRef = useRef<Record<string, (s: string | null) => void>>({});
+  /* v0.179: ожидающие ответы на import-sram (импорт чужого .srm/.sav) */
+  const pendingSramRef = useRef<Record<string, (r: SramImportResult | null) => void>>({});
   const readyRef = useRef(false);
   // получили ли хоть одно «hello» от iframe (для точного сторожевого таймера)
   const gotHelloRef = useRef(false);
@@ -344,12 +355,21 @@ export default function SegaBox({
           delete pendingRef.current[d.reqId];
           cb(d.state ?? null);
         }
+      } else if (d.type === 'ejs-sram' && d.reqId) {
+        // v0.179: ответ на импорт SRAM (ок/ошибка + путь и размер)
+        const sr = d as { ok?: number | boolean; path?: string; size?: number; error?: string };
+        const cbS = pendingSramRef.current[d.reqId];
+        if (cbS) {
+          delete pendingSramRef.current[d.reqId];
+          cbS({ ok: !!sr.ok, path: sr.path, size: sr.size, error: sr.error });
+        }
       }
     };
     window.addEventListener('message', onMsg);
     return () => {
       window.removeEventListener('message', onMsg);
       pendingRef.current = {};
+      pendingSramRef.current = {};
     };
   }, []);
 
@@ -372,6 +392,18 @@ export default function SegaBox({
         bootStateRef.current = b64 ?? null;
         setBootTick((t) => t + 1); // перестроить html + перемонтировать iframe → сохранение применится при старте
       },
+      importSram: (data) =>
+        new Promise<SramImportResult | null>((resolve) => {
+          const reqId = 'r' + Math.random().toString(36).slice(2);
+          pendingSramRef.current[reqId] = resolve;
+          try { frameRef.current?.contentWindow?.postMessage({ type: 'import-sram', data, reqId }, '*'); } catch { /* noop */ }
+          setTimeout(() => {
+            if (pendingSramRef.current[reqId]) {
+              delete pendingSramRef.current[reqId];
+              resolve(null); // ядро не ответило — «ещё не готово»
+            }
+          }, 6000);
+        }),
       pause: (p) => {
         try { frameRef.current?.contentWindow?.postMessage({ type: 'pause', paused: !!p }, '*'); } catch { /* noop */ }
       },
@@ -1261,6 +1293,28 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     '        else x2.fillRect(c2.width*(1-fx2.pct/100),0,c2.width*fx2.pct/100,c2.height);}',
     '      send2(c2.toDataURL("image/jpeg",0.5));',
     '    }catch(err){send2(null);}',
+    '    return;',
+    '  }',
+    // v0.179: ИМПОРТ ЧУЖОГО SRAM (.srm/.sav) — ТОЧНО ОФИЦИАЛЬНЫЙ путь EmulatorJS
+    // (его кнопка «Import Save File»): байты пишутся в виртуальную FS ядра по пути,
+    // который ядро само сообщает через save_file_path (getSaveFilePath), затем
+    // refresh_save_files перечитывает SRAM из файла в память ядра — игра видит
+    // чужое сохранение СРАЗУ, без перезапуска. SRAM живёт в памяти сессии:
+    // закрепить место — нашими кнопками сохранений (они переживают перезапуск).
+    '  if(d.type==="import-sram"){',
+    '    var sendS=function(m){try{parent.postMessage(Object.assign({type:"ejs-sram",reqId:d.reqId},m),"*");}catch(e){}};',
+    '    try{',
+    '      var emX=window.EJS_emulator,qX=emX&&emX.gameManager;',
+    '      if(!qX||!qX.FS||typeof qX.getSaveFilePath!=="function")throw new Error("ядро ещё не поднялось — дайте игре запуститься и попробуйте снова");',
+    '      var spX=qX.getSaveFilePath();',
+    '      var segsX=spX.split("/"),accX="";',
+    '      for(var sK=0;sK<segsX.length-1;sK++){if(segsX[sK]!==""){accX+="/"+segsX[sK];if(!qX.FS.analyzePath(accX).exists)qX.FS.mkdir(accX);}}',
+    '      if(qX.FS.analyzePath(spX).exists)qX.FS.unlink(spX);',
+    '      var sramU8=new Uint8Array(d.data);',
+    '      qX.FS.writeFile(spX,sramU8);',
+    '      qX.loadSaveFiles();',
+    '      sendS({ok:1,path:spX,size:sramU8.length});',
+    '    }catch(errX){sendS({ok:0,error:String(errX&&errX.message||errX)});}',
     '    return;',
     '  }',
     '  var g=gm();',
