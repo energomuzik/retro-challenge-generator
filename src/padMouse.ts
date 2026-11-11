@@ -65,7 +65,33 @@
        «Карта мира», «Сохранить») нажимаются, гасятся только клики по КАНВЕ
        карты (случайное R1/R2 не откроет ячейку);
      • интро Френди было «голым полем» без галочки в списке оверлеев — клики
-       гасились и «Пропустить» не нажималась; добавлено в список. */
+       гасились и «Пропустить» не нажималась; добавлено в список.
+
+   v0.183 — АВТОМАТИКА ВКЛЮЧЕНИЯ/ВЫКЛЮЧЕНИЯ МЫШИ ВОКРУГ ИГРЫ (заказчик: «При запуске
+   задания мышь джойстика должна автоматически переключиться в выключенное состояние.
+   А когда игрок прошёл задание, или проиграл, то мышь джойстика должна автоматически
+   включаться обратно... при запуске игры в редакторе сохранений — выключаться, а при
+   закрытии игры — включаться обратно. При этом если джойстик уже включён игроком
+   обратно, то не препятствовать этому переключению и при закрытии — ничего не делать».
+   В v0.174–v0.182 курсор был «всегда на месте» — вернули автоматику с РУЧНЫМ
+   старшинством: если игрок сам включил мышь тумблером ВО ВРЕМЯ игры (autoOffByUs
+   сбрасывается), закрытие/прохождение ничего не трогает — мышь остаётся активной):
+     • padMouseAutoHide() — выключить мышь к старту игры (окно задания, редактор
+       сохранений); работает, если включена «Автоматика задания» (padMouseAutoTask)
+       и рубильник мыши (padMouseEnabled), и мышь была включена (userOff=false) —
+       тогда запоминаем «выключили МЫ» (autoOffByUs=true);
+     • padMouseAutoRestore() — включить обратно после игры ТОЛЬКО если выключали мы
+       сами (autoOffByUs): ручное выключение игроком не отменяется;
+     • padMouseAutoShow() — принудительно включить (окно задания закрылось=пройдено,
+       размонтирование редактора сохранений): сбрасывает autoOffByUs и включает мышь;
+     • ТРИ ГАЛОЧКИ в «Управлении» (EmuPrefs, все ВКЛ по умолчанию, у старых сохранённых
+       prefs отсутствуют = ВКЛ): padMouseEnabled «Мышь с джойстика включена» — в
+       выключенном состоянии курсор не поднимается ВООБЩЕ (tick гасит курсор сразу,
+       тумблер F7/L3 молчит); padMouseAutoOn «Включать мышь при обнаружении джоя» —
+       по НАРАСТАЮЩЕМУ ФРОНТУ пада (втыкнули геймпад): ВКЛ — мышь включается сама
+       (autoOffByUs сбрасывается), ВЫКЛ — мышь гасится и игрок включает её сам
+       тумблером L3/F7; padMouseAutoTask «Автоматика задания» — см. выше, в выключенном
+       состоянии вокруг игры ничего не происходит (мышь остаётся как была). */
 import { useEffect, useState } from 'react';
 import { listGamepads, loadEmuPrefs } from './input';
 import { sfx } from './sound';
@@ -129,6 +155,13 @@ const CURSOR_LMB = shipSvg('#ff5d73', '#ffb3a8', true);   // зажата ЛКМ
 
 /* ---------- v0.171: СОСТОЯНИЕ «ВЫКЛЮЧЕНО КНОПКОЙ» (userOff) + подписчики ---------- */
 let userOff = false;
+/* v0.183: мышь выключена НЕ игроком, а нашей автоматикой (padMouseAutoHide) —
+   только в этом случае padMouseAutoRestore вернёт её после игры. Ручное
+   включение тумблером (flip) сбрасывает флаг — закрытие игры ничего не трогает. */
+let autoOffByUs = false;
+/* v0.183: был ли пад подключён на прошлом кадре (нарастающий фронт = «втыкнули пад»).
+   По фронту срабатывает галочка «Включать мышь при обнаружении джоя». */
+let padSeen = false;
 const offListeners = new Set<() => void>();
 
 /** Выключить/включить мышь с джойстика (кнопка-тумблер и авто-режим окон заданий). */
@@ -138,6 +171,36 @@ export function padMouseSetOff(v: boolean): void {
   offListeners.forEach((l) => { try { l(); } catch { /* noop */ } });
 }
 export function padMouseIsOff(): boolean { return userOff; }
+
+/* ---------- v0.183: АВТОМАТИКА ВОКРУГ ИГРЫ (окно задания, редактор сохранений) ----------
+   Три функции вызываются из GameScreen/EmulatorLauncher. Обе проверяют галочки:
+   рубильник выключен (padMouseEnabled=false) или автоматика выключена
+   (padMouseAutoTask=false) — никаких действий, мышь остаётся как была. */
+
+/** v0.183: игра ЗАПУСТИЛАСЬ (окно задания открыто, эмулятор в редакторе сейвов
+ *  побежал) — выключить мышь, если она была включена и не выключена игроком. */
+export function padMouseAutoHide(): void {
+  const p = loadEmuPrefs();
+  if (p.padMouseEnabled === false || p.padMouseAutoTask === false) return; // автоматику срезали галочками
+  if (!userOff) { padMouseSetOff(true); autoOffByUs = true; } // выключили МЫ — вернём после игры
+}
+
+/** v0.183: игра ЗАКОНЧИЛАСЬ (прошёл/проиграл/закрыл) — вернуть мышь, если выключали
+ *  её мы сами. Игрок включил мышь тумблером во время игры (autoOffByUs уже сброшен)
+ *  или выключил сам — ничего не делаем. */
+export function padMouseAutoRestore(): void {
+  const p = loadEmuPrefs();
+  if (p.padMouseEnabled === false || p.padMouseAutoTask === false) return;
+  if (autoOffByUs) { autoOffByUs = false; padMouseSetOff(false); }
+}
+
+/** v0.183: задание ПРОЙДЕНО (окно закрылось финалом) или размонтирован редактор —
+ *  мышь НУЖНО включить независимо от того, кто её выключал (принудительно). */
+export function padMouseAutoShow(): void {
+  const p = loadEmuPrefs();
+  if (p.padMouseEnabled === false || p.padMouseAutoTask === false) return;
+  autoOffByUs = false; padMouseSetOff(false);
+}
 
 /** Подписка на смену состояния (для подсказок «мышь ВКЛ/выкл»). Возвращает отписку. */
 export function padMouseOnOffChange(l: () => void): () => void {
@@ -335,8 +398,23 @@ export function usePadMouse(active: boolean) {
       last = now;
       const prefs = loadEmuPrefs();
       if (prefs.gamepad === false) { setTrigFlag(false); hide(); return; } // главный тумблер «Геймпад» в Опциях
+      /* v0.183: РУБИЛЬНИК «Мышь с джойстика включена» снят — курсора нет ВООБЩЕ,
+         ни автоматики, ни тумблер не поднимет (flip молчит, см. ниже). */
+      if (prefs.padMouseEnabled === false) { setTrigFlag(false); hide(); return; }
       if (userOff) { releaseAll(); setTrigFlag(false); hide(); return; } // v0.171: выключено кнопкой-тумблером
       const gp = listGamepads()[0];
+      /* v0.183: НАРАСТАЮЩИЙ ФРОНТ ПАДА — «обнаружили джойстик» (втыкнули/первый кадр).
+         Галочка «Включать мышь при обнаружении джоя»: ВКЛ — мышь поднимается сама
+         (и авто-флаг сбрасывается — автоматика задания начинает с чистого листа);
+         ВЫКЛ — мышь гасится: включать её самому тумблером L3/F7. */
+      const padHere = !!gp;
+      if (padHere !== padSeen) {
+        padSeen = padHere;
+        if (padHere) {
+          if (prefs.padMouseAutoOn !== false) { autoOffByUs = false; padMouseSetOff(false); }
+          else { autoOffByUs = false; padMouseSetOff(true); } // включит сам на L3/F7
+        }
+      }
       if (!gp) { setTrigFlag(false); hide(); return; } // пада нет — курсор не показываем, мышь реальная работает сама
       show();
       /* v0.171: чувствительность — множитель из «Управления» (ползунок 0.3–2.5) */
@@ -467,6 +545,8 @@ export function usePadMouse(active: boolean) {
       cancelAnimationFrame(raf);
       releaseAll(); // окно закрылось при зажатой кнопке — не оставляем «залипшее» тащение
       trigFlagPrev = null;
+      padSeen = false; // v0.183: следующий запуск снова «обнаружит пад» и включит мышь по галочке
+      autoOffByUs = false; // v0.183: новое состояние страницы — без наследства от прошлого
       try { localStorage.removeItem(TRIG_FLAG_KEY); } catch { /* noop */ } // v0.174: триггеры игре — без ограничений
       cur.remove();
     };
@@ -483,6 +563,9 @@ export function usePadMouseToggle() {
   useEffect(() => {
     const flip = () => {
       if (uiLock) return;
+      const prefs = loadEmuPrefs();
+      if (prefs.padMouseEnabled === false) return; // v0.183: рубильник снят — тумблер молчит (включается в «Управлении»)
+      autoOffByUs = false; // v0.183: игрок переключил САМ — автоматика задания больше не трогает эту мышь
       padMouseSetOff(!userOff);
       try { sfx.click(); } catch { /* звук не критичен */ }
     };

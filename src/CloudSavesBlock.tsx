@@ -5,9 +5,11 @@
    (findLocalRomByFile) и в ромах с Яндекса. В базе у каждого сохранения СВОЯ
    папка ПО ИМЕНИ СОХРАНЕНИЯ (без ника; v0.180 — ника нет и в карточках), поэтому
    в списке видно каждое сохранение отдельно: имя, вид, дата — и «⬇
-   Забрать» качает ИМЕННО ЕГО и добавляет в библиотеку устройства НОВОЙ записью —
-   свои сохранения никто не перезаписывает. Кнопка «⟳ обновить» перечитывает
-   базу с GitHub, сбросив 5-минутный кэш. */
+   Импорт» качает ИМЕННО ЕГО и добавляет в библиотеку устройства НОВОЙ записью —
+   свои сохранения никто не перезаписывает. v0.183: кнопка «⬇ ИМПОРТИРОВАТЬ ВСЕ»
+   тащит в библиотеку ВСЕ сохранения этого рома из базы (по очереди, ошибка
+   одного не стопорит остальных, в конце — честный счёт). Кнопка «⟳ обновить»
+   перечитывает базу с GitHub, сбросив 5-минутный кэш. */
 
 import { useEffect, useState } from 'react';
 import { useApp } from './store';
@@ -36,6 +38,7 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
   const [groups, setGroups] = useState<CloudSaveGroup[]>([]);
   const [cards, setCards] = useState<Record<string, CloudCard>>({});
   const [busyPath, setBusyPath] = useState<string | null>(null);
+  const [busyAll, setBusyAll] = useState<number | null>(null); // v0.183: сколько сохранений осталось при «Импортировать все»
   const [tick, setTick] = useState(0);
   const romId = rom?.id ?? null;
 
@@ -85,16 +88,50 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
         if (n > 0) {
           await refresh();
           sfx.success();
-          toast(`☁ «${card.name || g.saveFolder}» добавлено в библиотеку — оно уже в списке сохранений рома`, 'ok');
+          toast(`☁ «${card.name || g.saveFolder}» импортировано в библиотеку — оно уже в списке сохранений рома`, 'ok');
         } else {
           sfx.fail();
-          toast('Не получилось забрать сохранение — проверьте интернет и нажмите ⟳', 'err');
+          toast('Не получилось импортировать сохранение — проверьте интернет и нажмите ⟳', 'err');
         }
       } catch {
         sfx.fail();
-        toast('Не получилось забрать сохранение — проверьте интернет и попробуйте снова', 'err');
+        toast('Не получилось импортировать сохранение — проверьте интернет и попробуйте снова', 'err');
       }
       setBusyPath(null);
+    })();
+  };
+
+  /* v0.183: «ИМПОРТИРОВАТЬ ВСЕ» — одно нажатие тащит в библиотеку ВСЕ сохранения
+     этого рома из базы. Карточки недокачанных дотягиваются на месте; каждое
+     сохранение добавляется НОВОЙ записью (свои не перезаписываются); ошибка
+     одного не стопорит остальных — в конце честный счёт «сколько получилось». */
+  const grabAll = () => {
+    void (async () => {
+      if (busyAll !== null) return;
+      sfx.click();
+      const list = [...groups];
+      let ok = 0;
+      for (let i = 0; i < list.length; i++) {
+        const g = list[i];
+        setBusyAll(list.length - i); // осталось ПОСЛЕ текущего (счётчик вниз до 1, потом 0/null)
+        try {
+          const card = cards[g.cardPath] ?? await fetchCloudCard(g.cardPath);
+          const folder = g.cardPath.slice(0, g.cardPath.lastIndexOf('/'));
+          if (await importCloudCard(rom.id, card, folder) > 0) ok++;
+        } catch { /* одно не получилось — остальные едут дальше */ }
+      }
+      setBusyAll(null);
+      await refresh();
+      if (ok === list.length) {
+        sfx.success();
+        toast(`☁ Импортировано: ${ok} из ${list.length} — все сохранения этого рома уже в библиотеке`, 'ok');
+      } else if (ok > 0) {
+        sfx.success();
+        toast(`☁ Импортировано: ${ok} из ${list.length} — остальное не открылось, нажмите ⟳ и попробуйте ещё раз`, 'ok');
+      } else {
+        sfx.fail();
+        toast('Не получилось импортировать сохранения — проверьте интернет и нажмите ⟳', 'err');
+      }
     })();
   };
 
@@ -108,6 +145,16 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
         className="tick-label text-gold hover:underline cursor-pointer shrink-0"
         title="Перечитать базу с GitHub, сбросив кэш на 5 минут"
       >⟳ обновить</button>
+      {groups.length > 0 && (
+        <button
+          onClick={grabAll}
+          disabled={busyAll !== null}
+          className={`tick-label shrink-0 ${busyAll !== null ? 'text-faint' : 'text-teal hover:underline cursor-pointer'}`}
+          title="Скачать все сохранения этого рома из базы и добавить в библиотеку (свои сохранения не трогаются)"
+        >
+          {busyAll !== null ? `⏳ Импортирую… осталось ${busyAll}` : '⬇ Импортировать все'}
+        </button>
+      )}
     </div>
   );
 
@@ -144,10 +191,10 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
                   small
                   color="teal"
                   onClick={() => grab(g)}
-                  disabled={busyPath === g.cardPath}
+                  disabled={busyPath === g.cardPath || busyAll !== null}
                   title="Скачать это сохранение из базы и добавить в библиотеку (свои сохранения не трогаются)"
                 >
-                  {busyPath === g.cardPath ? '⏳ Забираю…' : '⬇ Забрать'}
+                  {busyPath === g.cardPath ? '⏳ Импортирую…' : '⬇ Импорт'}
                 </PxBtn>
               </div>
             );
@@ -156,8 +203,8 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
       )}
       {phase === 'ready' && groups.length > 0 && (
         <p className="tick-label text-faint leading-snug">
-          «⬇ Забрать» добавляет сохранение в библиотеку устройства НОВОЙ записью — свои сохранения никто не перезаписывает.
-          Сохранения находятся по имени файла рома в базе {SAVE_DB_REPO}.
+          «⬇ Импорт» добавляет сохранение в библиотеку устройства НОВОЙ записью — свои сохранения никто не перезаписывает.
+          «⬇ Импортировать все» тащит разом всё. Сохранения находятся по имени файла рома в базе {SAVE_DB_REPO}.
         </p>
       )}
     </div>

@@ -21,7 +21,7 @@ import {
 import { sfx } from '../sound';
 import { scanYandexRoms, fetchYandexCover, fetchYandexBuf, yandexResolveHref, saveYandexRomAsLocal, findLocalRomByFile, adoptYandexFolderName, yaLibFolderOf, YA_ROMS_LINK_KEY, type YaRomEntry } from '../yandexRoms';
 import { useQuickLoad, quickKeyLabelOf, useQuickSave } from '../useQuickLoad';
-import { padMouseSetOff, PAD_MOUSE_HINT, usePadMouseOff } from '../padMouse'; // v0.171: мышь с джойстика — вкл/выкл при игре
+import { padMouseAutoShow, padMouseAutoHide, padMouseAutoRestore, PAD_MOUSE_HINT, usePadMouseOff } from '../padMouse'; // v0.183: автоматика мыши вокруг игры (запустил ром — выключилась, закрыл — включилась)
 import { buildSaveDbZip } from '../saveCloud'; // v0.178: ZIP для облачной базы сохранений
 import CloudSavesBlock from '../CloudSavesBlock'; // v0.178: блок «☁ В базе сохранений»
 
@@ -494,15 +494,17 @@ export default function EmulatorLauncher() {
   };
   useQuickSave(quickSaveFire);
 
-  /* ---------- v0.171→v0.174: МЫШЬ С ДЖОЙСТИКА В «ЗАПУСКЕ ЭМУЛЯТОРА» ----------
-     v0.174: мышь больше НЕ гаснет на время игры — курсор с кликами работает по
-     кнопкам экрана («Перезапуск», «Быстрое сохранение»…), а над самим экраном
-     игры (iframe — игровая зона) R1/R2 остаются триггерами игры, и клики там
-     гасятся (padMouse.ts v0.174 + флаг retropolia-pad-trig-ui для насоса кнопок).
-     Полностью выключить — тумблер (lbl ниже). Ушли с экрана — мышь включена. */
+  /* ---------- v0.183: АВТОМАТИКА МЫШИ С ДЖОЙСТИКА В РЕДАКТОРЕ СОХРАНЕНИЙ ----------
+     Ром ЗАПУСТИЛСЯ (running=true) — мышь выключается сама (R1/R2 свободны для
+     игры, курсор не мешает); остановил/закрыл игру (running=false) — включается
+     обратно, если выключали её МЫ (автоматикой). Ручной тумблер (F7/L3) старше:
+     включил сам во время игры — при закрытии ничего не трогаем (autoOffByUs).
+     Открылся экран (кнопки библиотеки нажимаются с джоя) — мышь включена.
+     Галочки padMouseAutoTask/padMouseEnabled проверяются внутри функций. */
+  useEffect(() => { padMouseAutoShow(); return () => padMouseAutoRestore(); }, []);
   useEffect(() => {
-    padMouseSetOff(false);
-    return () => padMouseSetOff(false); // ушли с экрана — мышь снова включена
+    if (running) padMouseAutoHide();
+    else padMouseAutoRestore();
   }, [running]);
   const padMouseOff = usePadMouseOff();
 

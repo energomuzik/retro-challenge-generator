@@ -87,6 +87,19 @@ export interface EmuPrefs {
   /* v0.171: ЧУВСТВИТЕЛЬНОСТЬ МЫШИ С ДЖОЙСТИКА — множитель скорости курсора
      (1 = как было; 0.3–2.5). Меняется ползунком в «Управлении». */
   padMouseSpeed?: number;
+  /* v0.183: ТРИ ГАЛОЧКИ МЫШИ С ДЖОЙСТИКА (все по умолчанию ВКЛ):
+     • padMouseEnabled — рубильник «Мышь с джойстика включена»: в выключенном
+       состоянии мышь не включается ВООБЩЕ (ни автоматикой, ни тумблером);
+     • padMouseAutoOn — «Включать мышь при обнаружении джоя»: в выключенном
+       состоянии мышь при втыкании пада не включается — игрок включает сам
+       тумблером (F7 / L3);
+     • padMouseAutoTask — «Автоматика задания»: при запуске задания (окно задания,
+       игра в редакторе сохранений) мышь выключается сама, после прохождения/
+       проигрыша/закрытия — включается обратно. Ручное включение тумблером во
+       время игры старшинство ПЕРЕХВАТЫВАЕТ: при закрытии ничего не происходит. */
+  padMouseEnabled?: boolean;
+  padMouseAutoOn?: boolean;
+  padMouseAutoTask?: boolean;
 }
 
 /* ---------- SEGA Genesis (Megadrive): 6 кнопок + Start, без Select ---------- */
@@ -512,6 +525,9 @@ export function loadEmuPrefs(): EmuPrefs {
     mapKey: MAP_KEY_DEFAULT, // v0.176: M — быстрый вызов карты мира
     mapPad: MAP_PAD_DEFAULT, // v0.176: Select (у Xbox — Back/View)
     padMouseSpeed: PADMOUSE_SPEED_DEFAULT, // v0.171: чувствительность мыши стиком
+    padMouseEnabled: true, // v0.183: рубильник мыши с джойстика — ВКЛ
+    padMouseAutoOn: true, // v0.183: при обнаружении джоя — включать мышь
+    padMouseAutoTask: true, // v0.183: автоматика задания (выкл/вкл вокруг игры) — ВКЛ
   };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
@@ -553,6 +569,9 @@ export function loadEmuPrefs(): EmuPrefs {
       mapKey: typeof p.mapKey === 'string' && p.mapKey ? p.mapKey.toLowerCase() : MAP_KEY_DEFAULT,
       mapPad: typeof p.mapPad === 'number' && p.mapPad >= 0 ? p.mapPad : MAP_PAD_DEFAULT,
       padMouseSpeed: typeof p.padMouseSpeed === 'number' && p.padMouseSpeed >= 0.3 && p.padMouseSpeed <= 2.5 ? p.padMouseSpeed : PADMOUSE_SPEED_DEFAULT,
+      padMouseEnabled: p.padMouseEnabled !== false, // v0.183: у старых prefs поле отсутствует = ВКЛ
+      padMouseAutoOn: p.padMouseAutoOn !== false, // v0.183: как было — включать при обнаружении
+      padMouseAutoTask: p.padMouseAutoTask !== false, // v0.183: как было — автоматика работает
     };
   } catch {
     return base;

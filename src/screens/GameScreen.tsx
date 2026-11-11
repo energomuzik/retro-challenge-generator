@@ -49,7 +49,8 @@ import { hasDice } from '../bogach'; // v0.109: проверка пакосте�
 import { DONATE_DICE_ONLY } from '../types';
 import { useQuickLoad, quickKeyLabelOf, useQuickSave, quickSaveKeyLabelOf } from '../useQuickLoad';
 import {
-  PAD_MOUSE_HINT, padMouseSetOff, padMouseSetClicksOff, padMouseIsOff, usePadMouseOff,
+  PAD_MOUSE_HINT, padMouseSetClicksOff, padMouseIsOff, usePadMouseOff,
+  padMouseAutoHide, padMouseAutoRestore, // v0.183: автоматика мыши вокруг заданий (окна / выход из партии)
 } from '../padMouse'; // v0.170/171: мышь с джойстика (правый стик + R1/R2) — глобальная (App.tsx), здесь авто-режим окон
 import { startLoop, stopLoop, syncLoops, stopGroup, killGroup, stopOneShot, playOneShot } from '../loopsnd';
 
@@ -630,6 +631,23 @@ export default function GameScreen() {
      паузит игру без сброса — вернулся из карты мира / нажал «Продолжить» и играешь дальше */
   const [rubgPaused, setRubgPaused] = useState(false);
   useEffect(() => { setRubgPaused(false); }, [myJob?.cellIdx, rubgJobArmed]);
+
+  /* ---------- v0.183: АВТОМАТИКА МЫШИ С ДЖОЙСТИКА ВОКРУГ ЗАДАНИЙ ----------
+     Пока МОЙ эмулятор крутится в задании (совместное, личный квест/БОГАЧ/FRENDY,
+     VERSUS/RUBG) — мышь с джойстика ВЫКЛЮЧАЕТСЯ сама (R1/R2 свободны для игры,
+     курсор не мешает). Прошёл/проиграл/пауза/карта мира/чужой ход/«Старт игры»
+     — включается обратно (кнопки окна и панели снова нажимаются с джоя).
+     Ручной тумблер (F7/L3) старше автоматики: включил сам во время игры — при
+     закрытии ничего не трогаем (autoOffByUs, см. padMouse.ts). Галочки «Управления»
+     padMouseAutoTask/padMouseEnabled проверяются внутри padMouseAutoHide/Restore. */
+  const chRunMouse = !!ch && myTurn && ch.status === 'playing' && !ch.paused;
+  useEffect(() => { if (chRunMouse) padMouseAutoHide(); else padMouseAutoRestore(); }, [chRunMouse]);
+  const qRunMouse = myQJob !== undefined && !!myQTask && qArmed && !qPaused && !peekMap;
+  useEffect(() => { if (qRunMouse) padMouseAutoHide(); else padMouseAutoRestore(); }, [qRunMouse]);
+  const jRunMouse = myJob !== undefined && rubgJobArmed && !rubgPaused && !peekMap;
+  useEffect(() => { if (jRunMouse) padMouseAutoHide(); else padMouseAutoRestore(); }, [jRunMouse]);
+  /* вышли из партии (размонтирование GameScreen) — вернуть мышь, если выключали её сами */
+  useEffect(() => () => padMouseAutoRestore(), []);
 
   /* ---------- v0.68 ЗАЧЁТ ПО КОДУ (CodeSearch): пока играем задание с условием —
      раз в полсекунды читаем память эмулятора. Условие ПОБЕДЫ выполнено → задание
@@ -1510,14 +1528,24 @@ export default function GameScreen() {
    кнопки) R2/R1 — кнопки мыши, а насос кнопок в SegaBox не пересылает R1/R2 игре.
    Полностью выключить мышь — тумблер «padToggleHint» (F7 / L3) — как раньше. */
   const [taskWinOpenUi, setTaskWinOpenUi] = useState(false);
+  const taskWinPrevRef = useRef(false);
   useEffect(() => {
     const open = (myQJob !== undefined && !!myQTask) || myJob !== undefined || (!!ch && myTurn);
     setTaskWinOpenUi(open);
-    if (!open) padMouseSetOff(false); // окно задания закрылось — мышь с джойстика снова включена
+    /* v0.183: окно задания ЗАКРЫЛОСЬ (прошёл / проиграл / «Уйти») — вернуть мышь
+       с джойстика, если выключали её МЫ (автоматикой). Игрок включил сам во время
+       игры (тумблер сбросил autoOffByUs) или выключил сам — ничего не делаем,
+       как просил заказчик: «если джойстик уже включён игроком обратно...
+       при закрытии игры или прохождении задания — ничего не делать». */
+    if (taskWinPrevRef.current && !open) padMouseAutoRestore();
+    taskWinPrevRef.current = open;
   }, [myQJob, !!myQTask, myJob, ch, myTurn]);
-  /* v0.174: мышь с джойстика в окне задания — всегда включена (игра крутится или стоит —
-     неважно): «Старт игры», «Победа», кнопки панели вверху и все окна нажимаются с джоя */
-  useEffect(() => { if (taskWinOpenUi) padMouseSetOff(false); }, [taskWinOpenUi]);
+  /* v0.183: эффект v0.174 «мышь всегда включена, пока окно открыто» УБРАН — он
+     пересиливал автоматику (окно открыто + эмулятор крутится = мышь должна быть
+     выключена). Теперь моментами рулят chRunMouse/qRunMouse/jRunMouse выше: окно
+     открыто, но игра стоит (выбор картриджа, «Старт игры», пауза, чужой ход,
+     peekMap) — мышь включена, кнопки окна и панели нажимаются с джоя;
+     игра крутится — мышь выключена, R1/R2 свободны для игры. */
   const padMouseOffUi = usePadMouseOff();
   /* «только курсор» на чистом поле — клики по канве карты гасятся, пока не открыто ни одно окно/оверлей
      v0.174: в списке оверлеев теперь и интро Френди (frendyIntro) — раньше оно считалось «голым полем»,
