@@ -612,14 +612,19 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     `var PAD_ORDER=${JSON.stringify(FAMILY_ACTIONS[padFamily])};`,
     'var keyToIdx={};',
     'var suppressKeys={};',
-    // Пакости: активный список + единый путь ввода (инверсия крестовины + задержка кнопок)
-    `var CHAOS={list:${chaosJson},invert:0,lag:0,region:""};`,
+    // Пакости: активный список + единый путь ввода (инверсия крестовины + задержка кнопок + «без выстрелов»)
+    `var CHAOS={list:${chaosJson},invert:0,lag:0,noshoot:0,region:""};`,
     'var lastSent={};',
     'var inputQueue=[];',
     'function invertIdx(idx){if(!CHAOS.invert)return idx;if(idx===4)return 5;if(idx===5)return 4;if(idx===6)return 7;if(idx===7)return 6;return idx;}',
+    // v0.184: пакость «Без выстрелов» — нажатия боевых кнопок глотаются (B=0,Y=1,A=8,X=9,L=10,R=11,L2..R3=12..15);
+    // живут только крестовина (4-7), Select (2) и Start (3). Отпускания пропускаем всегда — кнопка не «залипнет»,
+    // если пакость включилась, пока её держали
+    'function noShootIdx(idx){return !(idx===2||idx===3||(idx>=4&&idx<=7));}',
     'function rawSend(idx,pressed){try{var g=window.EJS_emulator&&window.EJS_emulator.gameManager;if(g&&typeof g.simulateInput==="function"){g.simulateInput(0,idx,pressed?1:0);return true;}}catch(e){}return false;}',
     'function sendInput(idx,pressed){',
     '  idx=invertIdx(idx);',
+    '  if(CHAOS.noshoot&&pressed&&noShootIdx(idx)){return;}',
     '  if(lastSent[idx]===pressed){return;}',
     '  lastSent[idx]=pressed;',
     '  if(CHAOS.lag>0){inputQueue.push({idx:idx,val:pressed?1:0,due:Date.now()+CHAOS.lag});return;}',
@@ -822,6 +827,7 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     '    }',
     '    CHAOS.invert=CHAOS.list.indexOf("invertPad")>=0?1:0;',
     '    CHAOS.lag=CHAOS.list.indexOf("lagButtons")>=0?400:0;',
+    '    CHAOS.noshoot=CHAOS.list.indexOf("noShoot")>=0?1:0;',
     '  }catch(e){}',
     '}',
     'setInterval(applyChaos,2000);',

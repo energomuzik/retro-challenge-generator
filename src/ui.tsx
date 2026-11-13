@@ -531,12 +531,13 @@ export function Modal({ title, icon, onClose, children, w = 'max-w-2xl', locked 
   );
 }
 
-export function Toggle({ checked, onChange, label, hint, hintSpoiler }: { checked: boolean; onChange: (v: boolean) => void; label: string; hint?: string; hintSpoiler?: boolean }) {
+export function Toggle({ checked, onChange, label, hint, hintSpoiler, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: string; hint?: string; hintSpoiler?: boolean; disabled?: boolean }) {
   const [spoiler, setSpoiler] = useState(false); // v0.98: длинное описание прячется под «▸ подробнее»
   return (
     <button
-      onClick={() => { sfx.click(); onChange(!checked); }}
-      className="flex items-center gap-3 w-full text-left group cursor-pointer py-1"
+      disabled={disabled}
+      onClick={() => { if (disabled) return; sfx.click(); onChange(!checked); }}
+      className={`flex items-center gap-3 w-full text-left group py-1 ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
     >
       <span className={`relative w-12 h-6 shrink-0 border-2 transition-colors ${checked ? 'bg-teal/25 border-teal' : 'bg-[#0d1226] border-edge'}`}>
         <span className={`absolute top-0.5 w-4 h-4 transition-all ${checked ? 'left-6 bg-teal' : 'left-0.5 bg-faint'}`} />

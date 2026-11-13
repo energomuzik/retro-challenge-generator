@@ -23,7 +23,7 @@ import { scanYandexRoms, fetchYandexCover, fetchYandexBuf, yandexResolveHref, sa
 import { useQuickLoad, quickKeyLabelOf, useQuickSave } from '../useQuickLoad';
 import { padMouseAutoShow, padMouseAutoHide, padMouseAutoRestore, PAD_MOUSE_HINT, usePadMouseOff } from '../padMouse'; // v0.183: автоматика мыши вокруг игры (запустил ром — выключилась, закрыл — включилась)
 import { buildSaveDbZip } from '../saveCloud'; // v0.178: ZIP для облачной базы сохранений
-import CloudSavesBlock from '../CloudSavesBlock'; // v0.178: блок «☁ В базе сохранений»
+import CloudSavesBlock, { type CloudSavesApi } from '../CloudSavesBlock'; // v0.178: блок «☁ В базе сохранений»; v0.184: ref для «Импортировать все»
 
 const fmtSize = (b: number) => (b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} МБ` : `${Math.max(1, Math.round(b / 1024))} КБ`);
 
@@ -534,6 +534,19 @@ export default function EmulatorLauncher() {
      передать файл владельцу проекта — тот кладёт его в репозиторий базы,
      и сохранения видны всем в блоке «☁ В базе сохранений». */
   const [exportingDb, setExportingDb] = useState(false);
+  /* v0.184: «⬇ ИМПОРТИРОВАТЬ ВСЕ» переехала в ряд быстрых кнопок. CloudSavesBlock отдаёт
+     ref (grabAll) и живое состояние { сколько сохранений в базе, осталось при массовом импорте }.
+     Функциональный апдейт возвращает ПРЕЖНИЙ объект, если ничего не изменилось, — иначе
+     inline-колбэк onState в ребёнке устраивал бы бесконечный цикл ререндеров. */
+  const cloudAllRef = useRef<CloudSavesApi | null>(null);
+  const [cloudAll, setCloudAll] = useState<{ count: number; busyLeft: number | null }>({ count: 0, busyLeft: null });
+  const onCloudState = useRef((st: { count: number; busyLeft: number | null }) => {
+    setCloudAll((prev) => (prev.count === st.count && prev.busyLeft === st.busyLeft ? prev : st));
+  }).current;
+  const importAllFire = () => {
+    setCloudAll((st) => ({ ...st, busyLeft: st.count })); // сразу нажатая: «осталось N» — первым же прогрессом уточнится
+    cloudAllRef.current?.grabAll((left) => setCloudAll((st) => ({ ...st, busyLeft: left })));
+  };
   const exportSaveDbZip = () => {
     void (async () => {
       if (!rom) { toast('Сначала выберите ром', 'err'); return; }
@@ -1242,6 +1255,20 @@ export default function EmulatorLauncher() {
                       >
                         {exportingDb ? '⏳ Собираю ZIP…' : '📦 Сохранить все для базы (ZIP)'}
                       </PxBtn>
+                      {/* v0.184: «⬇ Импортировать все» — цветная объёмная кнопка в ряду быстрых кнопок
+                          (заказчик: «сделай тоже цветной и объемной, как другие кнопки по типу быстрой
+                          загрузки. и перемести туда где находятся остальные кнопки»); видна, когда в
+                          базе для этого рома есть хоть одно сохранение */}
+                      {cloudAll.count > 0 && (
+                        <PxBtn
+                          color="sky"
+                          onClick={importAllFire}
+                          disabled={cloudAll.busyLeft !== null}
+                          title={`Скачать ВСЕ сохранения этого рома из облачной базы (${cloudAll.count} шт) и добавить в библиотеку — свои сохранения не перезаписываются`}
+                        >
+                          {cloudAll.busyLeft !== null ? `⏳ Импортирую… осталось ${cloudAll.busyLeft}` : `⬇ Импортировать все (${cloudAll.count})`}
+                        </PxBtn>
+                      )}
                     </div>
                     <span className="tick-label text-faint">выделяйте сохранение кликом — обведённое грузится/перезаписывается кнопкой и клавишей</span>
                   </div>
@@ -1340,7 +1367,7 @@ export default function EmulatorLauncher() {
                       Готовый файл просто передайте владельцу проекта — он добавит его в базу, и сохранения увидят все
                       игроки в блоке «☁ В базе сохранений» ниже.
                     </p>
-                    <CloudSavesBlock rom={rom} />
+                    <CloudSavesBlock rom={rom} ref={cloudAllRef} onState={onCloudState} />
                   </div>
                 </div>
               </Panel>

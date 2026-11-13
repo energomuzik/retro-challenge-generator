@@ -17,6 +17,7 @@ import {
 } from './input';
 import { padMouseSetUiLock, PAD_MOUSE_HINT_FULL } from './padMouse';
 import { sfx } from './sound';
+import { Toggle } from './ui'; // v0.184: галочки джоемыши стали переключателями в общем стиле опций
 
 type Capture = { kind: 'key' | 'gpad'; action: string } | null;
 
@@ -320,7 +321,7 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
           (правый триггер). Кнопку-тумблер мыши (вкл/выкл) назначайте выше — она переназначается,
           и она же гасит прокрутку левым стиком во время задания. Курсор — в ретро-стиле проекта;
           ползунки тянутся (клик — прыжок, держишь — тащится), текстовые поля открываются кликом,
-          галочки переключаются. Этот ползунок чувствительности тоже можно тянуть джойстиком.
+          переключатели щёлкаются. Этот ползунок чувствительности тоже можно тянуть джойстиком.
         </p>
         <div>
           <div className="tick-label text-faint mb-1">
@@ -346,49 +347,31 @@ export default function KeyBinder({ compact = false, mode = 'nes' }: { compact?:
           </div>
           <p className="text-[9px] text-faint mt-1 leading-snug">0,3 — медленно (точно по сетке рюкзака) · 1 — обычная · 2,5 — очень быстро</p>
         </div>
-        {/* v0.183: ТРИ ГАЛОЧКИ МЫШИ С ДЖОЙСТИКА — все ВКЛ по умолчанию (у старых
-            сохранённых настроек поле отсутствует = ВКЛ, принудительной смены нет).
-            Рубильник снят — два пункта ниже приглушены и недоступны. */}
+        {/* v0.184: вместо галочек — ПЕРЕКЛЮЧАТЕЛИ (Toggle) в общем стиле экрана «Опции».
+            Все три ВКЛ по умолчанию (у старых сохранённых настроек поле отсутствует = ВКЛ,
+            принудительной смены нет). Главный снят — два пункта ниже приглушены и недоступны. */}
         <div className="space-y-2 pt-1">
-          <label className="flex items-start gap-2.5 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={prefs.padMouseEnabled !== false}
-              onChange={(e) => update({ ...prefs, padMouseEnabled: e.target.checked } as EmuPrefs)}
-              className="mt-0.5 w-4 h-4 accent-[#ffcf3f] cursor-pointer shrink-0"
-            />
-            <span>
-              <span className="font-display text-[11px] text-paper uppercase">Мышь с джойстика включена</span>
-              <span className="block text-[10px] text-dim mt-0.5 leading-snug">Главный рубильник. Снят — курсора с джоя нет вообще: не поднимется ни автоматикой, ни кнопкой-тумблером. Включать обратно — только этой галочкой.</span>
-            </span>
-          </label>
+          <Toggle
+            checked={prefs.padMouseEnabled !== false}
+            onChange={(v) => update({ ...prefs, padMouseEnabled: v } as EmuPrefs)}
+            label="Мышь с джойстика включена"
+            hint="Главный рубильник. Снят — курсора с джоя нет вообще: не поднимется ни автоматикой, ни кнопкой-тумблером. Включать обратно — только этим переключателем."
+          />
           <div className={prefs.padMouseEnabled === false ? 'space-y-2 opacity-50' : 'space-y-2'}>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                disabled={prefs.padMouseEnabled === false}
-                checked={prefs.padMouseAutoOn !== false}
-                onChange={(e) => update({ ...prefs, padMouseAutoOn: e.target.checked } as EmuPrefs)}
-                className="mt-0.5 w-4 h-4 accent-[#ffcf3f] cursor-pointer shrink-0 disabled:cursor-not-allowed"
-              />
-              <span>
-                <span className="font-display text-[11px] text-paper uppercase">Включать мышь при обнаружении джоя</span>
-                <span className="block text-[10px] text-dim mt-0.5 leading-snug">Втыкнули геймпад (или страница открылась с уже подключённым) — мышь с джоя поднимается сама. Галочка снята: при обнаружении мышь гаснет — включать самому кнопкой-тумблером (по умолчанию L3 / F7).</span>
-              </span>
-            </label>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                disabled={prefs.padMouseEnabled === false}
-                checked={prefs.padMouseAutoTask !== false}
-                onChange={(e) => update({ ...prefs, padMouseAutoTask: e.target.checked } as EmuPrefs)}
-                className="mt-0.5 w-4 h-4 accent-[#ffcf3f] cursor-pointer shrink-0 disabled:cursor-not-allowed"
-              />
-              <span>
-                <span className="font-display text-[11px] text-paper uppercase">Автоматика задания: при игре выкл, после — вкл</span>
-                <span className="block text-[10px] text-dim mt-0.5 leading-snug">Эмулятор крутится в задании (или в «Запуске эмулятора») — мышь выключается сама; прошёл, проиграл, закрыл игру — включается обратно. Включил тумблером сам во время игры — при закрытии ничего не трогаем. Галочка снята: вокруг игры ничего не происходит — выключать самому.</span>
-              </span>
-            </label>
+            <Toggle
+              disabled={prefs.padMouseEnabled === false}
+              checked={prefs.padMouseAutoOn !== false}
+              onChange={(v) => update({ ...prefs, padMouseAutoOn: v } as EmuPrefs)}
+              label="Включать мышь при обнаружении джоя"
+              hint="Втыкнули геймпад (или страница открылась с уже подключённым) — мышь с джоя поднимается сама. Переключатель снят: при обнаружении мышь гаснет — включать самому кнопкой-тумблером (по умолчанию L3 / F7)."
+            />
+            <Toggle
+              disabled={prefs.padMouseEnabled === false}
+              checked={prefs.padMouseAutoTask !== false}
+              onChange={(v) => update({ ...prefs, padMouseAutoTask: v } as EmuPrefs)}
+              label="Автоматика задания: при игре выкл, после — вкл"
+              hint="Эмулятор крутится в задании (или в «Запуске эмулятора») — мышь выключается сама; прошёл, проиграл, закрыл игру — включается обратно. Включил тумблером сам во время игры — при закрытии ничего не трогаем. Переключатель снят: вокруг игры ничего не происходит — выключать самому."
+            />
           </div>
         </div>
       </div>

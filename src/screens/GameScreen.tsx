@@ -412,8 +412,11 @@ export default function GameScreen() {
   const qCodeOnly = !!myQTask?.codeOnly;
   const rCodeOnly = !!myRubgTask?.codeOnly;
   const activeChaos = task?.chaos ? [task.chaos] : [];
-  // «Реверс крестовины»: смена кнопок запрещена, пока задание с этой пакостью идёт
-  const controlsLocked = task?.chaos === 'invertPad';
+  // v0.184: «Реверс крестовины» и «Без выстрелов» — смена кнопок запрещена, пока задание с пакостью идёт
+  const controlsLocked = task?.chaos === 'invertPad' || task?.chaos === 'noShoot';
+  const lockChipText = task?.chaos === 'noShoot'
+    ? '😈 Без выстрелов: боевые кнопки НЕ работают, смена кнопок ЗАПРЕЩЕНА'
+    : '😈 Реверс крестовины: смена кнопок ЗАПРЕЩЕНА';
   // «Штраф ×2»: цена пропуска удваивается (10 вместо 5)
   const skipNeed = SKIP_COST * (task?.chaos === 'skipX2' ? 2 : 1);
   const invCount = (mePlayer?.inventory?.length ?? 0) + (isQuest || isFrendy ? (mePlayer?.items?.length ?? 0) : 0);
@@ -5255,7 +5258,7 @@ export default function GameScreen() {
               {myTurn && ch.status !== 'choose' && <EmuVolumeChip />}
               {controlsLocked && (
                 <div className="hud-chip pixel-corners px-3 py-2 text-[10px] text-magma border-magma">
-                  😈 Реверс крестовины: смена кнопок ЗАПРЕЩЕНА
+                  {lockChipText}
                 </div>
               )}
             </div>
@@ -5908,7 +5911,11 @@ export default function GameScreen() {
                       <div className="tick-label text-faint">Ром: {qName} · {consoleLabel(qRomDef?.ext)}</div>
                       {/* «Глянуть карту мира» — снова доступна в режиме комнат: неоткрытое скрывает туман */}
                       <GhostBtn small onClick={() => setPeekMap(true)}>{Ic.map(12)} Глянуть карту мира</GhostBtn>
-                      <GhostBtn small onClick={() => setControlsOpen(true)}>{Ic.gear(12)} Управление</GhostBtn>
+                      {/* v0.184: при пакости «Реверс крестовины»/«Без выстрелов» управление не меняется (замок как в основном окне) */}
+                      {!controlsLocked && <GhostBtn small onClick={() => setControlsOpen(true)}>{Ic.gear(12)} Управление</GhostBtn>}
+                      {controlsLocked && (
+                        <div className="hud-chip pixel-corners px-3 py-2 text-[10px] text-magma border-magma">{lockChipText}</div>
+                      )}
                       <EmuVolumeChip />
                       <GhostBtn small onClick={rubgToggleFs}>{isFs ? Ic.cross(12) : Ic.map(12)} {isFs ? 'Свернуть' : 'Во весь экран'}</GhostBtn>
                     </div>
@@ -6109,7 +6116,11 @@ export default function GameScreen() {
                     <div className="tick-label text-faint">Ром: {rName} · {consoleLabel(rRomDef?.ext)}</div>
                     {/* «Глянуть карту мира» — снова доступна в режиме комнат: неоткрытое скрывает туман */}
                     <GhostBtn small onClick={() => setPeekMap(true)}>{Ic.map(12)} Глянуть карту мира</GhostBtn>
-                    <GhostBtn small onClick={() => setControlsOpen(true)}>{Ic.gear(12)} Управление</GhostBtn>
+                    {/* v0.184: при пакости «Реверс крестовины»/«Без выстрелов» управление не меняется (замок как в основном окне) */}
+                    {!controlsLocked && <GhostBtn small onClick={() => setControlsOpen(true)}>{Ic.gear(12)} Управление</GhostBtn>}
+                    {controlsLocked && (
+                      <div className="hud-chip pixel-corners px-3 py-2 text-[10px] text-magma border-magma">{lockChipText}</div>
+                    )}
                     <EmuVolumeChip />
                     <GhostBtn small onClick={rubgToggleFs}>{isFs ? Ic.cross(12) : Ic.map(12)} {isFs ? 'Свернуть' : 'Во весь экран'}</GhostBtn>
                   </div>

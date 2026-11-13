@@ -8,10 +8,13 @@
    Импорт» качает ИМЕННО ЕГО и добавляет в библиотеку устройства НОВОЙ записью —
    свои сохранения никто не перезаписывает. v0.183: кнопка «⬇ ИМПОРТИРОВАТЬ ВСЕ»
    тащит в библиотеку ВСЕ сохранения этого рома из базы (по очереди, ошибка
-   одного не стопорит остальных, в конце — честный счёт). Кнопка «⟳ обновить»
-   перечитывает базу с GitHub, сбросив 5-минутный кэш. */
+   одного не стопорит остальных, в конце — честный счёт). v0.184: в ПОЛНОМ виде
+   кнопка «Импортировать все» переехала из этого блока ВВЕРХ — в ряд быстрых
+   кнопок панели «Сохранения» (родитель держит ref → grabAll и слушает onState);
+   в компактном виде (спойлер редактора заданий) осталась здесь. Кнопка «⟳
+   обновить» перечитывает базу с GitHub, сбросив 5-минутный кэш. */
 
-import { useEffect, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useState, type Ref } from 'react';
 import { useApp } from './store';
 import { PxBtn } from './ui';
 import { sfx } from './sound';
@@ -31,7 +34,13 @@ const fmtWhen = (ts: number) =>
 
 const KIND_RU: Record<string, string> = { level: 'уровень', boss: 'босс', mytask: 'моё задание', private: 'частное' };
 
-export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; compact?: boolean }) {
+/* v0.184: что видит родитель через ref — запуск массового импорта; прогресс
+   («сколько осталось») родитель получает колбэком, состояние списка — через onState */
+export interface CloudSavesApi {
+  grabAll: (onProgress?: (left: number | null) => void) => void;
+}
+
+function CloudSavesBlockInner({ rom, compact, onState }: { rom: RomDef | null; compact?: boolean; onState?: (s: { count: number; busyLeft: number | null }) => void }, ref: Ref<CloudSavesApi>) {
   const { toast, refresh } = useApp();
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [errText, setErrText] = useState('');
@@ -73,6 +82,11 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [romId, tick]);
 
+  /* v0.184: родитель (ряд быстрых кнопок) узнаёт, есть ли что импортировать и идёт ли массовый импорт.
+     Хуки — ДО раннего `return null` (правила хуков); grabAll объявлен ниже, фабрика вызывается после рендера */
+  useEffect(() => { onState?.({ count: groups.length, busyLeft: busyAll }); }, [groups.length, busyAll, onState]);
+  useImperativeHandle(ref, () => ({ grabAll: (p) => grabAll(p) }));
+
   if (!rom) return null;
 
   const refreshClick = () => { sfx.click(); setTick((t) => t + 1); };
@@ -104,8 +118,10 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
   /* v0.183: «ИМПОРТИРОВАТЬ ВСЕ» — одно нажатие тащит в библиотеку ВСЕ сохранения
      этого рома из базы. Карточки недокачанных дотягиваются на месте; каждое
      сохранение добавляется НОВОЙ записью (свои не перезаписываются); ошибка
-     одного не стопорит остальных — в конце честный счёт «сколько получилось». */
-  const grabAll = () => {
+     одного не стопорит остальных — в конце честный счёт «сколько получилось».
+     v0.184: прогресс дублируется колбэком onProgress — большая кнопка в ряду
+     быстрых кнопок показывает «⏳ Импортирую… осталось N». */
+  const grabAll = (onProgress?: (left: number | null) => void) => {
     void (async () => {
       if (busyAll !== null) return;
       sfx.click();
@@ -114,6 +130,7 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
       for (let i = 0; i < list.length; i++) {
         const g = list[i];
         setBusyAll(list.length - i); // осталось ПОСЛЕ текущего (счётчик вниз до 1, потом 0/null)
+        onProgress?.(list.length - i);
         try {
           const card = cards[g.cardPath] ?? await fetchCloudCard(g.cardPath);
           const folder = g.cardPath.slice(0, g.cardPath.lastIndexOf('/'));
@@ -121,6 +138,7 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
         } catch { /* одно не получилось — остальные едут дальше */ }
       }
       setBusyAll(null);
+      onProgress?.(null);
       await refresh();
       if (ok === list.length) {
         sfx.success();
@@ -145,9 +163,11 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
         className="tick-label text-gold hover:underline cursor-pointer shrink-0"
         title="Перечитать базу с GitHub, сбросив кэш на 5 минут"
       >⟳ обновить</button>
-      {groups.length > 0 && (
+      {/* v0.184: в полном виде большая кнопка переехала в ряд быстрых кнопок (вверху панели);
+          в компактном виде (спойлер редактора заданий) остаётся здесь */}
+      {compact && groups.length > 0 && (
         <button
-          onClick={grabAll}
+          onClick={() => grabAll()}
           disabled={busyAll !== null}
           className={`tick-label shrink-0 ${busyAll !== null ? 'text-faint' : 'text-teal hover:underline cursor-pointer'}`}
           title="Скачать все сохранения этого рома из базы и добавить в библиотеку (свои сохранения не трогаются)"
@@ -204,9 +224,15 @@ export default function CloudSavesBlock({ rom, compact }: { rom: RomDef | null; 
       {phase === 'ready' && groups.length > 0 && (
         <p className="tick-label text-faint leading-snug">
           «⬇ Импорт» добавляет сохранение в библиотеку устройства НОВОЙ записью — свои сохранения никто не перезаписывает.
-          «⬇ Импортировать все» тащит разом всё. Сохранения находятся по имени файла рома в базе {SAVE_DB_REPO}.
+          «⬇ Импортировать все» ждёт наверху панели, в ряду быстрых кнопок (в редакторе заданий — здесь).
+          Сохранения находятся по имени файла рома в базе {SAVE_DB_REPO}.
         </p>
       )}
     </div>
   );
 }
+
+/* v0.184: forwardRef — родитель держит ref и запускает grabAll из ряда быстрых кнопок */
+const CloudSavesBlock = forwardRef(CloudSavesBlockInner);
+CloudSavesBlock.displayName = 'CloudSavesBlock';
+export default CloudSavesBlock;
