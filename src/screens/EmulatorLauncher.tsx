@@ -58,6 +58,11 @@ export default function EmulatorLauncher() {
   const [romId, setRomId] = useState<string | null>(null);
   const [romBuf, setRomBuf] = useState<ArrayBuffer | null>(null);
   const [runKey, setRunKey] = useState(0);
+  /* v0.186: НАСТОЯЩАЯ ПАУЗА ядра (заказчик: «кроме остановки игры надо сделать
+     настоящую паузу — в некоторых играх нельзя поставить игру на паузу, чтоб
+     успеть сделать поиск в codesearch»). Игра замирает, НО память жива: CodeSearch
+     читает/пишет кучу ядра как обычно, заморозка и стена работают. */
+  const [emuPaused, setEmuPaused] = useState(false);
   const [runState, setRunState] = useState<unknown>(undefined);
   const [running, setRunning] = useState(false);
   /* v0.107: ВЫДЕЛЕННОЕ кликом сохранение (обводка) — для «⚡ Быстрой загрузки» */
@@ -436,6 +441,7 @@ export default function EmulatorLauncher() {
     setRomBuf(buf);
     setRunState(state);
     setRunning(true);
+    setEmuPaused(false); // v0.186: новый запуск всегда стартует НЕ на паузе
     launchedRomRef.current = romId;
     setRunKey((k) => k + 1);
     sfx.start();
@@ -513,6 +519,7 @@ export default function EmulatorLauncher() {
     if (rom && running && ejsApiRef.current) {
       ejsApiRef.current.loadSaveReliable(null);
       setRunState(undefined);
+      setEmuPaused(false); // v0.186: сброс снимает паузу — новая игра начинается живой
       sfx.click();
       return;
     }
@@ -1162,6 +1169,7 @@ export default function EmulatorLauncher() {
                           core={isNes ? 'nes' : undefined}
                           remapSpec={remapSpec}
                           initialState={(runState as string | null) ?? null}
+                          paused={emuPaused} // v0.186: настоящая пауза — SegaBox сам шлёт её ядру и рисует баннер «ПАУЗА»
                           onApi={(a: SegaApi) => { ejsApiRef.current = a; }}
                         />
                       </div>
@@ -1180,7 +1188,9 @@ export default function EmulatorLauncher() {
                       <GhostBtn onClick={() => { setCsOpen(true); sfx.click(); }} title="Поиск по памяти запущенной игры (как ArtMoney): найти адрес жизней/оружия и получить код условия для задания">{Ic.chip(13)} CodeSearch</GhostBtn>
                       <GhostBtn onClick={toggleFs} title="Развернуть экран игры на весь монитор (выход — Esc)">{isFs ? Ic.cross(12) : Ic.map(12)} {isFs ? 'Свернуть' : 'Во весь экран'}</GhostBtn>
                       <GhostBtn onClick={() => resetEmu()}>{Ic.rotate(13)} Сброс (с начала)</GhostBtn>
-                      <GhostBtn onClick={() => { setRunning(false); launchedRomRef.current = null; setCsOpen(false); }}>{Ic.pause(13)} Выключить</GhostBtn>
+                      {/* v0.186: настоящая пауза ядра — между «Сброс» и «Выключить» */}
+                      <GhostBtn onClick={() => { setEmuPaused((p) => !p); sfx.click(); }} title={emuPaused ? 'Снять паузу — игра продолжится с того же места' : 'Настоящая пауза ядра: игра замирает, но память остаётся живой — можно спокойно искать и проверять адреса в CodeSearch'}>{emuPaused ? Ic.play(13) : Ic.pause(13)} {emuPaused ? 'Продолжить' : 'Пауза'}</GhostBtn>
+                      <GhostBtn onClick={() => { setRunning(false); launchedRomRef.current = null; setEmuPaused(false); setCsOpen(false); }}>{Ic.stop(13)} Выключить</GhostBtn>
                     </div>
                     {/* звук эмулятора — постоянная полоска под кнопкой «Управление» (вместо спрятанной панели EmulatorJS) */}
                     <div className="mt-2 max-w-[300px]">
