@@ -55,6 +55,7 @@ const saveEmptyRomFolders = (arr: string[]) => {
 export default function EmulatorLauncher() {
   const { roms, saves, setScreen, refresh, toast } = useApp(); // v0.180: options из деструктуризации убраны (ник из базы удалён)
   const spoilerMode = useApp((st) => st.options.spoilerMode); // v0.70: режим спойлеров из Опций
+  const pauseOnSaveLoad = useApp((st) => st.options.pauseOnSaveLoad ?? true); // v0.187: загрузка сохранения ставит эмулятор на паузу (опция)
   const [romId, setRomId] = useState<string | null>(null);
   const [romBuf, setRomBuf] = useState<ArrayBuffer | null>(null);
   const [runKey, setRunKey] = useState(0);
@@ -434,14 +435,14 @@ export default function EmulatorLauncher() {
     }
   };
 
-  const launch = async (state?: unknown) => {
+  const launch = async (state?: unknown, pausedAfter?: boolean) => {
     if (!romId) return;
     const buf = await getRomData(romId);
     if (!buf) { toast('Данные рома не найдены — загрузите файл заново', 'err'); return; }
     setRomBuf(buf);
     setRunState(state);
     setRunning(true);
-    setEmuPaused(false); // v0.186: новый запуск всегда стартует НЕ на паузе
+    setEmuPaused(!!pausedAfter); // v0.186: новый запуск стартует НЕ на паузе; v0.187: загрузка сохранения с опцией — СРАЗУ на паузе
     launchedRomRef.current = romId;
     setRunKey((k) => k + 1);
     sfx.start();
@@ -461,11 +462,14 @@ export default function EmulatorLauncher() {
     if (rom && running && ejsApiRef.current) {
       ejsApiRef.current.loadSaveReliable(full.state as string);
       setRunState(full.state);
+      // v0.187: опция «Пауза при загрузке сохранения» — ядро пересобирается с состоянием
+      // и сразу встаёт на паузу (проп paused запечётся в новый iframe и применится после старта)
+      if (pauseOnSaveLoad) setEmuPaused(true);
       sfx.coin();
-      toast(`Загружаю сохранение (слот ${s.slot})…`, 'ok');
+      toast(`Загружаю сохранение (слот ${s.slot})…${pauseOnSaveLoad ? ' Эмулятор на паузе.' : ''}`, 'ok');
       return;
     }
-    void launch(full.state);
+    void launch(full.state, pauseOnSaveLoad);
   };
 
   /* ---------- v0.107: БЫСТРАЯ ЗАГРУЗКА ВЫДЕЛЕННОГО СОХРАНЕНИЯ ----------

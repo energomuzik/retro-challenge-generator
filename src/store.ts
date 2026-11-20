@@ -93,6 +93,8 @@ export const useApp = create<AppState>()((set, get) => ({
     emuSound: true,
     emuVolume: 1,
     hideUnrevealed: false,
+    pauseOnTaskStart: true, // v0.187: старт задания — эмулятор сразу на паузе (заказчик: «при выполнении задания, при запуске сохранения ставить игру на паузу»); переключатель в Опциях
+    pauseOnSaveLoad: true, // v0.187: загрузка сохранения в «Запуске эмулятора» — эмулятор на паузе; переключатель в Опциях
     relay: '',
     relayHub: '',
     turn: '',

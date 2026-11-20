@@ -119,6 +119,9 @@ export default function TaskEditor() {
   /* v0.108: ТАЙМЕР ЗАДАНИЯ (пакость редактора) — минуты и секунды в формате М:СС; пусто = без таймера */
   const [fTimerMin, setFTimerMin] = useState('');
   const [fTimerSec, setFTimerSec] = useState('');
+  /* v0.187: ТАЙМЕР АВТОПРОХОЖДЕНИЯ — на нуле задание зачитывается ПОБЕДОЙ автоматически; пусто = нет */
+  const [wTimerMin, setWTimerMin] = useState('');
+  const [wTimerSec, setWTimerSec] = useState('');
   // форма карточки
   const [cName, setCName] = useState('');
   const [cDesc, setCDesc] = useState('');
@@ -178,6 +181,8 @@ export default function TaskEditor() {
     setFLoseHp(tdef?.loseHp !== undefined ? String(tdef.loseHp) : '');
     setFTimerMin(tdef?.timerSec !== undefined && tdef.timerSec > 0 ? String(Math.floor(tdef.timerSec / 60)) : '');
     setFTimerSec(tdef?.timerSec !== undefined && tdef.timerSec > 0 ? String(tdef.timerSec % 60) : '');
+    setWTimerMin(tdef?.winTimerSec !== undefined && tdef.winTimerSec > 0 ? String(Math.floor(tdef.winTimerSec / 60)) : ''); // v0.187
+    setWTimerSec(tdef?.winTimerSec !== undefined && tdef.winTimerSec > 0 ? String(tdef.winTimerSec % 60) : ''); // v0.187
     setVLabel(cell.label ?? '');
     setVColor(cell.color ?? '');
     setVImg(cell.imageId ?? '');
@@ -521,6 +526,13 @@ export default function TaskEditor() {
         const ts = Math.min(59, Math.max(0, Math.floor(Number(fTimerSec) || 0)));
         const total = tm * 60 + ts;
         return total > 0 ? { timerSec: total } : {};
+      })()),
+      /* v0.187: таймер автопрохождения (секунды); пусто/0 — таймера нет */
+      ...((() => {
+        const tm = Math.max(0, Math.floor(Number(wTimerMin) || 0));
+        const ts = Math.min(59, Math.max(0, Math.floor(Number(wTimerSec) || 0)));
+        const total = tm * 60 + ts;
+        return total > 0 ? { winTimerSec: total } : {};
       })()),
       /* v0.68: зачёт по коду — условие по памяти эмулятора (CodeSearch) */
       ...(fCond ? { code: fCond } : {}),
@@ -1183,6 +1195,25 @@ export default function TaskEditor() {
                           <input type="number" min={0} max={59} placeholder="сек" className="field-in w-16 px-1.5 py-1 text-[11px]" value={fTimerSec} onChange={(e) => setFTimerSec(e.target.value)} title="Секунды (0–59)" />
                           {(fTimerMin !== '' || fTimerSec !== '') && (
                             <GhostBtn small onClick={() => { setFTimerMin(''); setFTimerSec(''); }} title="Убрать таймер">{Ic.cross(11)}</GhostBtn>
+                          )}
+                        </div>
+                      </div>
+                    </Field>
+                    {/* v0.187: ТАЙМЕР АВТОПРОХОЖДЕНИЯ — на нуле ПОБЕДА автоматически */}
+                    <Field label="Таймер автопрохождения М:СС (необязательно)">
+                      <div className="space-y-1 border-2 border-[rgba(46,230,168,0.4)] px-2 py-2">
+                        <p className="text-[10px] text-dim leading-tight">
+                          Обратный отсчёт в окне задания: время выйдет — задание <b className="text-paper">зачтётся ПОБЕДОЙ
+                          автоматически</b> (награда и ячейка — как у кнопки «Победа»; в Квесте на доверии — без голосования,
+                          у «только по коду» — тоже сработает). Годится для «мягких» заданий и страховки игроку. Заданы оба
+                          таймера — сработает тот, что истечёт раньше. Оба поля пусты = таймера нет.
+                        </p>
+                        <div className="flex items-center gap-1.5">
+                          <input type="number" min={0} max={99} placeholder="мин" className="field-in w-16 px-1.5 py-1 text-[11px]" value={wTimerMin} onChange={(e) => setWTimerMin(e.target.value)} title="Минуты (0–99)" />
+                          <span className="text-[11px] text-dim font-pixel">:</span>
+                          <input type="number" min={0} max={59} placeholder="сек" className="field-in w-16 px-1.5 py-1 text-[11px]" value={wTimerSec} onChange={(e) => setWTimerSec(e.target.value)} title="Секунды (0–59)" />
+                          {(wTimerMin !== '' || wTimerSec !== '') && (
+                            <GhostBtn small onClick={() => { setWTimerMin(''); setWTimerSec(''); }} title="Убрать таймер автопрохождения">{Ic.cross(11)}</GhostBtn>
                           )}
                         </div>
                       </div>

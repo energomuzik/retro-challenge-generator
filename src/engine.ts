@@ -41,7 +41,7 @@ export type Action =
   | { t: 'togglePause'; id: string }
   | { t: 'token'; id: string; tokenImg: string | null; tokenId?: string; tokenSize?: number }
   | { t: 'reloadSave'; id: string; byCode?: boolean } // v0.68 byCode: автоперезапуск по УСЛОВИЮ ПОРАЖЕНИЯ (CodeSearch) — игрок проиграл в роме
-  | { t: 'declareDone'; id: string; byCode?: boolean } // v0.68 byCode: засчитано АВТОМАТИЧЕСКИ по памяти эмулятора (условие CodeSearch из задания)
+  | { t: 'declareDone'; id: string; byCode?: boolean; byTimer?: boolean } // v0.68 byCode: засчитано АВТОМАТИЧЕСКИ по памяти эмулятора (условие CodeSearch из задания); v0.187 byTimer: зачтено ТАЙМЕРОМ автопрохождения — время вышло, победа без голосования
   | { t: 'approve'; id: string }
   | { t: 'violate'; id: string }
   | { t: 'skip'; id: string; instant: boolean; spentMs: number; loads: number; resource?: 'time' | 'tries' | 'coins' }
@@ -65,7 +65,7 @@ export type Action =
   | { t: 'maplessFinish'; id: string } // БЕЗ КАРТЫ: все матчи сыграны — хост завершает партию победой (после анимаций)
   | { t: 'rubgJump'; id: string; x: number; y: number } // RUBG: прыжок из самолёта в точку (x,y — под самолётом в момент нажатия)
   | { t: 'rubgTick'; id: string } // RUBG: тик хоста (~1 с): фазы зоны, урон вне зоны, форс-высадка, финал
-  | { t: 'rubgJobDone'; id: string; cellIdx: number; win: boolean; byCode?: boolean } // RUBG: игрок сам закрыл ЛИЧНОЕ задание (доверие): win — победа (+HP+лут), false — поражение (−HP); v0.68 byCode — зачтено по памяти (условие CodeSearch)
+  | { t: 'rubgJobDone'; id: string; cellIdx: number; win: boolean; byCode?: boolean; byTimer?: boolean } // RUBG: игрок сам закрыл ЛИЧНОЕ задание (доверие): win — победа (+HP+лут), false — поражение (−HP); v0.68 byCode — зачтено по памяти (условие CodeSearch); v0.187 byTimer — победа по ТАЙМЕРУ автопрохождения
   | { t: 'rubgJobLeave'; id: string; cellIdx: number } // RUBG: игрок ушёл из личного задания без последствий
   | { t: 'rubgUseItem'; id: string; itemId: string } // RUBG: использовать хилку (+HP)
   | { t: 'rubgShoot'; id: string; itemId: string; targetId: string } // RUBG: выстрел по цели (играющему — 100%, идущему — шанс от расстояния); все видят летящую пулю
@@ -78,7 +78,7 @@ export type Action =
   | { t: 'rubgStopThief'; id: string } // RUBG: жертва нажала «Остановить вора» (кулаул 15 с)
   | { t: 'rubgStealth'; id: string } // RUBG: активировать стелс (сгорает карта стелса)
   | { t: 'rubgBelt'; id: string; itemId: string; on: boolean } // RUBG: надеть/снять предмет с ПОЯСА (на поясе макс. 3 — только они имеют кнопки действий; пояс не воруется)
-  | { t: 'qJobDone'; id: string; cellIdx: number; win: boolean; byCode?: boolean; force?: boolean } // QUEST: игрок закрыл ЛИЧНОЕ задание (доверие): победа — награда и прогресс, поражение — плата и счётчик провалов; v0.68 byCode — зачтено по памяти (условие CodeSearch); v0.139 force — поражение по ТАЙМЕРУ даже у codeOnly (FRENDY: перезапуска нет)
+  | { t: 'qJobDone'; id: string; cellIdx: number; win: boolean; byCode?: boolean; force?: boolean; byTimer?: boolean } // QUEST: игрок закрыл ЛИЧНОЕ задание (доверие): победа — награда и прогресс, поражение — плата и счётчик провалов; v0.68 byCode — зачтено по памяти (условие CodeSearch); v0.139 force — поражение по ТАЙМЕРУ даже у codeOnly (FRENDY: перезапуска нет); v0.187 byTimer — победа по ТАЙМЕРУ автопрохождения
   | { t: 'qJobLeave'; id: string; cellIdx: number } // QUEST: игрок ушёл из личного задания — v0.101: УЙТИ = ПОРАЖЕНИЕ (те же последствия, что win:false). v0.104: и в БОГАЧЕ (= пропуск)
   | { t: 'qPick'; id: string; cellIdx: number; v: number } // v0.104 БОГАЧ: ПЕРВЫЙ вошедший выбрал вариант задания ячейки — задание становится ЕДИНЫМ для всех
   | { t: 'qRestart'; id: string; cellIdx: number } // v0.106 VERSUS: платный ПЕРЕЗАПУСК задания — 1 бронза (траты идут в зачёт пропуска)
@@ -3635,8 +3635,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       rg.jobs = rg.jobs ?? {};
       const job = p ? rg.jobs[p.id] : undefined;
       if (!p || !job || job.cellIdx !== a.cellIdx) break;
-      /* v0.70 ТОЛЬКО ПО КОДУ: ручной зачёт/провал запрещён — только срабатывание условия из CodeSearch */
-      if (cellTaskOf(s, map, a.cellIdx)?.codeOnly && !a.byCode) break;
+      /* v0.70 ТОЛЬКО ПО КОДУ: ручной зачёт/провал запрещён — только срабатывание условия из CodeSearch.
+         v0.187: ИСКЛЮЧЕНИЕ — byTimer (ПОБЕДА по таймеру автопрохождения — воля автора задания). */
+      if (cellTaskOf(s, map, a.cellIdx)?.codeOnly && !a.byCode && !a.byTimer) break;
       delete rg.jobs[p.id];
       if (a.win) {
         const stake = taskStakeOf(a.cellIdx);
@@ -3644,7 +3645,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         const kind = rubgRandomKind();
         rubgGiveItem(p, kind); // на пояс, если есть слот (макс. 3), иначе в общий инвентарь
         s.captured[a.cellIdx] = p.id; // мгновенный хозяин ячейки (своё задание в RUBG не предлагается)
-        log(`🏆 ${p.name} ПРОШЁЛ задание №${a.cellIdx + 1}${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : ''}: +${stake.winH}% HP, трофей ${RUBG_ITEMS[kind].icon} ${RUBG_ITEMS[kind].name} — HP ${p.hp}%`);
+        log(`🏆 ${p.name} ПРОШЁЛ задание №${a.cellIdx + 1}${a.byCode ? ' — ЗАЧТЕНО ПО КОДУ 🤖' : a.byTimer ? ' — ПО ТАЙМЕРУ АВТОПРОХОЖДЕНИЯ ⏱' : ''}: +${stake.winH}% HP, трофей ${RUBG_ITEMS[kind].icon} ${RUBG_ITEMS[kind].name} — HP ${p.hp}%`);
       } else {
         const stake = taskStakeOf(a.cellIdx);
         p.hp = Math.max(0, (p.hp ?? RUBG_HP_MAX) - stake.loseH);
@@ -4078,8 +4079,9 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const job = s.qJobs?.[p.id];
       if (!job || job.cellIdx !== a.cellIdx) break;
       /* v0.70 ТОЛЬКО ПО КОДУ: ручной зачёт/провал запрещён — только срабатывание условия из CodeSearch.
-         v0.139: ИСКЛЮЧЕНИЕ — force (поражение по ТАЙМЕРУ, только для FRENDY: перезапуска задания больше нет). */
-      if (cellTaskOf(s, map, a.cellIdx)?.codeOnly && !a.byCode && !a.force) break;
+         v0.139: ИСКЛЮЧЕНИЕ — force (поражение по ТАЙМЕРУ, только для FRENDY: перезапуска задания больше нет).
+         v0.187: ИСКЛЮЧЕНИЕ — byTimer (ПОБЕДА по таймеру автопрохождения — воля автора задания). */
+      if (cellTaskOf(s, map, a.cellIdx)?.codeOnly && !a.byCode && !a.force && !a.byTimer) break;
       delete s.qJobs![p.id];
       /* ресурс партии: время списывается по факту (минуты за задание); монеты/HP — платёж по итогам; попытка — 1 за вход (v0.101: общий код с qJobLeave) */
       questSpendResources(p, job.startedAt);
@@ -5036,10 +5038,17 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       const p = current();
       if (!ch || ch.status !== 'playing' || p.id !== a.id) break;
       /* v0.70 ТОЛЬКО ПО КОДУ: ручной зачёт запрещён; зачёт ПО КОДУ при галочке — МГНОВЕННЫЙ,
-         без голосования «Согласен/Нарушил» (карты для тех, кто не доверяет соперникам) */
+         без голосования «Согласен/Нарушил» (карты для тех, кто не доверяет соперникам).
+         v0.187: byTimer (таймер автопрохождения) — тоже БЕЗ голосования: время вышло,
+         победа зачтена автоматически (воля автора задания, codeOnly не помеха). */
       const codeOnlyNow = !!cellTaskOf(s, map, ch.cellIdx)?.codeOnly;
-      if (codeOnlyNow && !a.byCode) break;
+      if (codeOnlyNow && !a.byCode && !a.byTimer) break;
       if (othersCount() === 0 || (codeOnlyNow && a.byCode)) {
+        challengeSuccess();
+        break;
+      }
+      if (a.byTimer) {
+        log(`⏱ ${p.name}: время вышло — задание зачтено ТАЙМЕРОМ АВТОПРОХОЖДЕНИЯ (без голосования)`);
         challengeSuccess();
         break;
       }

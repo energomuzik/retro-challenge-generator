@@ -3667,7 +3667,7 @@ export default function GameScreen() {
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ch, task, myQJob, myQTask, myJob, myRubgTask, qArmed, rubgJobArmed, isQuest]);
-  const timerOn = !timerSpec ? false : timerSpec.kind === 'classic' ? true : timerSpec.kind === 'rubg' ? rJobOn : qJobOn;
+  const timerOn = !timerSpec ? false : timerSpec.kind === 'classic' ? !ch?.paused : timerSpec.kind === 'rubg' ? rJobOn : qJobOn; // v0.187: классика — таймер провала тоже стоит на паузе (раньше тикал даже при ch.paused)
   const timerOnRef = useRef(false);
   timerOnRef.current = timerOn;
   const timerSpecKey = timerSpec ? `${timerSpec.key}|${ch?.reloadId ?? 0}|${timerRestartTick}` : null;
@@ -3721,6 +3721,57 @@ export default function GameScreen() {
       title={timerSpec.kind === 'trust' ? 'Таймер задания: время вышло — решайте сами (режим доверия)' : timerLeft <= 10 ? 'Время почти вышло!' : 'Таймер задания (время на выполнение)'}
     >
       ⏱ {timerFmt(timerLeft)}
+    </span>
+  ) : null;
+
+  /* v0.187 ТАЙМЕР АВТОПРОХОЖДЕНИЯ (TaskDef.winTimerSec) — второй отсчёт рядом с
+     таймером провала. Истёк — задание зачитывается ПОБЕДОЙ автоматически (воля
+     автора: declareDone/rubgJobDone/qJobDone с byTimer — движок принимает их даже
+     у codeOnly, в классике — без голосования «Согласен/Нарушил»). Стоит на паузе
+     эмулятора, как и таймер провала. Заданы оба таймера — сработает тот, что
+     истечёт раньше. Заново — при каждом (пере)запуске задания (reloadId). */
+  const [winTimerLeft, setWinTimerLeft] = useState<number | null>(null);
+  const winTimerFiredRef = useRef(false);
+  const winTimerSpec = useMemo(() => {
+    if (ch && task?.winTimerSec && ch.status === 'playing') return { key: `cw${ch.cellIdx}:${task.saveId ?? ''}`, sec: task.winTimerSec, kind: 'classic' as const };
+    if (myQJob && myQTask?.winTimerSec && qArmed) return { key: `qw${myQJob.cellIdx}:${myQTask.saveId ?? ''}`, sec: myQTask.winTimerSec, kind: 'q' as const };
+    if (myJob && myRubgTask?.winTimerSec && rubgJobArmed) return { key: `rw${myJob.cellIdx}:${myRubgTask.saveId ?? ''}`, sec: myRubgTask.winTimerSec, kind: 'rubg' as const };
+    return null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ch, task, myQJob, myQTask, myJob, myRubgTask, qArmed, rubgJobArmed]);
+  const winTimerOn = !winTimerSpec ? false : winTimerSpec.kind === 'classic' ? !ch?.paused : winTimerSpec.kind === 'rubg' ? rJobOn : qJobOn;
+  const winTimerOnRef = useRef(false);
+  winTimerOnRef.current = winTimerOn;
+  const winTimerSpecKey = winTimerSpec ? `${winTimerSpec.key}|${ch?.reloadId ?? 0}` : null;
+  const winTimerExpireRef = useRef<() => void>(() => undefined);
+  useEffect(() => {
+    if (!winTimerSpec) { setWinTimerLeft(null); return; }
+    winTimerFiredRef.current = false;
+    setWinTimerLeft(winTimerSpec.sec);
+    const iv = setInterval(() => {
+      if (!winTimerOnRef.current) return; // пауза эмулятора — таймер стоит
+      setWinTimerLeft((v) => {
+        if (v === null || v <= 0) return v;
+        if (v <= 1) { if (!winTimerFiredRef.current) { winTimerFiredRef.current = true; winTimerExpireRef.current(); } return 0; }
+        return v - 1;
+      });
+    }, 1000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [winTimerSpecKey]);
+  winTimerExpireRef.current = () => {
+    if (!winTimerSpec) return;
+    if (winTimerSpec.kind === 'classic' && ch) { sfx.success(); dispatch({ t: 'declareDone', id: me, byTimer: true }); return; }
+    if (winTimerSpec.kind === 'rubg' && myJob) { sfx.success(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: true, byTimer: true }); return; }
+    if (winTimerSpec.kind === 'q' && myQJob) { sfx.success(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: true, byTimer: true }); }
+  };
+  /* бейдж автопрохождения: бирюзовый, на последних 10 секундах мигает */
+  const winTimerBadge = winTimerLeft !== null && winTimerSpec ? (
+    <span
+      className={`font-pixel text-[10px] px-2 py-1.5 border-2 flex items-center gap-1 ${winTimerLeft <= 10 ? 'animate-pulse border-[rgba(46,230,168,0.8)] text-teal' : 'border-[rgba(46,230,168,0.4)] text-teal'}`}
+      title="Таймер автопрохождения: время выйдет — задание зачтётся ПОБЕДОЙ автоматически (воля автора задания)"
+    >
+      ⏱ {timerFmt(winTimerLeft)}
     </span>
   ) : null;
 
@@ -5222,6 +5273,7 @@ export default function GameScreen() {
               {active && <><PlayerIcon pid={active.id} size={18} /> ИГРАЕТ: {active.name}</>}
             </span>
             {timerBadge}
+            {winTimerBadge}
             {taskSizeBtns}
           </div>
           {/* v0.171: мышь с джойстика в окне задания — состояние и кнопка-тумблер (у своего задания) */}
@@ -5450,7 +5502,7 @@ export default function GameScreen() {
                     <div className="space-y-2">
                       {myTurn && ch.status === 'ready' && (
                         <>
-                          <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.start(); dispatch({ t: 'startTask', id: me }); }}>
+                          <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.start(); dispatch({ t: 'startTask', id: me }); if (options.pauseOnTaskStart ?? true) dispatch({ t: 'togglePause', id: me }); }}>
                             {Ic.play(16)} Запуск задания
                           </PxBtn>
                           {ch.mode === 'coins' ? (
@@ -5888,6 +5940,7 @@ export default function GameScreen() {
                       </span>
                     )}
                     {timerBadge}
+                    {winTimerBadge}
                     {taskSizeBtns}
                     <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myQJob.cellIdx + 1} · {isBogach ? 'играет ВСЯ компания — гонка!' : 'играешь ТОЛЬКО ты'}</span>
                   </div>
@@ -5947,7 +6000,7 @@ export default function GameScreen() {
                         : 'Режим доверия — победа и поражение на твоей совести. Каждый игрок проходит задания САМ: выполненные засчитываются только тебе (цели концовок и квестов — личные).'}</p>
                       {!qArmed ? (
                         <>
-                          <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.start(); setQArmed(true); }}>
+                          <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.start(); setQArmed(true); if (options.pauseOnTaskStart ?? true) setQPaused(true); }}>
                             {Ic.play(16)} Старт игры
                           </PxBtn>
                           <p className="text-[10px] text-dim leading-tight">Эмулятор загружен и стоит НА ПАУЗЕ — прочитайте задание, настройте управление. Игра начнётся по кнопке «Старт игры».</p>
@@ -6092,6 +6145,7 @@ export default function GameScreen() {
                     </span>
                   )}
                   {timerBadge}
+                  {winTimerBadge}
                   {taskSizeBtns}
                   <span className="font-pixel text-[8px] text-faint shrink-0">Задание №{myJob.cellIdx + 1} · играешь ТОЛЬКО ты</span>
                 </div>
@@ -6151,7 +6205,7 @@ export default function GameScreen() {
                     <p className="text-[10px] text-faint">Никаких подтверждений — режим доверия. Победа: +{RUBG_WIN_HP}% HP + трофей, ячейка твоя. Поражение: −{RUBG_LOSE_HP}% HP. Остальные игроки продолжают бегать — на тебя никто не ждёт.</p>
                     {!rubgJobArmed ? (
                       <>
-                        <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.start(); setRubgJobArmed(true); }}>
+                        <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.start(); setRubgJobArmed(true); if (options.pauseOnTaskStart ?? true) setRubgPaused(true); }}>
                           {Ic.play(16)} Старт игры
                         </PxBtn>
                         <p className="text-[10px] text-dim leading-tight">Эмулятор загружен и стоит НА ПАУЗЕ — прочитайте задание, подготовьтесь и настройте управление. Игра начнётся по кнопке «Старт игры».</p>
