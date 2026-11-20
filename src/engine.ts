@@ -1801,6 +1801,21 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     const now = Date.now();
     const W = map.mw ?? map.cols * CELL_PX;
     const H = map.mh ?? map.rows * CELL_PX;
+    /* v0.188 ЗАЧИСТКА ЗАВИСШИХ ЗАДАНИЙ: qJobs-запись, задание которой больше НЕ РЕШИТЬ
+       (приставка без своего задания, картридж исчез) — окно задания НЕ ОТКРЫВАЕТСЯ
+       (myQTask = null), а запись висит и МОЛЧА блокирует POWER ON («уже играешь личное
+       задание», страж без лога) — заказчик: «нажал ON — задание не запустилась, персонаж
+       просто стоит рядом с приставкой». Хост снимает такие записи тихо, раз в тик. */
+    if (s.qJobs) {
+      for (const pid of Object.keys(s.qJobs)) {
+        const jb = s.qJobs[pid];
+        if (jb && !cellTaskOf(s, map, jb.cellIdx)) {
+          delete s.qJobs[pid];
+          const pl = s.players.find((x) => x.id === pid);
+          if (pl) log(`🧹 ${pl.name}: зависшее задание (приставка №${jb.cellIdx + 1}) снято — картриджа с игрой там больше нет`);
+        }
+      }
+    }
     /* v0.130: СИЛЬНЫЙ ОГОНЬ ПОГАС — печь снова слабая (таймер СКРЫТ от игроков —
        никаких цифр, только факт в логе один раз по истечении) */
     if (f.strongUntil && now >= f.strongUntil) {
@@ -2016,7 +2031,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       /* v0.144: оттащить жертву — на ПРИСТАВКУ С КАРТРИДЖЕМ и ВКЛЮЧИТЬ его
          («Френди перекидывает на приставку и включает уже вставленный картридж») */
       const consolesBusy = (ci: number) => Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === ci);
-      const armed = map.cells.map((c, i) => ({ c, i })).filter(({ i }) => map.cells[i].type === 'task' && frendyCartTaskIdx(s, map, i) !== null && !consolesBusy(i));
+      /* v0.188: в «вооружённые» для поимки приставки — только те, чьё задание РЕАЛЬНО
+         открывается (cellTaskOf не null). Раньше Френди мог «включить» приставку-пустышку
+         (слот считается заряженным, а задания нет) — задание создано, окно НЕ открылось,
+         и игрок навсегда оставался с невидимым заданием, которое молча блокировало POWER ON. */
+      const armed = map.cells.map((c, i) => ({ c, i })).filter(({ i }) => map.cells[i].type === 'task' && frendyCartTaskIdx(s, map, i) !== null && cellTaskOf(s, map, i) !== null && !consolesBusy(i));
       if (armed.length) {
         const pick = armed[Math.floor(Math.random() * armed.length)].i;
         const r = cellRectOf(map, pick);
@@ -3944,14 +3963,20 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
       if (!isFrendyMode(map.mode) || !s.frendy || s.phase !== 'playing') break;
       const p = actor();
       if (!p || !p.alive || p.spect) break;
-      if (s.qJobs?.[p.id]) break; // уже играешь личное задание
+      if (s.qJobs?.[p.id]) {
+        /* v0.188: зависшее «невидимое» задание (окно не открывалось — задание приставки
+           не решается) снимаем НА МЕСТЕ и даём ON сработать; живое задание — честное
+           сообщение вместо немого стража (заказчик: «нажал ON — и ничего не происходит»). */
+        if (!cellTaskOf(s, map, s.qJobs[p.id].cellIdx)) { delete s.qJobs[p.id]; log(`🧹 ${p.name}: зависшее задание снято — приставка снова свободна`); }
+        else { log(`📼 ${p.name}: у тебя уже открыто личное задание — закончи его или нажми «Уйти»`); break; }
+      }
       const cIdx = Math.round(Number(a.cellIdx));
       if (!map.cells[cIdx] || map.cells[cIdx].type !== 'task') break;
       const cartTask = frendyCartTaskIdx(s, map, cIdx);
       if (cartTask === null) { log(`📼 Приставка №${cIdx + 1} ПУСТА — вставь в неё картридж из рюкзака`); break; }
       if (Object.values(s.qJobs ?? {}).some((j) => j.cellIdx === cIdx)) { log(`📼 Приставку №${cIdx + 1} сейчас играет другой игрок`); break; }
       const tk = cellTaskOf(s, map, cIdx);
-      if (!tk) break;
+      if (!tk) { log('📼 Картридж не читается: задания на нём больше нет — вставь другой'); break; }
       const pp = playerPx(s, map, p.id);
       const cr = cellRectOf(map, cIdx);
       if (!pp || !cr) break;
