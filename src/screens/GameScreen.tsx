@@ -8,7 +8,7 @@ import { effectLabel } from './TaskEditor';
 import { cardArt, cartridgeArt } from '../assets';
 import { cartImgSrcOf } from '../cartridge'; // v0.144: обложка/фото картриджа задания
 import { frendyConsoleImgOfRegion, frendyConsoleImg } from '../consoleAssets'; // v0.144/145: фото приставок (Dendy/Famicom/NES)
-import SegaBox, { type SegaApi } from '../SegaBox';
+import SegaBox, { emuBootStamp, type SegaApi } from '../SegaBox';
 import { ensureTaskRom, yaCachedName } from '../yandexRoms';
 import { isFloatT, opOk, readAt } from '../memcode';
 import KeyBinder from '../KeyBinder';
@@ -660,6 +660,7 @@ export default function GameScreen() {
      челлендж — автоперезапуск задания). Пока эмулятор на паузе/не запущен — молчим. ---------- */
   const codeFiredRef = useRef('');
   const codeFailFiredRef = useRef('');
+  const failStreakRef = useRef(0); // v0.189: счётчик ПОДРЯД идущих совпадений условия поражения
   const chPlaying = !!ch && ch.status === 'playing' && !!ch.started;
   const qJobOn = !!myQJob && !!myQTask && qArmed && !qPaused;
   const rJobOn = myJob !== undefined && !!myRubgTask && rubgJobArmed && !rubgPaused;
@@ -673,8 +674,18 @@ export default function GameScreen() {
   const activeFail = chCodeF ?? qCodeF ?? rCodeF;
   useEffect(() => {
     if (!activeCode && !activeFail) return;
-    /* ключ захода не зависит от того, какие условия заданы: при перезапуске задания
-       (reloadId/startedAt меняются) срабатывание сбрасывается — условия проверяются заново */
+    /* v0.189 ГРАЖДАНСКАЯ ОБОРОНА ОТ МГНОВЕННОГО ПРОВАЛА НА ЗАГРУЗКЕ СОХРАНЕНИЯ (заказчик:
+       «задание с автопроигрышем иногда сразу проигрывается при запуске, а иногда правильно;
+       похоже, игра стартует с начала, ещё до загрузки сохранения — HP на заставке 0»):
+       EJS_loadStateURL применяется ПОСЛЕ старта ядра, и в окне ~0.5–2 с игра живёт на
+       свежей памяти — codeFail «HP == 0» успевал сработать с ОДНОГО опроса. Теперь: (1)
+       первые 2.5 с после старта ядра условие поражения НЕ проверяется (emuBootStamp —
+       SegaBox обновляет его на каждом запуске/перезапуске/загрузке сохранения); (2) после
+       грейса провал зачитывается только при ДВУХ ПОДРЯД совпадениях (по 500 мс) —
+       случайный ноль на загрузке провалом не считается, а настоящий «HP стоит на нуле»
+       сработает на ~1 с позже. Условие ПОБЕДЫ не гейтится: ложная победа на свежей памяти
+       маловероятна, а честную победу задерживать незачем. */
+    failStreakRef.current = 0;
     const key = ch
       ? `c:${ch.cellIdx}:${ch.reloadId}`
       : myQJob
@@ -688,15 +699,19 @@ export default function GameScreen() {
         const heap = ejsApiRef.current?.getHeap?.() ?? null;
         if (!heap) return;
         /* ПОРАЖЕНИЕ проверяем ПЕРВЫМ: если оба условия совпали разом — игрок проиграл */
-        if (activeFail && codeFailFiredRef.current !== key) {
+        if (activeFail && codeFailFiredRef.current !== key && Date.now() - emuBootStamp.ts >= 2500) {
           const curF = readAt(heap, activeFail.a, activeFail.t);
           if (curF !== null && opOk(curF, activeFail.op, activeFail.v, isFloatT(activeFail.t))) {
-            codeFailFiredRef.current = key;
-            if (chCodeF && ch) dispatch({ t: 'reloadSave', id: me, byCode: true });
-            else if (qCodeF && myQJob) dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, byCode: true });
-            else if (rCodeF && myJob) dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false, byCode: true });
-            return;
-          }
+            failStreakRef.current += 1;
+            if (failStreakRef.current >= 2) {
+              codeFailFiredRef.current = key;
+              failStreakRef.current = 0;
+              if (chCodeF && ch) dispatch({ t: 'reloadSave', id: me, byCode: true });
+              else if (qCodeF && myQJob) dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, byCode: true });
+              else if (rCodeF && myJob) dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false, byCode: true });
+              return;
+            }
+          } else failStreakRef.current = 0;
         }
         if (!activeCode) return;
         const cur = readAt(heap, activeCode.a, activeCode.t);

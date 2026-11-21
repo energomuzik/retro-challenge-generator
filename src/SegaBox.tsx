@@ -45,6 +45,12 @@ async function wipeEmulatorCache(): Promise<void> {
   }
 }
 
+/* v0.189: момент последнего СТАРТА ядра (каждый запуск/перезапуск/загрузка сохранения
+   обновляет). Читают мониторы кодовых условий в GameScreen: условие поражения
+   (codeFail) не проверяется первые FAIL_ARM_MS после старта — сохранение (EJS_loadStateURL)
+   применяется ПОСЛЕ старта ядра, и в этом окне игра живёт на свежей памяти. */
+export const emuBootStamp = { ts: 0 };
+
 export interface SegaApi {
   snapshot: () => Promise<string | null>; // base64-состояние ядра (живое, без перезапуска)
   /** Перезапуск ядра с применением сохранения (null = старт с начала).
@@ -280,6 +286,10 @@ export default function SegaBox({
           setStatus('error');
           return;
         }
+        /* v0.189: штамп старта ядра — мониторы кодовых условий (GameScreen) по нему
+           держат грейс на загрузку сохранения: EJS_loadStateURL применяется ПОСЛЕ
+           старта ядра, и в окне ~0.5–2 с игра живёт на свежей памяти (HP=0 и т.п.) */
+        emuBootStamp.ts = Date.now();
         frameRef.current?.contentWindow?.postMessage({ type: 'boot', rom: romDataRef.current, name: romNameRef.current }, '*');
       } catch { /* noop */ }
     };
@@ -968,7 +978,7 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     '  if(gm()){doPause(wantPaused);}',
     '},450);',
 
-    'window.EJS_ready=function(){readyAt=Date.now();remapTries=0;remapPump();applyChaos();try{parent.postMessage({type:"ejs-ready"},"*");}catch(e){}};',
+    'window.EJS_ready=function(){readyAt=Date.now();remapTries=0;remapPump();applyChaos();setVolNow(wantVol);try{parent.postMessage({type:"ejs-ready"},"*");}catch(e){}};',
 
     // -------- ГРОМКОСТЬ: живое управление из приложения (своё окно звука,
     // т.к. встроенная панель с ползунком спрятана). setVolume ядра могуч, но
@@ -987,8 +997,15 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     '      var ss=m.AL.currentCtx.sources;',
     '      for(var i=0;i<ss.length;i++){try{var gv=ss[i].gain.gain.value||0;if(Math.abs(gv-wantVol)>0.001){ss[i].gain.gain.value=wantVol;}}catch(e){}}',
     '    }',
+    /* v0.189: НУЛЕВАЯ громкость — глушим САМ AudioContext (suspend). Новые аудиоисточники
+       OpenAL ядро создаёт в любой момент (в т.ч. при загрузке сохранения) и они начинают
+       играть с gain=1 — до следующего тика насоса это «полсекунды звука на максимуме»,
+       даже если ползунок стоит на 0 (заказчик: «звук прыгает на максимум при загрузке
+       сохранения»). Подвешенный контекст молчит ВСЕГДА, независимо от gain источников. */
+    '    var c=m&&m.AL&&m.AL.currentCtx;',
+    '    if(c&&c.context){try{if(wantVol<=0){if(c.context.state==="running")c.context.suspend();}else if(c.context.state==="suspended")c.context.resume();}catch(e){}}',
     '  }catch(e){}',
-    '},500);',
+    '},200);',
 
     // v0.57: NTSC-режим внутри эмулятора. 0 — ничего; 2 — «Мягкий CRT»:
     // фильтр на canvas (#game) + внутренний оверлей .crti-soft. Режим 1 («Полосатый»)
