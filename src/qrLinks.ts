@@ -26,8 +26,13 @@ export const QR_LINKS_LEFT: QrLink[] = [
   { key: 'twitch', label: 'TWITCH', url: 'https://www.twitch.tv/energomuzhik', img: byName('qr-twitch.png') },
 ];
 
-/** СПРАВА от панелей кнопок: донаты CloudTips, DonatePay. */
+/** СПРАВА от панелей кнопок: донаты CloudTips, DonatePay.
+ *  v0.190: + ЗАТРАВКА «S-ФАЙЛЫ» — будущая веб-игра про Салли и Молдера (заказчик).
+ *  Репозиторий создан, проект ещё не опубликован: плитка-иконка (герои вырезаны из
+ *  спрайт-листа заказчика) открывает github.com/energomuzik/S-files в новой вкладке,
+ *  а оттуда будет обратная ссылка. */
 export const QR_LINKS_RIGHT: QrLink[] = [
   { key: 'cloudtips', label: 'CLOUDTIPS', url: 'https://pay.cloudtips.ru/p/614db848', img: byName('qr-cloudtips.png') },
   { key: 'donatepay', label: 'DONATEPAY', url: 'https://donatepay.ru/don/ENERGOMUZHIK', img: byName('qr-donatepay.png') },
+  { key: 'sfiles', label: 'S-ФАЙЛЫ · СКОРО', url: 'https://github.com/energomuzik/S-files', img: byName('sfiles-icon.png') },
 ];

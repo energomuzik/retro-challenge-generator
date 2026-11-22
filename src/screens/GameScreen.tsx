@@ -139,6 +139,34 @@ const discBadge = (npc: PlacedNpc, flags: Record<string, boolean>): number => {
   return Math.min(90, d);
 };
 
+/* ---------- v0.190: СОХРАНЕНИЕ ЗАДАНИЯ ДОГОНЯЕТСЯ ДО СТАРТА ЭМУЛЯТОРА ----------
+   Поимка Френди сажает жертву за приставку, и задание со saveId раньше открывало
+   эмулятор СРАЗУ: если сохранение ещё не доехало (карта импортирована без сейвов,
+   P2P-передача в полёте, «Данные карты загружаются от хоста») — ядро стартовало на
+   СВЕЖЕЙ памяти, и codeFail «HP == 0» (Пятница 13) проваливал задание, которое
+   игрок ещё даже не начинал. Теперь состояние догоняется ДО монтирования ядра:
+   до 4 попыток (saveCache → база, гостю — запрос needRom хосту между попытками);
+   что не нашлось за ~4.5 с — то null: окно покажет баннер «СОХРАНЕНИЕ НЕ НАЙДЕНО»,
+   а кодовые условия отключатся (см. гейт в мониторе ниже). */
+const taskSaveFetch = async (
+  saveId: string | undefined,
+  romId: string,
+  askHost: boolean,
+  cancelled: () => boolean,
+): Promise<unknown> => {
+  if (!saveId) return null;
+  for (let i = 0; i < 4; i++) {
+    const st = useApp.getState();
+    const hit = st.saveCache[saveId] ?? (await idbGet<SaveDef>('saves', saveId))?.state ?? null;
+    if (hit || cancelled()) return hit;
+    if (i === 0 && askHost) st.room?.send('needRom', { romId, saveId });
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  const st = useApp.getState();
+  return st.saveCache[saveId] ?? (await idbGet<SaveDef>('saves', saveId))?.state ?? null;
+};
+
+
 export default function GameScreen() {
   const st = useApp();
   const { session: s, sessionMap: map, selfId: me, options, room } = st;
@@ -518,11 +546,9 @@ export default function GameScreen() {
         }
         return;
       }
-      const cache2 = useApp.getState();
-      /* v0.166: состояние сохранения достаём из базы (в ОЗУ оно больше не живёт) */
-      const sv = task.saveId
-        ? (cache2.saveCache[task.saveId] ?? (await idbGet<SaveDef>('saves', task.saveId))?.state ?? null)
-        : null;
+      /* v0.166/v0.190: состояние сохранения достаём из базы; если его ещё нет —
+         догоняем (ретраи + запрос хосту) ДО старта ядра */
+      const sv = await taskSaveFetch(task.saveId, task.romId, !isHost, () => !on);
       if (!on) return;
       setRomBuf(buf);
       setSaveState(sv);
@@ -572,10 +598,8 @@ export default function GameScreen() {
         if (!isHost) room?.send('needRom', { romId: myRubgTask.romId, saveId: myRubgTask.saveId });
         return;
       }
-      /* v0.166: состояние сохранения достаём из базы (в ОЗУ оно больше не живёт) */
-      const sv = myRubgTask.saveId
-        ? (cache.saveCache[myRubgTask.saveId] ?? (await idbGet<SaveDef>('saves', myRubgTask.saveId))?.state ?? null)
-        : null;
+      /* v0.166/v0.190: состояние сохранения — догоняем до старта ядра (см. taskSaveFetch) */
+      const sv = await taskSaveFetch(myRubgTask.saveId, myRubgTask.romId, !isHost, () => !on);
       if (!on) return;
       setRRomBuf(buf); setRSaveState(sv); setREmuKey((k) => k + 1);
     })();
@@ -603,10 +627,8 @@ export default function GameScreen() {
         if (!isHost) room?.send('needRom', { romId: myQTask.romId, saveId: myQTask.saveId });
         return;
       }
-      /* v0.166: состояние сохранения достаём из базы (в ОЗУ оно больше не живёт) */
-      const sv = myQTask.saveId
-        ? (cache.saveCache[myQTask.saveId] ?? (await idbGet<SaveDef>('saves', myQTask.saveId))?.state ?? null)
-        : null;
+      /* v0.166/v0.190: состояние сохранения — догоняем до старта ядра (см. taskSaveFetch) */
+      const sv = await taskSaveFetch(myQTask.saveId, myQTask.romId, !isHost, () => !on);
       if (!on) return;
       setQRomBuf(buf); setQSaveState(sv); setQEmuKey((k) => k + 1);
     })();
@@ -698,6 +720,12 @@ export default function GameScreen() {
       try {
         const heap = ejsApiRef.current?.getHeap?.() ?? null;
         if (!heap) return;
+        /* v0.190: задание должно было стартовать ИЗ СОХРАНЕНИЯ, но оно не загрузилось —
+           ядро живёт на свежей памяти, и кодовые условия дают ложный исход (провал
+           «HP == 0» на заставке). Автопроверка таких заданий отключена — в окне баннер. */
+        if ((chCode || chCodeF) && task?.saveId && !saveState) return;
+        if ((qCode || qCodeF) && myQTask?.saveId && !qSaveState) return;
+        if ((rCode || rCodeF) && myRubgTask?.saveId && !rSaveState) return;
         /* ПОРАЖЕНИЕ проверяем ПЕРВЫМ: если оба условия совпали разом — игрок проиграл */
         if (activeFail && codeFailFiredRef.current !== key && Date.now() - emuBootStamp.ts >= 2500) {
           const curF = readAt(heap, activeFail.a, activeFail.t);
@@ -726,7 +754,7 @@ export default function GameScreen() {
     }, 500);
     return () => clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeCode?.a, activeCode?.t, activeCode?.op, activeCode?.v, activeFail?.a, activeFail?.t, activeFail?.op, activeFail?.v, ch?.cellIdx, ch?.status, ch?.started, ch?.paused, ch?.reloadId, myQJob?.cellIdx, myQJob?.startedAt, qArmed, qPaused, myJob?.cellIdx, myJob?.startedAt, rubgJobArmed, rubgPaused, me]);
+  }, [activeCode?.a, activeCode?.t, activeCode?.op, activeCode?.v, activeFail?.a, activeFail?.t, activeFail?.op, activeFail?.v, ch?.cellIdx, ch?.status, ch?.started, ch?.paused, ch?.reloadId, myQJob?.cellIdx, myQJob?.startedAt, qArmed, qPaused, myJob?.cellIdx, myJob?.startedAt, rubgJobArmed, rubgPaused, me, saveState, qSaveState, rSaveState]);
 
   /* ---------- v0.117 VERSUS: ПОРАЖЕНИЕ В ГОНКЕ — чужая победа остановила МОЮ игру ----------
      Движок пишет qStops[мне] при остановке задания победителем (окно закрывается
@@ -1501,6 +1529,10 @@ export default function GameScreen() {
     worldPanRef.current = { x: 0, y: 0 };
     setViewMode((m) => (m === 'world' ? 'follow' : 'world'));
   };
+  /* v0.190: окно задания открыто (рефл-зеркало taskWinOpenUi) — страж для M/Select ниже:
+     нажатие не должно разворачивать карту мира ЗА окном задания (заказчик: «при нажатии
+     на select на джойстике открывается карта на фоне — этого быть не должно») */
+  const taskWinOpenUiRef = useRef(false);
   const mapPadPrevRef = useRef(false);
   useEffect(() => {
     /* клавиша (по умолчанию M) */
@@ -1510,6 +1542,7 @@ export default function GameScreen() {
       const tgt = e.target as HTMLElement | null;
       if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
       if (cutActiveRef.current) return;
+      if (taskWinOpenUiRef.current) return; // v0.190: в окне задания M карту мира не открывает
       e.preventDefault();
       toggleWorldMapView();
       sfx.click();
@@ -1521,7 +1554,7 @@ export default function GameScreen() {
       const cur = padBtnDown(loadEmuPrefs().mapPad ?? MAP_PAD_DEFAULT);
       const was = mapPadPrevRef.current;
       mapPadPrevRef.current = cur;
-      if (cur && !was && !cutActiveRef.current) { toggleWorldMapView(); sfx.click(); }
+      if (cur && !was && !cutActiveRef.current && !taskWinOpenUiRef.current) { toggleWorldMapView(); sfx.click(); }
     }, 66);
     return () => { window.removeEventListener('keydown', onKey); window.clearInterval(iv); };
   }, []);
@@ -1550,6 +1583,7 @@ export default function GameScreen() {
   useEffect(() => {
     const open = (myQJob !== undefined && !!myQTask) || myJob !== undefined || (!!ch && myTurn);
     setTaskWinOpenUi(open);
+    taskWinOpenUiRef.current = open; // v0.190: зеркало для стража M/Select (эффект поллера вешается один раз)
     /* v0.183: окно задания ЗАКРЫЛОСЬ (прошёл / проиграл / «Уйти») — вернуть мышь
        с джойстика, если выключали её МЫ (автоматикой). Игрок включил сам во время
        игры (тумблер сбросил autoOffByUs) или выключил сам — ничего не делаем,
@@ -6013,6 +6047,13 @@ export default function GameScreen() {
                       <p className="text-[10px] text-faint">{isBogach
                         ? `Гонка: вся компания играет ОДНУ игру одновременно, но задание НИКОМУ не транслируется — что за игра, видно только на вашем экране. Кто ПЕРВЫЙ пройдёт — +${bogachWin} бронзы${bogachWin ? '' : ' (награда не назначена)'}, остальные, кто ещё играл, просто остановятся (на НИЧЕЙНОЙ ячейке никто ничего не платит). Ячейка ломается ДО КОНЦА КАТКИ. Перезапуск — 1 бронза (траты идут в зачёт). Пропуск/поражение — сразу ${skipCoinsNeed} бронзы или потраченное${myQSpent ? ` (уже потрачено: ${myQSpent})` : ''} — и фишка замрёт, пока задание не разрешится.${bogachFree ? ' У ВАС ИММУНИТЕТ: пропуск бесплатный.' : ''}`
                         : 'Режим доверия — победа и поражение на твоей совести. Каждый игрок проходит задания САМ: выполненные засчитываются только тебе (цели концовок и квестов — личные).'}</p>
+                      {myQTask?.saveId && !qSaveState && qRomBuf && (
+                        <p className="font-pixel text-[8px] text-coral text-center leading-relaxed border-2 border-[rgba(255,93,115,0.45)] px-2 py-2">
+                          ⚠ СОХРАНЕНИЕ ЗАДАНИЯ НЕ НАЙДЕНО — игра началась С НАЧАЛА. Автопроверка кодовых условий ОТКЛЮЧЕНА
+                          (ложный провал «HP == 0» на старте больше не сработает). Перезайдите в комнату / перекачайте карту —
+                          сохранение догрузится от хоста, и задание начнётся из него.
+                        </p>
+                      )}
                       {!qArmed ? (
                         <>
                           <PxBtn big color="gold" className="w-full pulse-ring" onClick={() => { sfx.start(); setQArmed(true); if (options.pauseOnTaskStart ?? true) setQPaused(true); }}>
