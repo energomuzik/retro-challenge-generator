@@ -27,12 +27,14 @@ export const QR_LINKS_LEFT: QrLink[] = [
 ];
 
 /** СПРАВА от панелей кнопок: донаты CloudTips, DonatePay.
- *  v0.190: + ЗАТРАВКА «S-ФАЙЛЫ» — будущая веб-игра про Салли и Молдера (заказчик).
- *  Репозиторий создан, проект ещё не опубликован: плитка-иконка (герои вырезаны из
- *  спрайт-листа заказчика) открывает github.com/energomuzik/S-files в новой вкладке,
- *  а оттуда будет обратная ссылка. */
+ *  v0.190: + ЗАТРАВКА «S-ФАЙЛЫ» — веб-игра про Салли и Молдера (заказчик): плитка-иконка
+ *  (герои вырезаны из спрайт-листа заказчика) открывает игру в новой вкладке,
+ *  оттуда — обратная ссылка на RCG.
+ *  v0.191: ссылка ведёт на ОПУБЛИКОВАННУЮ Pages-сборку (energomuzik.github.io/S-files/),
+ *  а не на страницу файлов репозитория (заказчик: «нажимаю на иконку — просто переходит
+ *  на файлы гитхаба, не на страницу веб»); метка «СКОРО» снята — лобби уже открыто. */
 export const QR_LINKS_RIGHT: QrLink[] = [
   { key: 'cloudtips', label: 'CLOUDTIPS', url: 'https://pay.cloudtips.ru/p/614db848', img: byName('qr-cloudtips.png') },
   { key: 'donatepay', label: 'DONATEPAY', url: 'https://donatepay.ru/don/ENERGOMUZHIK', img: byName('qr-donatepay.png') },
-  { key: 'sfiles', label: 'S-ФАЙЛЫ · СКОРО', url: 'https://github.com/energomuzik/S-files', img: byName('sfiles-icon.png') },
+  { key: 'sfiles', label: 'S-ФАЙЛЫ', url: 'https://energomuzik.github.io/S-files/', img: byName('sfiles-icon.png') },
 ];
