@@ -735,8 +735,8 @@ export default function GameScreen() {
               codeFailFiredRef.current = key;
               failStreakRef.current = 0;
               if (chCodeF && ch) dispatch({ t: 'reloadSave', id: me, byCode: true });
-              else if (qCodeF && myQJob) dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, byCode: true });
-              else if (rCodeF && myJob) dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false, byCode: true });
+              else if (qCodeF && myQJob) { sfx.shock(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, byCode: true }); } // v0.192: проигрыш = разряд тока
+              else if (rCodeF && myJob) { sfx.shock(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false, byCode: true }); }
               return;
             }
           } else failStreakRef.current = 0;
@@ -769,7 +769,7 @@ export default function GameScreen() {
     lastStopTsRef.current = myStop.ts;
     if (Date.now() - myStop.ts > 15000) return; // старая запись (после загрузки сейва) — молчим
     const by = s?.players.find((p) => p.id === myStop.by)?.name ?? 'Соперник';
-    sfx.fail();
+    sfx.shock(); // v0.192: проигрыш = разряд тока
     useApp.getState().toast(`💀 ПОРАЖЕНИЕ: ${by} победил в гонке — игра остановлена${myStop.coins > 0 ? ` (−${myStop.coins} бронзы)` : ''}`, 'err');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [myStop?.ts, me]);
@@ -3746,15 +3746,15 @@ export default function GameScreen() {
     }
     if (timerSpec.kind === 'rubg' && myJob) {
       if (rCodeOnly) { ejsApiRef.current?.loadSaveReliable((rSaveState as string | null) ?? null); sfx.alarm(); setTimerRestartTick((x) => x + 1); }
-      else { sfx.fail(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false }); }
+      else { sfx.shock(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false }); } // v0.192
       return;
     }
     if (timerSpec.kind === 'sprinter' && myQJob) {
       /* v0.139 FRENDY: перезапуска задания нет — таймер истёк = ПОРАЖЕНИЕ (задание
          закрывается; перепройти — снова зайди на ячейку). force — поражение даже у codeOnly. */
-      if (isFrendy) { sfx.fail(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, force: true }); return; }
+      if (isFrendy) { sfx.shock(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, force: true }); return; } // v0.192
       if (qCodeOnly) { ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null); if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx }); sfx.alarm(); setTimerRestartTick((x) => x + 1); }
-      else { sfx.fail(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false }); }
+      else { sfx.shock(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false }); } // v0.192
     }
   };
   const timerFmt = (v: number | null) => {
@@ -6074,7 +6074,7 @@ export default function GameScreen() {
                                 title={isBogach ? `Первый победивший получает +${bogachWin} бронзы — и игры остальных остановятся` : undefined}>
                                 {isBogach ? `🏆 ПОБЕДА (первому +${bogachWin})` : '🏆 ПОБЕДА'}
                               </PxBtn>
-                              <PxBtn color="coral" onClick={() => { sfx.fail(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false }); }}
+                              <PxBtn color="coral" onClick={() => { sfx.shock(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false }); }}
                                 title={isBogach ? `= пропуск: сразу ${skipCoinsNeed} бронзы или потраченное${myQSpent ? ` (уже ${myQSpent})` : ''} — потом ждёшь исхода задания` : undefined}>
                                 {isBogach ? '💀 ПОРАЖЕНИЕ (= пропуск)' : '💀 ПОРАЖЕНИЕ'}
                               </PxBtn>
@@ -6278,7 +6278,7 @@ export default function GameScreen() {
                             <PxBtn color="teal" onClick={() => { sfx.success(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: true }); }}>
                               🏆 ПОБЕДА +{RUBG_WIN_HP}%
                             </PxBtn>
-                            <PxBtn color="coral" onClick={() => { sfx.fail(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false }); }}>
+                            <PxBtn color="coral" onClick={() => { sfx.shock(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false }); }}>
                               💀 ПОРАЖЕНИЕ −{RUBG_LOSE_HP}%
                             </PxBtn>
                             <GhostBtn onClick={() => setRubgPaused((x) => !x)} title="Пауза эмулятора без сброса прогресса">

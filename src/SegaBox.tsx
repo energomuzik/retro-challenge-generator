@@ -975,6 +975,11 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     'setInterval(function(){',
     '  if(!readyAt)return;',
     '  if(Date.now()-readyAt>3500)return;',
+    // v0.192: пауза при загрузке сохранения НЕ глушит ядро, пока EJS_loadStateURL ещё
+    // применяется (первые ~1.5 с после готовности): раньше насос ставил паузу каждые
+    // 450 мс СРАЗУ — и состояние часто не доезжало («пауза стоит, а сохранение не
+    // загрузилось», заказчик). Без состояния или после 1.5 с — как раньше.
+    '  if(wantPaused&&window.EJS_loadStateURL&&Date.now()-readyAt<1500)return;',
     '  if(gm()){doPause(wantPaused);}',
     '},450);',
 
@@ -1239,7 +1244,9 @@ function buildHtml(core: string, padFamily: PadFamily, volume: number, bases: st
     '  }',
     '  if(d.type==="pause"){',
     '    wantPaused=!!d.paused;',
-    '    if(gm()){doPause(wantPaused);}',
+    '    /* v0.192: см. насос — паузу с ещё применяющимся сохранением откладываем до',
+    '       готовности+1.5 с (доподняет насос); снятие паузы и обычная пауза — сразу. */',
+    '    if(gm()&&(!wantPaused||!window.EJS_loadStateURL||(readyAt>0&&Date.now()-readyAt>=1500))){doPause(wantPaused);}',
     '    return;',
     '  }',
     '  if(d.type==="open-settings"){openSettings();return;}',

@@ -142,6 +142,14 @@ export default function TaskEditor() {
   const [fCondFail, setFCondFail] = useState<MemCond | null>(null);
   const [codeFailIn, setCodeFailIn] = useState('');
   const [codeFailErr, setCodeFailErr] = useState('');
+  /* v0.192: строка кода условия — ЖИВОЕ ЗЕРКАЛО полей (тип/оператор/значение/адрес):
+     сменил оператор на «больше/меньше» — код сразу переписывается (:eq: → :gt:/:lt:),
+     и «Разобрать» больше не откатывает символ к «=» из устаревшего текста
+     (заказчик: «выбираю больше или меньше, жму разобрать-сохранить — символ опять
+     меняется на равно»). Поля → код автоматически; ручной разбор текста по-прежнему
+     обновляет поля (путь CodeSearch → «вставить код» уже ставил оба — не тронут). */
+  useEffect(() => { if (fCond) setCodeIn(formatCond(fCond)); }, [fCond]);
+  useEffect(() => { if (fCondFail) setCodeFailIn(formatCond(fCondFail)); }, [fCondFail]);
   /* v0.70 ТОЛЬКО ПО КОДУ: ручные кнопки для этого задания отключены — всё решают коды */
   const [fCodeOnly, setFCodeOnly] = useState(false);
   /* v0.71: ОДИНАКОВЫЕ УСЛОВИЯ на победу и поражение — противоречие: одно и то же состояние
