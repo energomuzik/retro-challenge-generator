@@ -93,15 +93,31 @@ function noise(dur: number, gain = 0.2, delay = 0, freq = 1200, type: BiquadFilt
    «Эффекты интерфейса» (setVolume). */
 const SFX_SAMPLES = import.meta.glob('./assets/sfx/*.mp3', { eager: true, import: 'default', query: '?url' }) as Record<string, string>;
 
-function playSample(prefix: string): boolean {
+/* v0.193: ПРЕДПРОГРЕВ — тянем все сэмплы в кеш браузера сразу при загрузке модуля,
+   чтобы ПЕРВЫЙ удар/разряд не молчал, пока файл качается с сервера (~200 КБ). */
+try {
+  for (const u of Object.values(SFX_SAMPLES)) {
+    const a = new Audio(u);
+    a.preload = 'auto';
+    a.load();
+  }
+} catch { /* без предпрогрева — сэмплы подхватятся лениво */ }
+
+/* СИНТЕЗ-ФОЛБЭКИ v0.193: если сэмпл не нашёлся или не заиграл (запрет автоплея,
+   ошибка загрузки) — подхватывает синтез, звук НЕ пропадает никогда. */
+const frendyHitSynth = () => { noise(0.12, 0.3, 0, 900); tone(150, 0.14, 'square', 0.2, 0, -95); tone(90, 0.2, 'sawtooth', 0.14, 0.05, -40); };
+const shockSynth = () => { noise(0.35, 0.3, 0, 2200, 'highpass'); tone(70, 0.5, 'sawtooth', 0.2, 0, -40); tone(2100, 0.12, 'square', 0.1, 0.05, -1600); };
+
+function playSample(prefix: string, fallback?: () => void): boolean {
   const pool = Object.keys(SFX_SAMPLES).filter((k) => k.includes(`/${prefix}`)).map((k) => SFX_SAMPLES[k]);
   if (!pool.length || volume <= 0) return false;
   try {
     const a = new Audio(pool[Math.floor(Math.random() * pool.length)]);
     a.volume = Math.min(1, volume);
-    void a.play().catch(() => { /* автоплей запрещён до жеста — синтез уже сыгран */ });
+    void a.play().catch(() => { if (fallback) fallback(); /* автоплей запрещён/файл не заиграл — синтез подхватит */ });
     return true;
   } catch {
+    if (fallback) fallback();
     return false;
   }
 }
@@ -133,11 +149,11 @@ export const sfx = {
   boxOpen() { [392, 523, 659, 784].forEach((f, i) => tone(f, 0.12, 'square', 0.11, i * 0.07)); }, // ящик открыт
   /* ---------- v0.123 FRENDY: звуки хоррора (заглушки под будущие фирменные) ---------- */
   frendySpawn() { tone(82, 0.7, 'sawtooth', 0.2, 0, 40); tone(58, 1.0, 'sawtooth', 0.18, 0.18, -16); noise(0.8, 0.12, 0.12, 260); }, // пробуждение Френди — низкий гул
-  frendyHit() { if (playSample('freddy-hit')) return; noise(0.12, 0.3, 0, 900); tone(150, 0.14, 'square', 0.2, 0, -95); tone(90, 0.2, 'sawtooth', 0.14, 0.05, -40); }, // v0.192: удар лапой — СЛУЧАЙНАЯ запись заказчика (синтез — фолбэк)
+  frendyHit() { if (!playSample('freddy-hit', frendyHitSynth)) frendyHitSynth(); }, // v0.193: СЛУЧАЙНАЯ запись заказчика + ГАРАНТИРОВАННЫЙ синтез при любом сбое сэмпла
   /* v0.192: ПРОИГРЫШ ЗАДАНИЯ = РАЗРЯД ТОКА (лор заказчика: джойстики приставок Френди
      токопроводящие — проиграл, автоматика бьёт током). Записи shock-1..5.mp3,
-     СЛУЧАЙНАЯ вариация; синтез — фолбэк, если сэмплы не нашлись. */
-  shock() { if (playSample('shock')) return; noise(0.35, 0.3, 0, 2200, 'highpass'); tone(70, 0.5, 'sawtooth', 0.2, 0, -40); tone(2100, 0.12, 'square', 0.1, 0.05, -1600); },
+     СЛУЧАЙНАЯ вариация; v0.193: при сбое сэмпла — гарантированный синтез. */
+  shock() { if (!playSample('shock', shockSynth)) shockSynth(); },
   frendyCatch() { tone(392, 0.16, 'sawtooth', 0.16); tone(311, 0.16, 'sawtooth', 0.16, 0.13); tone(196, 0.55, 'sawtooth', 0.2, 0.26, -50); noise(0.4, 0.16, 0.26, 500); }, // ПОИМКА — дьявольский спад
   frendyBurn() { noise(0.55, 0.2, 0, 640); tone(520, 0.3, 'triangle', 0.1, 0, 240); [784, 988, 1319].forEach((f, i) => tone(f, 0.14, 'square', 0.1, 0.3 + i * 0.09)); }, // сжигание в печи
   frendyPickup() { tone(880, 0.07, 'square', 0.1); tone(1175, 0.12, 'square', 0.1, 0.06); }, // подбор микросхемы

@@ -850,6 +850,18 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   ctx.translate(-view.x, -view.y);
 
   const b = mapSize(map);
+  /* v0.193: ВИДИМАЯ ОБЛАСТЬ МИРА (для отсечения невидимого): кадр рисует ТОЛЬКО то,
+     что попадает в экран (+запас 128 px). Раньше 9 больших фонов карт-плиток
+     (у карт вроде «FRENDY КАРТА BETA2» — JPEG 1024-1440², растянутые в 1280²)
+     перерисовывались КАЖДЫЙ кадр целиком с клипом и сглаживанием — на краю карты,
+     где в кадр входит сразу несколько плиток, канвас не успевал растеризоваться и
+     глитчовал: чёрные треугольники/прямоугольники, «фон наезжает друг на друга»,
+     через кадр само чинилось. Отсечение снимает нагрузку в разы. */
+  const z = Math.max(0.05, view.zoom);
+  const vx0 = view.x - width / (2 * z) - 128;
+  const vy0 = view.y - height / (2 * z) - 128;
+  const vx1 = view.x + width / (2 * z) + 128;
+  const vy1 = view.y + height / (2 * z) + 128;
   // подложка карты
   ctx.fillStyle = '#10142a';
   ctx.fillRect(-24, -24, b.w + 48, b.h + 48);
@@ -892,6 +904,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       const img = getImage(url);
       if (!img) continue;
       const px = t.col * tg.w, py = t.row * tg.h;
+      if (px + tg.w < vx0 || px > vx1 || py + tg.h < vy0 || py > vy1) continue; // v0.193: вне кадра — не рисуем
       ctx.save();
       ctx.beginPath();
       ctx.rect(px, py, tg.w, tg.h);
@@ -920,6 +933,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
         if (!img) continue;
         const px = c * ps, py = r * ps;
         const pw = Math.min(ps, b.w - px), ph = Math.min(ps, b.h - py); // краевая плитка может быть неполной
+        if (px + pw < vx0 || px > vx1 || py + ph < vy0 || py > vy1) continue; // v0.193: вне кадра — не рисуем
         ctx.save();
         ctx.beginPath();
         ctx.rect(px, py, pw, ph);
@@ -962,6 +976,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   for (const si of stampsDrawOrder(map)) {
     const st = stamps[si];
     if (!st) continue;
+    if (st.x + st.w / 2 < vx0 || st.x - st.w / 2 > vx1 || st.y + st.h / 2 < vy0 || st.y - st.h / 2 > vy1) continue; // v0.193: вне кадра — не рисуем
     const t = tset.get(st.tid);
     const img = t ? getImage(t.dataUrl) : null;
     ctx.save();

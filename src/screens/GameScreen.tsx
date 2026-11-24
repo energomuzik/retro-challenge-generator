@@ -683,6 +683,7 @@ export default function GameScreen() {
   const codeFiredRef = useRef('');
   const codeFailFiredRef = useRef('');
   const failStreakRef = useRef(0); // v0.189: счётчик ПОДРЯД идущих совпадений условия поражения
+  const winStreakRef = useRef(0); // v0.193: победа по коду тоже требует ДВУХ подряд совпадений (мусорный байт свежей памяти больше не выигрывает)
   const chPlaying = !!ch && ch.status === 'playing' && !!ch.started;
   const qJobOn = !!myQJob && !!myQTask && qArmed && !qPaused;
   const rJobOn = myJob !== undefined && !!myRubgTask && rubgJobArmed && !rubgPaused;
@@ -706,7 +707,11 @@ export default function GameScreen() {
        грейса провал зачитывается только при ДВУХ ПОДРЯД совпадениях (по 500 мс) —
        случайный ноль на загрузке провалом не считается, а настоящий «HP стоит на нуле»
        сработает на ~1 с позже. Условие ПОБЕДЫ не гейтится: ложная победа на свежей памяти
-       маловероятна, а честную победу задерживать незачем. */
+       маловероятна, а честную победу задерживать незачем.
+       v0.193: ОТМЕНЕНО для победы — заказчик: «захожу на ячейку DEADLY TOWERS, жму ON —
+       сразу засчитывается победа». Его карта ловит кодом победы «LOUDERS > 99» МУСОРНЫЙ
+       байт свежей памяти NES (до применения EJS_loadStateURL в байте >99). Победа теперь
+       гейтится тем же грейсом 2.5 с + ДВА опроса подряд — см. ниже. */
     failStreakRef.current = 0;
     const key = ch
       ? `c:${ch.cellIdx}:${ch.reloadId}`
@@ -742,14 +747,22 @@ export default function GameScreen() {
           } else failStreakRef.current = 0;
         }
         if (!activeCode) return;
+        /* v0.193: победа по коду ждёт ЗАГРУЗКУ СОХРАНЕНИЯ: те же 2.5 с после старта ядра +
+           ДВА опроса подряд (по 500 мс). Честную победу задерживает максимум на ~1 с после
+           грейса; мусорный байт свежей памяти больше не выигрывает задание. */
+        if (Date.now() - emuBootStamp.ts < 2500) return;
         const cur = readAt(heap, activeCode.a, activeCode.t);
         if (cur === null) return;
         if (opOk(cur, activeCode.op, activeCode.v, isFloatT(activeCode.t)) && codeFiredRef.current !== key) {
-          codeFiredRef.current = key;
-          if (chCode && ch) dispatch({ t: 'declareDone', id: me, byCode: true });
-          else if (qCode && myQJob) dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: true, byCode: true });
-          else if (rCode && myJob) dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: true, byCode: true });
-        }
+          winStreakRef.current += 1;
+          if (winStreakRef.current >= 2) {
+            codeFiredRef.current = key;
+            winStreakRef.current = 0;
+            if (chCode && ch) dispatch({ t: 'declareDone', id: me, byCode: true });
+            else if (qCode && myQJob) dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: true, byCode: true });
+            else if (rCode && myJob) dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: true, byCode: true });
+          }
+        } else winStreakRef.current = 0;
       } catch { /* ядро перезапустилось — попробуем на следующем тике */ }
     }, 500);
     return () => clearInterval(iv);
@@ -1417,6 +1430,11 @@ export default function GameScreen() {
   useEffect(() => { invPhaseLiveRef.current = s?.phase ?? null; }, [s?.phase]);
   const invFurnConsLiveRef = useRef(false);
   useEffect(() => { invFurnConsLiveRef.current = isFrendy && (!!nearFurnace || !!nearConsole); }, [isFrendy, !!nearFurnace, !!nearConsole]);
+  // v0.193: БЛОКИРОВКУ Y «У ПЕЧИ/ПРИСТАВКИ» СНИЛИ (реф выше больше не влияет на инвентарь):
+  // на картах, где приставки почти везде (FRENDY КАРТА BETA2: 12 из 14 ячеек — task),
+  // гард делал инвентарь НЕДОСТИЖИМЫМ на джойстике по всей карте. Y теперь ВСЕГДА
+  // открывает/закрывает инвентарь; у печи и приставки остались СВОИ кнопки (E / назначенная
+  // в «Управлении» кнопка пада), открытие инвентаря закрывает их окна.
   useEffect(() => {
     let prev = false;
     const init = new Set<number>();
@@ -1428,7 +1446,7 @@ export default function GameScreen() {
       const now = cur.has(loadEmuPrefs().invPad ?? INV_PAD_DEFAULT);
       if (now && !prev) { // край-триггер: только НОВОЕ нажатие
         if (invOpenLiveRef.current) { setInvOpen(false); sfx.click(); } // открыт — Y закрывает
-        else if (invPhaseLiveRef.current === 'playing' && !cutActiveRef.current && !taskWinRef.current && !dlgOpenIdRef.current && !pocketBlockRef.current && !invFurnConsLiveRef.current) { setInvOpen(true); sfx.click(); } // закрыт — Y открывает (гарды как у Tab + приоритет печи/приставки)
+        else if (invPhaseLiveRef.current === 'playing' && !cutActiveRef.current && !taskWinRef.current && !dlgOpenIdRef.current && !pocketBlockRef.current) { setInvOpen(true); setFurnOpen(false); setConsoleOpen(false); sfx.click(); } // закрыт — Y открывает (гарды как у Tab); v0.193: приоритет печи/приставки снят — инвентарь доступен везде, их окна закрываются
       }
       prev = now;
     }, 16); // v0.177: 66→16 мс — короткий тап больше не теряется между опросами
