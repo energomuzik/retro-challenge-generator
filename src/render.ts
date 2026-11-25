@@ -839,6 +839,40 @@ function tilesetMap(map: GameMap): Map<string, TileImg> {
   return new Map((map.tileset ?? []).map((t) => [t.id, t]));
 }
 
+/* ---------- v0.194: КЕШ ПРЕДРАСТРИРОВАННЫХ ФОНОВ ПЛИТОК (замена отсечению v0.193) ----------
+   Исходная причина чёрных глюков осталась: большие JPEG-фоны плиток (1024-1440²,
+   растянутые в 1280²) масштабировались с клипом и сглаживанием КАЖДЫЙ КАДР — на это
+   уходила основная нагрузка растеризатора. Теперь каждая плитка рисуется в свой
+   канвас ОДИН раз (тот же масштаб и то же сглаживание, что были в кадре), а дальше
+   каждый кадр — мгновенный блит готового растра 1:1: ни масштабирования, ни клипа,
+   ни save/restore. Попиксельно результат тот же: «real» рисуется 1:1, и вылезающее
+   за плитку срезается границей канваса — ровно как раньше срезал clip(). */
+const bgCache = new Map<string, HTMLCanvasElement>();
+function cachedTileBg(url: string, real: boolean, w: number, h: number): HTMLCanvasElement | null {
+  const img = getImage(url);
+  if (!img) return null;
+  const W = Math.max(1, Math.round(w));
+  const H = Math.max(1, Math.round(h));
+  const key = `${W}x${H}:${real ? 'r' : 's'}:${url}`;
+  let cv = bgCache.get(key);
+  if (!cv) {
+    cv = document.createElement('canvas');
+    cv.width = W;
+    cv.height = H;
+    const c = cv.getContext('2d');
+    if (!c) return null;
+    c.imageSmoothingEnabled = true;
+    if (real) c.drawImage(img, 0, 0); // 1:1; вылезающее за плитку режется границей канваса (был clip)
+    else c.drawImage(img, 0, 0, W, H);
+    bgCache.set(key, cv);
+    if (bgCache.size > 32) { // LRU: прижившийся набор фонов карт держим постоянно
+      const k0 = bgCache.keys().next().value;
+      if (k0) bgCache.delete(k0);
+    }
+  }
+  return cv;
+}
+
 export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardDrawOpts) {
   const { view, width, height } = o;
   ctx.clearRect(0, 0, width, height);
@@ -850,18 +884,11 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   ctx.translate(-view.x, -view.y);
 
   const b = mapSize(map);
-  /* v0.193: ВИДИМАЯ ОБЛАСТЬ МИРА (для отсечения невидимого): кадр рисует ТОЛЬКО то,
-     что попадает в экран (+запас 128 px). Раньше 9 больших фонов карт-плиток
-     (у карт вроде «FRENDY КАРТА BETA2» — JPEG 1024-1440², растянутые в 1280²)
-     перерисовывались КАЖДЫЙ кадр целиком с клипом и сглаживанием — на краю карты,
-     где в кадр входит сразу несколько плиток, канвас не успевал растеризоваться и
-     глитчовал: чёрные треугольники/прямоугольники, «фон наезжает друг на друга»,
-     через кадр само чинилось. Отсечение снимает нагрузку в разы. */
-  const z = Math.max(0.05, view.zoom);
-  const vx0 = view.x - width / (2 * z) - 128;
-  const vy0 = view.y - height / (2 * z) - 128;
-  const vx1 = view.x + width / (2 * z) + 128;
-  const vy1 = view.y + height / (2 * z) + 128;
+  /* v0.194: ОТСЕЧЕНИЕ v0.193 СНЯТО (заказчик: «ограничение отрисовки рушит отображение
+     полной карты при нажатии на select — верни как было»). Видимая область считалась от
+     камеры мира, а на карте мира по SELECT нужен весь план — отсечение резало фоны
+     не в том прямоугольнике. Нагрузку на растеризацию снимает КЕШ ФОНОВ ПЛИТОК ниже:
+     тот же результат рисуется без масштабирования больших JPEG и клипов каждый кадр. */
   // подложка карты
   ctx.fillStyle = '#10142a';
   ctx.fillRect(-24, -24, b.w + 48, b.h + 48);
@@ -901,18 +928,11 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       if (!pb) continue;
       const url = o.bgB?.tiles?.[t.id] && pb.bgB ? pb.bgB : pb.bg;
       if (!url) continue;
-      const img = getImage(url);
-      if (!img) continue;
       const px = t.col * tg.w, py = t.row * tg.h;
-      if (px + tg.w < vx0 || px > vx1 || py + tg.h < vy0 || py > vy1) continue; // v0.193: вне кадра — не рисуем
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(px, py, tg.w, tg.h);
-      ctx.clip();
+      const cvB = cachedTileBg(url, pb.bgMode === 'real', tg.w, tg.h); // v0.194: блит из кеша вместо масштаба+клипа каждый кадр
+      if (!cvB) continue;
       ctx.imageSmoothingEnabled = true;
-      if (pb.bgMode === 'real') ctx.drawImage(img, px, py);
-      else ctx.drawImage(img, px, py, tg.w, tg.h);
-      ctx.restore();
+      ctx.drawImage(cvB, px, py);
     }
   }
 
@@ -929,19 +949,12 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
         if (!pb) continue;
         const url = o.bgB?.plates?.[r * cols + c + 1] && pb.bgB ? pb.bgB : pb.bg;
         if (!url) continue;
-        const img = getImage(url);
-        if (!img) continue;
         const px = c * ps, py = r * ps;
         const pw = Math.min(ps, b.w - px), ph = Math.min(ps, b.h - py); // краевая плитка может быть неполной
-        if (px + pw < vx0 || px > vx1 || py + ph < vy0 || py > vy1) continue; // v0.193: вне кадра — не рисуем
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(px, py, pw, ph);
-        ctx.clip();
+        const cvB = cachedTileBg(url, pb.bgMode === 'real', pw, ph); // v0.194: блит из кеша вместо масштаба+клипа каждый кадр
+        if (!cvB) continue;
         ctx.imageSmoothingEnabled = true;
-        if (pb.bgMode === 'real') ctx.drawImage(img, px, py);
-        else ctx.drawImage(img, px, py, pw, ph);
-        ctx.restore();
+        ctx.drawImage(cvB, px, py);
       }
     }
   }
@@ -976,7 +989,6 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   for (const si of stampsDrawOrder(map)) {
     const st = stamps[si];
     if (!st) continue;
-    if (st.x + st.w / 2 < vx0 || st.x - st.w / 2 > vx1 || st.y + st.h / 2 < vy0 || st.y - st.h / 2 > vy1) continue; // v0.193: вне кадра — не рисуем
     const t = tset.get(st.tid);
     const img = t ? getImage(t.dataUrl) : null;
     ctx.save();

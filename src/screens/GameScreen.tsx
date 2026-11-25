@@ -684,6 +684,8 @@ export default function GameScreen() {
   const codeFailFiredRef = useRef('');
   const failStreakRef = useRef(0); // v0.189: счётчик ПОДРЯД идущих совпадений условия поражения
   const winStreakRef = useRef(0); // v0.193: победа по коду тоже требует ДВУХ подряд совпадений (мусорный байт свежей памяти больше не выигрывает)
+  const winArmedRef = useRef(false); // v0.194: для победы «== 0» значение должно побывать > 0 (босс был жив)
+  const bootSeenRef = useRef(0); // v0.194: метка загрузки ядра, по которой обнуляется арминг/счётчики
   const chPlaying = !!ch && ch.status === 'playing' && !!ch.started;
   const qJobOn = !!myQJob && !!myQTask && qArmed && !qPaused;
   const rJobOn = myJob !== undefined && !!myRubgTask && rubgJobArmed && !rubgPaused;
@@ -713,6 +715,8 @@ export default function GameScreen() {
        байт свежей памяти NES (до применения EJS_loadStateURL в байте >99). Победа теперь
        гейтится тем же грейсом 2.5 с + ДВА опроса подряд — см. ниже. */
     failStreakRef.current = 0;
+    winStreakRef.current = 0;
+    winArmedRef.current = false;
     const key = ch
       ? `c:${ch.cellIdx}:${ch.reloadId}`
       : myQJob
@@ -723,6 +727,15 @@ export default function GameScreen() {
     if (!key) return;
     const iv = setInterval(() => {
       try {
+        /* v0.194: перезапуск ядра (новый запуск/перезапуск/загрузка сохранения) — задание
+           с чистого листа: арминг и счётчики подряд обнуляются, чтобы победа «== 0» из
+           прошлого прогона не прижилась в новом (босс в новом прогоне ещё не заспавнился). */
+        if (bootSeenRef.current !== emuBootStamp.ts) {
+          bootSeenRef.current = emuBootStamp.ts;
+          failStreakRef.current = 0;
+          winStreakRef.current = 0;
+          winArmedRef.current = false;
+        }
         const heap = ejsApiRef.current?.getHeap?.() ?? null;
         if (!heap) return;
         /* v0.190: задание должно было стартовать ИЗ СОХРАНЕНИЯ, но оно не загрузилось —
@@ -753,7 +766,18 @@ export default function GameScreen() {
         if (Date.now() - emuBootStamp.ts < 2500) return;
         const cur = readAt(heap, activeCode.a, activeCode.t);
         if (cur === null) return;
-        if (opOk(cur, activeCode.op, activeCode.v, isFloatT(activeCode.t)) && codeFiredRef.current !== key) {
+        /* v0.194: ПОБЕДА «ЗНАЧЕНИЕ == 0» ТРЕБУЕТ, ЧТОБЫ ЗНАЧЕНИЕ ПОБЫВАЛО > 0 (заказчик:
+           «сделал код на победу, когда HP главного босса будет 0 — игра при запуске задания
+           сразу засчитывает победу; может, если босса ещё нет, то и HP у него 0?»). Именно
+           так: пока босс не заспавнился, его HP лежит на нуле, и равенство честно выполняется
+           с первого опроса — грейс 2.5 с тут не спасает (босса может не быть минуты). Теперь
+           ноль засчитывается ТОЛЬКО после того, как в ЭТОМ задании значение побывало > 0:
+           босс появился, был жив, умер — победа. Условия «счётчик упал до нуля» не страдают
+           (до нуля они падают только с ненулевого значения), остальные операторы (>, <, !=…)
+           не тронуты. Грейс и два опроса подряд — как были. */
+        const zeroWin = activeCode.op === 'eq' && activeCode.v === 0;
+        if (zeroWin && cur > 0) winArmedRef.current = true;
+        if (opOk(cur, activeCode.op, activeCode.v, isFloatT(activeCode.t)) && (!zeroWin || winArmedRef.current) && codeFiredRef.current !== key) {
           winStreakRef.current += 1;
           if (winStreakRef.current >= 2) {
             codeFiredRef.current = key;
@@ -2207,7 +2231,12 @@ export default function GameScreen() {
         if (cv.width !== Math.floor(w * dpr) || cv.height !== Math.floor(h * dpr)) {
           cv.width = Math.floor(w * dpr); cv.height = Math.floor(h * dpr);
         }
-        const ctx = cv.getContext('2d')!;
+        /* v0.194: НЕПРОЗРАЧНЫЙ канвас поля (alpha: false) — прозрачный слой композитится
+           GPU каждый кадр; при тяжёлом кадре (эмулятор в задании + большие фоны плиток)
+           именно композитинг давал «чёрные треугольники» и «наезжающий фон». Кадр всё
+           равно рисуется целиком (drawBoard первым делом заливает фон), так что картинка
+           не меняется ни на пиксель — уходит лишняя работа у видеокарты. */
+        const ctx = cv.getContext('2d', { alpha: false })!;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
         // токены — медленное, «рукотворное» перемещение по ячейкам
@@ -3658,20 +3687,21 @@ export default function GameScreen() {
   useQuickLoad(quickLoadFire);
   const quickKeyLbl = quickKeyLabelOf(loadEmuPrefs()); // v0.107: подпись клавиши быстрой загрузки на кнопках «Перезапуск»
 
-  /* ---------- v0.171: БЫСТРОЕ СОХРАНЕНИЕ (глобальная кнопка, по умолчанию F5 / R3) ----------
-     В окне задания — ЛОКАЛЬНАЯ точка возврата у этого игрока: «Перезапуск» и F6 вернут
-     в неё (общий сейв задания в базе и чужие окна не задеваются). В «Запуске эмулятора»
-     кнопка перезаписывает ВЫДЕЛЕННОЕ кликом сохранение (см. EmulatorLauncher). */
+  /* ---------- БЫСТРОЕ СОХРАНЕНИЕ (глобальная кнопка, по умолчанию F5 / R3) ----------
+     v0.194 (заказчик: «нажатие на L1 сохраняет быстрое сохранение, что при выполнении
+     задания быть НЕ ДОЛЖНО»): в окне задания кнопка БОЛЬШЕ НЕ СОХРАНЯЕТ — ни в личном
+     (QUEST/БОГАЧ/FRENDY), ни в RUBG, ни в классике; «Перезапуск»/F6 по-прежнему
+     возвращают в начало задания (его собственное сохранение). В «Запуске эмулятора»
+     кнопка работает как была — перезаписывает ВЫДЕЛЕННОЕ кликом сохранение. */
   const quickSaveFire = () => {
     void (async () => {
       const say = (m: string, kind: 'ok' | 'err') => useApp.getState().toast(m, kind);
+      const taskOn = (!!myQJob && !!myQTask && qArmed) || (myJob !== undefined && !!myRubgTask && rubgJobArmed) || (!!ch && myTurn && ch.status === 'playing' && !!ch.started);
+      if (taskOn) { say('Быстрое сохранение недоступно во время задания — «Перезапуск»/F6 вернёт в его начало', 'err'); return; }
       if (!ejsApiRef.current) { say('Сохранять некуда — эмулятор не запущен', 'err'); return; }
       const st = await ejsApiRef.current.snapshot();
       if (!st) { say('Эмулятор ещё не готов — дайте игре запуститься и попробуйте снова', 'err'); return; }
-      if (myQJob && myQTask && qArmed) { setQSaveState(st); sfx.success(); say('⚡ Быстрый сейв записан — «Перезапуск»/F6 теперь вернёт сюда', 'ok'); return; }
-      if (myJob && myRubgTask && rubgJobArmed) { setRSaveState(st); sfx.success(); say('⚡ Быстрый сейв записан — «Перезапуск»/F6 теперь вернёт сюда', 'ok'); return; }
-      if (ch && myTurn && ch.status === 'playing' && ch.started) { setSaveState(st); sfx.success(); say('⚡ Быстрый сейв записан — перезапуск задания вернёт сюда', 'ok'); return; }
-      say('Сохранять некуда — запустите задание (или перезапишите сохранение в «Запуске эмулятора»)', 'err');
+      say('Сохранять некуда — сначала «Старт игры» в окне задания (или перезапишите сохранение в «Запуске эмулятора»)', 'err');
     })();
   };
   useQuickSave(quickSaveFire);
