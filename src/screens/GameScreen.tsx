@@ -47,7 +47,6 @@ import { BogachPanel } from './BogachPanel'; // v0.109 БОГАЧ: панель 
 import { FrendyInvGrid, FrendyFurnaceModal, FrendyConsoleModal, ChipArt } from './FrendyInv'; // v0.141 FRENDY: DIABLO-инвентарь (сетка 10×6, печь + рюкзак); v0.142: + пиксельная микросхема (ChipArt)
 import { hasDice } from '../bogach'; // v0.109: проверка пакостей/радостей «только для кубиков»
 import { DONATE_DICE_ONLY } from '../types';
-import { useQuickLoad, quickKeyLabelOf, useQuickSave, quickSaveKeyLabelOf } from '../useQuickLoad';
 import {
   PAD_MOUSE_HINT, padMouseSetClicksOff, padMouseIsOff, usePadMouseOff,
   padMouseAutoHide, padMouseAutoRestore, // v0.183: автоматика мыши вокруг заданий (окна / выход из партии)
@@ -685,6 +684,7 @@ export default function GameScreen() {
   const failStreakRef = useRef(0); // v0.189: счётчик ПОДРЯД идущих совпадений условия поражения
   const winStreakRef = useRef(0); // v0.193: победа по коду тоже требует ДВУХ подряд совпадений (мусорный байт свежей памяти больше не выигрывает)
   const winArmedRef = useRef(false); // v0.194: для победы «== 0» значение должно побывать > 0 (босс был жив)
+  const failArmRef = useRef(false); // v0.195: арминг фазы «БЫЛО» двухфазного ПОРАЖЕНИЯ
   const bootSeenRef = useRef(0); // v0.194: метка загрузки ядра, по которой обнуляется арминг/счётчики
   const chPlaying = !!ch && ch.status === 'playing' && !!ch.started;
   const qJobOn = !!myQJob && !!myQTask && qArmed && !qPaused;
@@ -715,6 +715,7 @@ export default function GameScreen() {
        байт свежей памяти NES (до применения EJS_loadStateURL в байте >99). Победа теперь
        гейтится тем же грейсом 2.5 с + ДВА опроса подряд — см. ниже. */
     failStreakRef.current = 0;
+    failArmRef.current = false;
     winStreakRef.current = 0;
     winArmedRef.current = false;
     const key = ch
@@ -733,6 +734,7 @@ export default function GameScreen() {
         if (bootSeenRef.current !== emuBootStamp.ts) {
           bootSeenRef.current = emuBootStamp.ts;
           failStreakRef.current = 0;
+          failArmRef.current = false;
           winStreakRef.current = 0;
           winArmedRef.current = false;
         }
@@ -747,9 +749,23 @@ export default function GameScreen() {
         /* ПОРАЖЕНИЕ проверяем ПЕРВЫМ: если оба условия совпали разом — игрок проиграл */
         if (activeFail && codeFailFiredRef.current !== key && Date.now() - emuBootStamp.ts >= 2500) {
           const curF = readAt(heap, activeFail.a, activeFail.t);
-          if (curF !== null && opOk(curF, activeFail.op, activeFail.v, isFloatT(activeFail.t))) {
+          /* v0.195: ДВУХФАЗНОЕ ПОРАЖЕНИЕ «БЫЛО → СТАЛО» (как у победы): фаза 1 армирует,
+             фаза 2 триггерит ТОЛЬКО после арминга; holdSec — сколько секунд «стало» должно
+             держаться. Однофазные условия работают как раньше. */
+          let failHit = false;
+          if (curF !== null) {
+            if (activeFail.then) {
+              if (opOk(curF, activeFail.op, activeFail.v, isFloatT(activeFail.t))) failArmRef.current = true;
+              const curF2 = readAt(heap, activeFail.then.a, activeFail.then.t);
+              failHit = failArmRef.current && curF2 !== null && opOk(curF2, activeFail.then.op, activeFail.then.v, isFloatT(activeFail.then.t));
+            } else {
+              failHit = opOk(curF, activeFail.op, activeFail.v, isFloatT(activeFail.t));
+            }
+          }
+          if (failHit) {
             failStreakRef.current += 1;
-            if (failStreakRef.current >= 2) {
+            const needF = activeFail.then && (activeFail.holdSec ?? 0) > 0 ? Math.max(2, Math.ceil(((activeFail.holdSec ?? 0) * 1000) / 500)) : 2;
+            if (failStreakRef.current >= needF) {
               codeFailFiredRef.current = key;
               failStreakRef.current = 0;
               if (chCodeF && ch) dispatch({ t: 'reloadSave', id: me, byCode: true });
@@ -774,12 +790,29 @@ export default function GameScreen() {
            ноль засчитывается ТОЛЬКО после того, как в ЭТОМ задании значение побывало > 0:
            босс появился, был жив, умер — победа. Условия «счётчик упал до нуля» не страдают
            (до нуля они падают только с ненулевого значения), остальные операторы (>, <, !=…)
-           не тронуты. Грейс и два опроса подряд — как были. */
-        const zeroWin = activeCode.op === 'eq' && activeCode.v === 0;
-        if (zeroWin && cur > 0) winArmedRef.current = true;
-        if (opOk(cur, activeCode.op, activeCode.v, isFloatT(activeCode.t)) && (!zeroWin || winArmedRef.current) && codeFiredRef.current !== key) {
+           не тронуты. Грейс и два опроса подряд — как были.
+           v0.195: ДВУХФАЗНОЕ УСЛОВИЕ «БЫЛО → СТАЛО» — РАБОЧИЙ СПОСОБ ДЛЯ БОССА, СТАНДАРТ
+           RETROACHIEVEMENTS (заказчик: «давай как ты говоришь будем работать. байт состояния,
+           было, затем стало. сделай условие как стандарт и как все делают»; и просил
+           «сколько должно секунд продержаться»). Когда задана фаза 2 (then), авто-арминг
+           «== 0» не нужен — армингом служит ФАЗА 1 «БЫЛО» (например «HP босса > 0»), а
+           победа засчитывается, когда ПОСЛЕ неё выполняется фаза 2 «СТАЛО» (например
+           «HP == 0») и продержалась holdSec секунд (0/не задано — обычные два опроса ≈ 1 с). */
+        const twoPhase = !!activeCode.then;
+        const zeroWin = !twoPhase && activeCode.op === 'eq' && activeCode.v === 0;
+        let winHit = false;
+        if (twoPhase) {
+          if (opOk(cur, activeCode.op, activeCode.v, isFloatT(activeCode.t))) winArmedRef.current = true; // фаза 1 «БЫЛО»
+          const cur2 = readAt(heap, activeCode.then!.a, activeCode.then!.t);
+          winHit = winArmedRef.current && cur2 !== null && opOk(cur2, activeCode.then!.op, activeCode.then!.v, isFloatT(activeCode.then!.t)); // фаза 2 «СТАЛО»
+        } else {
+          if (zeroWin && cur > 0) winArmedRef.current = true;
+          winHit = opOk(cur, activeCode.op, activeCode.v, isFloatT(activeCode.t)) && (!zeroWin || winArmedRef.current);
+        }
+        if (winHit && codeFiredRef.current !== key) {
           winStreakRef.current += 1;
-          if (winStreakRef.current >= 2) {
+          const needW = twoPhase && (activeCode.holdSec ?? 0) > 0 ? Math.max(2, Math.ceil(((activeCode.holdSec ?? 0) * 1000) / 500)) : 2;
+          if (winStreakRef.current >= needW) {
             codeFiredRef.current = key;
             winStreakRef.current = 0;
             if (chCode && ch) dispatch({ t: 'declareDone', id: me, byCode: true });
@@ -791,7 +824,7 @@ export default function GameScreen() {
     }, 500);
     return () => clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeCode?.a, activeCode?.t, activeCode?.op, activeCode?.v, activeFail?.a, activeFail?.t, activeFail?.op, activeFail?.v, ch?.cellIdx, ch?.status, ch?.started, ch?.paused, ch?.reloadId, myQJob?.cellIdx, myQJob?.startedAt, qArmed, qPaused, myJob?.cellIdx, myJob?.startedAt, rubgJobArmed, rubgPaused, me, saveState, qSaveState, rSaveState]);
+  }, [activeCode?.a, activeCode?.t, activeCode?.op, activeCode?.v, activeCode?.then?.a, activeCode?.then?.t, activeCode?.then?.op, activeCode?.then?.v, activeCode?.holdSec, activeFail?.a, activeFail?.t, activeFail?.op, activeFail?.v, activeFail?.then?.a, activeFail?.then?.t, activeFail?.then?.op, activeFail?.then?.v, activeFail?.holdSec, ch?.cellIdx, ch?.status, ch?.started, ch?.paused, ch?.reloadId, myQJob?.cellIdx, myQJob?.startedAt, qArmed, qPaused, myJob?.cellIdx, myJob?.startedAt, rubgJobArmed, rubgPaused, me, saveState, qSaveState, rSaveState]);
 
   /* ---------- v0.117 VERSUS: ПОРАЖЕНИЕ В ГОНКЕ — чужая победа остановила МОЮ игру ----------
      Движок пишет qStops[мне] при остановке задания победителем (окно закрывается
@@ -3382,6 +3415,7 @@ export default function GameScreen() {
     if (b.fx === 'attack') { sfx.frendyHit(); if (b.targetId === me) setFrendyFlash(Date.now()); }
     else if (b.fx === 'catch') { sfx.frendyCatch(); if (b.targetId === me) { setFrendyFlash(Date.now()); frendyCatchClose(); frendyTpSnapRef.current = 1; } }
     else if (b.fx === 'repair') sfx.frendyRepair(); // v0.130: вставил картридж — ячейка починена
+    else if (b.fx === 'tp') sfx.frendyTpIn(); // v0.195: ФРЕНДИ ТЕЛЕПОРТИРОВАЛСЯ — «появление» (запись заказчика)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frendyBossFxTs]);
   /* ---------- v0.130 FRENDY: fx УРОВНЯ СОСТОЯНИЯ (поимка/ремонт) — босс в этот тик растворяется,
@@ -3395,6 +3429,7 @@ export default function GameScreen() {
     lastFrendyFxTsRef.current = fx.ts;
     if (fx.kind === 'catch') { sfx.frendyCatch(); if (fx.who === me) { setFrendyFlash(Date.now()); frendyCatchClose(); frendyTpSnapRef.current = 1; } }
     else if (fx.kind === 'repair') sfx.frendyRepair();
+    else if (fx.kind === 'vanish') sfx.frendyTpOut(); // v0.195: ФРЕНДИ растворился — «исчезновение» (запись заказчика)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frendyStateFxTs]);
 
@@ -3655,56 +3690,23 @@ export default function GameScreen() {
   const canReload = !!ch && !!info && (ch.mode === 'hp' || ch.mode === 'coins' ? true : remainingNow > 0);
   const owner = ch ? s.captured[ch.cellIdx] : undefined;
   // свой ход, фишка стоит, кубики не брошены — можно осматривать карту перетаскиванием
-  const canLookAround = !!s && !!mePlayer && myTurn && s.phase === 'playing' && !s.moving && !ch && !s.pendingCard && !s.quiz && !s.awaitPost && viewMode === 'follow' && !peekMap;
+  // v0.195: пока ОТКРЫТО ОКНО ЗАДАНИЯ (личное QUEST/БОГАЧ/FRENDY или RUBG — в нём крутится
+  // эмулятор), осмотр и ЗУМ КАРТЫ с джойстика (L1/L2) выключены: заказчик — «когда выполняешь
+  // задание, приближать и отдалять экран не надо» (зум дёргал доску в фоне под окном).
+  // Классика уже исключена (!ch). «Карта мира»/peekMap не тронуты — их открывают сознательно.
+  const taskWinOpen = (myQJob !== undefined && !!myQTask) || (myJob !== undefined && !!myRubgTask);
+  const canLookAround = !!s && !!mePlayer && myTurn && s.phase === 'playing' && !s.moving && !ch && !taskWinOpen && !s.pendingCard && !s.quiz && !s.awaitPost && viewMode === 'follow' && !peekMap;
 
-  /* ---------- v0.107: БЫСТРАЯ ЗАГРУЗКА (глобальная клавиша, по умолчанию F6) ----------
-     Во время задания = ПЕРЕЗАПУСК задания: та же логика, что у кнопки «Перезапуск»
-     открытого окна (VERSUS — с платой 1 бронза; классика — через reloadSave; RUBG —
-     перезагрузка рома с сохранения). Где окна нет — клавиша молчит.
-     v0.139: во FRENDY перезапуска задания НЕТ — клавиша молчит (v0.144: перепройти
-     можно, снова нажав POWER ON на приставке по E). */
-  const quickLoadFire = () => {
-    if (myQJob && myQTask) { // QUEST / БОГАЧ (VERSUS) / FRENDY — личное окно задания
-      if (isFrendy) return; // v0.139: перезапуска задания во FRENDY нет
-      ejsApiRef.current?.loadSaveReliable((qSaveState as string | null) ?? null);
-      // v0.106: перезапуск — 1 бронза (БОГАЧ); v0.139: во FRENDY перезапуска нет (кнопка и F6 убраны)
-      if (isBogach) dispatch({ t: 'qRestart', id: me, cellIdx: myQJob.cellIdx });
-      sfx.alarm();
-      setTimerRestartTick((x) => x + 1); // v0.108: перезапуск задания — таймер заново
-      return;
-    }
-    if (myJob && myRubgTask) { // RUBG — личное задание
-      ejsApiRef.current?.loadSaveReliable((rSaveState as string | null) ?? null);
-      sfx.alarm();
-      setTimerRestartTick((x) => x + 1); // v0.108: перезапуск задания — таймер заново
-      return;
-    }
-    if (ch && s && map && myTurn && ch.status === 'playing' && canReload) { // классика (Ретрополия)
-      dispatch({ t: 'reloadSave', id: me });
-      sfx.alarm();
-    }
-  };
-  useQuickLoad(quickLoadFire);
-  const quickKeyLbl = quickKeyLabelOf(loadEmuPrefs()); // v0.107: подпись клавиши быстрой загрузки на кнопках «Перезапуск»
-
-  /* ---------- БЫСТРОЕ СОХРАНЕНИЕ (глобальная кнопка, по умолчанию F5 / R3) ----------
-     v0.194 (заказчик: «нажатие на L1 сохраняет быстрое сохранение, что при выполнении
-     задания быть НЕ ДОЛЖНО»): в окне задания кнопка БОЛЬШЕ НЕ СОХРАНЯЕТ — ни в личном
-     (QUEST/БОГАЧ/FRENDY), ни в RUBG, ни в классике; «Перезапуск»/F6 по-прежнему
-     возвращают в начало задания (его собственное сохранение). В «Запуске эмулятора»
-     кнопка работает как была — перезаписывает ВЫДЕЛЕННОЕ кликом сохранение. */
-  const quickSaveFire = () => {
-    void (async () => {
-      const say = (m: string, kind: 'ok' | 'err') => useApp.getState().toast(m, kind);
-      const taskOn = (!!myQJob && !!myQTask && qArmed) || (myJob !== undefined && !!myRubgTask && rubgJobArmed) || (!!ch && myTurn && ch.status === 'playing' && !!ch.started);
-      if (taskOn) { say('Быстрое сохранение недоступно во время задания — «Перезапуск»/F6 вернёт в его начало', 'err'); return; }
-      if (!ejsApiRef.current) { say('Сохранять некуда — эмулятор не запущен', 'err'); return; }
-      const st = await ejsApiRef.current.snapshot();
-      if (!st) { say('Эмулятор ещё не готов — дайте игре запуститься и попробуйте снова', 'err'); return; }
-      say('Сохранять некуда — сначала «Старт игры» в окне задания (или перезапишите сохранение в «Запуске эмулятора»)', 'err');
-    })();
-  };
-  useQuickSave(quickSaveFire);
+  /* ---------- v0.195: БЫСТРАЯ ЗАГРУЗКА/СОХРАНЕНИЕ В ИГРЕ СНЯТЫ ЦЕЛИКОМ ----------
+     (заказчик: «вообще ничего не пиши и не загружай и не сохраняй по нажатию на L1/L2
+     на джое во время игры, и во время выполнения задания — когда запущен эмулятор;
+     быстрая загрузка/сохранение должны действовать ТОЛЬКО в редакторе сохранений»).
+     В игровом экране глобальные клавиши/кнопки F5/F6/джой-слоты ПУСТЫЕ: ни действий,
+     ни тостов — раньше F6 перезапускал задание и дразнил тостами. Хуки остались
+     ТОЛЬКО в «Запуске эмулятора» (EmulatorLauncher). Кнопка «Перезапуск» в окнах
+     заданий работает как была — это КНОПКА, а не глобальная клавиша; подписи
+     «⚡F6» с кнопок сняты (quickKeyLbl пуст), чтобы не обещать мёртвую клавишу. */
+  const quickKeyLbl = '';
 
   /* ---------- v0.171: ЗУМ КАРТЫ С ДЖОЙСТИКА — L1 приблизить / L2 отдалить (переназначается) ----------
      Работает в «Карте мира»/«Глянуть карту мира» (общий план) и при осмотре поля со своей

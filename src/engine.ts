@@ -2101,6 +2101,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         /* v0.146: в ОБЫЧНОМ режиме после ОДНОГО удара Френди РАСТВОРЯЕТСЯ — ни добиваний,
            ни «удар, а потом всё равно утащил» (в ярости/ультра охота продолжается, как было) */
         if (normalMode) {
+          f.fx = { kind: 'vanish', ts: now }; // v0.195: звук «исчезновение» — fx уровня состояния, виден клиентам даже без босса
           f.boss = null;
           f.nextSpawnAt = now + frendyRespawnMs(f);
           log(`😈 ФРЕНДИ доволен одним ударом и растворяется в кошмаре…`);
@@ -2125,7 +2126,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         b.lastTpAt = now;
         b.x = Math.max(8, Math.min(W - 8, spot.x));
         b.y = Math.max(8, Math.min(H - 8, spot.y));
-        b.fx = 'spawn'; b.fxTs = now;
+        b.fx = 'tp'; b.fxTs = now; // v0.195: звук «появление» телепорта (запись заказчика)
         log('😈 ФРЕНДИ УЛЬТРА ТЕЛЕПОРТИРУЕТСЯ — он уже рядом!');
       }
     }
@@ -2145,7 +2146,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         b.lastTpAt = now;
         b.x = Math.max(8, Math.min(W - 8, spot.x));
         b.y = Math.max(8, Math.min(H - 8, spot.y));
-        b.fx = 'spawn'; b.fxTs = now;
+        b.fx = 'tp'; b.fxTs = now; // v0.195: звук «появление» телепорта (запись заказчика)
         log(`😈 ФРЕНДИ ТЕЛЕПОРТИРУЕТСЯ К ${tgt.name} — не засиживайся в инвентаре!`);
       }
     }
@@ -2160,6 +2161,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
        v0.139: в ярости/ультра НЕ растворяется — гонится непрерывно. */
     if (!furious && !ultra && now - b.sinceTs > prm.huntMs && b.holdMs < FRENDY_CATCH_HOLD) {
       log('🌫 ФРЕНДИ растворился в темноте… но он вернётся.');
+      f.fx = { kind: 'vanish', ts: now }; // v0.195: звук «исчезновение» — fx уровня состояния, виден клиентам даже без босса
       f.boss = null;
       f.nextSpawnAt = now + Math.round(frendyRespawnMs(f) * 0.75);
     }

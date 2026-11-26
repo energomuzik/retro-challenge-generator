@@ -1260,6 +1260,40 @@ export default function TaskEditor() {
                               <input className="field-in w-24 px-2 py-1 text-[11px]" value={String(fCond.v)} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) setFCond({ ...fCond, v: n }); }} title="Значение условия" />
                               <input className="field-in w-28 px-2 py-1 text-[11px] font-mono" value={hex8(fCond.a)} onChange={(e) => { const n = parseHex(e.target.value); if (n !== null) setFCond({ ...fCond, a: n }); }} title="Адрес (hex)" />
                             </div>
+                            {/* v0.195: ДВУХФАЗНОЕ УСЛОВИЕ «БЫЛО → СТАЛО» (стандарт RetroAchievements).
+                               Пример для босса: «БЫЛО» HP босса > 0 (босс заспавнился и был жив) →
+                               «СТАЛО» HP == 0 (умер) — победа. Пока «было» не выполнялось ни разу,
+                               «стало» не засчитывается — мгновенной победы на старте больше нет. */}
+                            <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                              <GhostBtn small onClick={() => { setFCond(fCond.then ? { a: fCond.a, t: fCond.t, op: fCond.op, v: fCond.v } : { ...fCond, then: { a: fCond.a, t: fCond.t, op: 'eq', v: 0 }, holdSec: 0 }); sfx.hover(); }} title="Двухфазное условие: сначала «было», затем «стало» (стандарт ретро-ачивок)">
+                                {fCond.then ? '− Двухфазное' : '+ Двухфазное (было → стало)'}
+                              </GhostBtn>
+                              <span className="text-[10px] text-faint">стандарт ретро-ачивок: СНАЧАЛА «было», ПОТОМ «стало»</span>
+                            </div>
+                            {fCond.then && (
+                              <div className="space-y-1.5 border-2 border-[rgba(74,88,168,0.45)] px-2 py-2">
+                                <div className="text-[10.5px] text-paper leading-tight">
+                                  <span className="font-pixel">БЫЛО:</span> пока это не выполнится ни разу, «стало» НЕ засчитывается (арминг).
+                                  <br /><span className="font-pixel">СТАЛО:</span> победа после «было», когда это выполнится{fCond.holdSec ? ` и продержится ${fCond.holdSec} с` : ''}.
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-[10px] text-faint font-pixel">СТАЛО:</span>
+                                  <select className="field-in px-2 py-1 text-[10px]" value={fCond.then.t} onChange={(e) => setFCond({ ...fCond, then: { ...fCond.then!, t: e.target.value as CodeType } })} title="Тип значения фазы 2">
+                                    {(Object.keys(CODE_TYPE_LABEL) as CodeType[]).map((k) => <option key={k} value={k}>{CODE_TYPE_LABEL[k]}</option>)}
+                                  </select>
+                                  <select className="field-in px-2 py-1 text-[10px]" value={fCond.then.op} onChange={(e) => setFCond({ ...fCond, then: { ...fCond.then!, op: e.target.value as CodeOp } })} title="Оператор фазы 2">
+                                    {(Object.keys(OP_LABEL) as CodeOp[]).map((k) => <option key={k} value={k}>{OP_LABEL[k]}</option>)}
+                                  </select>
+                                  <input className="field-in w-24 px-2 py-1 text-[11px]" value={String(fCond.then.v)} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) setFCond({ ...fCond, then: { ...fCond.then!, v: n } }); }} title="Значение фазы 2 «стало»" />
+                                  <input className="field-in w-28 px-2 py-1 text-[11px] font-mono" value={hex8(fCond.then.a)} onChange={(e) => { const n = parseHex(e.target.value); if (n !== null) setFCond({ ...fCond, then: { ...fCond.then!, a: n } }); }} title="Адрес фазы 2 (hex) — может совпадать с фазой 1" />
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-[10px] text-faint font-pixel">ДЕРЖАТЬ:</span>
+                                  <input type="number" min={0} max={60} step={0.5} className="field-in w-16 px-2 py-1 text-[11px]" value={String(fCond.holdSec ?? 0)} onChange={(e) => { const n = Number(e.target.value); setFCond({ ...fCond, holdSec: Number.isFinite(n) && n > 0 ? Math.min(60, Math.round(n * 2) / 2) : 0 }); }} title="Сколько секунд «стало» должно продержаться подряд (0 = сразу, ~1 с)" />
+                                  <span className="text-[10px] text-faint">секунд, сколько «стало» должно продержаться (0 = сразу, ~1 с; босс умирает слишком быстро — поставь 0, если «стало» ловится, или держи «≤ 2» пару секунд)</span>
+                                </div>
+                              </div>
+                            )}
                             <p className="text-[10px] text-faint leading-tight">Адрес привязан к ЭТОМУ файлу рома. Другой дамп той же игры может не совпасть — тогда пересоберите условие через CodeSearch.</p>
                           </div>
                         )}

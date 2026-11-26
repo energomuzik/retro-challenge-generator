@@ -121,12 +121,27 @@ export const parseHex = (s: string): number | null => {
   return Number.isFinite(n) && n >= 0 && n <= 0xffffffff ? n : null;
 };
 
-/** Условие → строка «RPC1:001AB2C8:u8:eq:3». */
-export const formatCond = (c: MemCond) => `${CODE_PREFIX}:${hex8(c.a)}:${c.t}:${c.op}:${c.v}`;
+/** Условие → строка «RPC1:001AB2C8:u8:eq:3». v0.195: двухфазное условие «БЫЛО → СТАЛО»
+ *  сериализуется тремя сегментами через «>»: фаза 1 > фаза 2 > секунд удержания,
+ *  например «RPC1:001AB2C8:u8:gt:0>RPC1:001AB2C8:u8:eq:0>0» (был жив → стал 0). */
+export const formatCond = (c: MemCond): string => c.then
+  ? `${CODE_PREFIX}:${hex8(c.a)}:${c.t}:${c.op}:${c.v}>${formatCond(c.then)}>${c.holdSec ?? 0}`
+  : `${CODE_PREFIX}:${hex8(c.a)}:${c.t}:${c.op}:${c.v}`;
 
-/** Строка → условие (терпит лишние пробелы, 0x-префикс, строчные буквы). */
+/** Строка → условие (терпит лишние пробелы, 0x-префикс, строчные буквы).
+ *  v0.195: понимает и двухфазный вид «фаза1>фаза2>секунд». */
 export function parseCond(s: string): MemCond | null {
-  const parts = s.trim().split(/[:|,\s]+/).filter(Boolean);
+  const str = s.trim();
+  if (str.includes('>')) {
+    const segs = str.split('>').map((x) => x.trim()).filter(Boolean);
+    if (segs.length < 2 || segs.length > 3) return null;
+    const first = parseCond(segs[0]);
+    const second = parseCond(segs[1]);
+    if (!first || !second) return null;
+    const hold = segs.length > 2 ? Number(segs[2]) : 0;
+    return { ...first, then: second, holdSec: Number.isFinite(hold) && hold > 0 ? Math.min(60, Math.round(hold)) : 0 };
+  }
+  const parts = str.split(/[:|,\s]+/).filter(Boolean);
   if (parts.length < 5 || parts[0].toUpperCase() !== CODE_PREFIX) return null;
   const a = parseHex(parts[1]);
   const t = parts[2].toLowerCase() as CodeType;
@@ -138,8 +153,13 @@ export function parseCond(s: string): MemCond | null {
 
 export const OP_LABEL: Record<CodeOp, string> = { eq: '=', ne: '≠', gt: '>', lt: '<', ge: '≥', le: '≤' };
 
-/** Условие человеческим языком — для редактора заданий и подсказок в игре. */
-export const memCondText = (c: MemCond) => `память 0x${hex8(c.a)} (${CODE_TYPE_LABEL[c.t]}) ${OP_LABEL[c.op]} ${c.v}`;
+/** Условие человеческим языком — для редактора заданий и подсказок в игре.
+ *  v0.195: двухфазное — «сначала …, а ЗАТЕМ … (продержавшись N с)». */
+export const memCondText = (c: MemCond) => {
+  const one = (x: MemCond) => `память 0x${hex8(x.a)} (${CODE_TYPE_LABEL[x.t]}) ${OP_LABEL[x.op]} ${x.v}`;
+  if (!c.then) return one(c);
+  return `СНАЧАЛА ${one(c)}, а ЗАТЕМ ${one(c.then)}` + (c.holdSec ? `, продержавшись ${c.holdSec} с` : '');
+};
 
 /* ---------- сканер ---------- */
 

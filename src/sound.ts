@@ -107,6 +107,10 @@ try {
    ошибка загрузки) — подхватывает синтез, звук НЕ пропадает никогда. */
 const frendyHitSynth = () => { noise(0.12, 0.3, 0, 900); tone(150, 0.14, 'square', 0.2, 0, -95); tone(90, 0.2, 'sawtooth', 0.14, 0.05, -40); };
 const shockSynth = () => { noise(0.35, 0.3, 0, 2200, 'highpass'); tone(70, 0.5, 'sawtooth', 0.2, 0, -40); tone(2100, 0.12, 'square', 0.1, 0.05, -1600); };
+/* v0.195: синтез-фолбэки телепортов (записи заказчика freddy-tp-in/out-1.mp3):
+   появление — два восходящих взлёта + «звёздочка»; исчезновение — спад вниз и хвост шума. */
+const frendyTpInSynth = () => { tone(220, 0.16, 'sine', 0.12, 0, 660); tone(660, 0.14, 'sine', 0.1, 0.08, 620); tone(1320, 0.1, 'square', 0.05, 0.16, -600); noise(0.2, 0.06, 0, 2600, 'highpass'); };
+const frendyTpOutSynth = () => { tone(880, 0.22, 'sine', 0.12, 0, -700); tone(220, 0.28, 'sawtooth', 0.08, 0.1, -160); noise(0.25, 0.07, 0, 1400); };
 
 function playSample(prefix: string, fallback?: () => void): boolean {
   const pool = Object.keys(SFX_SAMPLES).filter((k) => k.includes(`/${prefix}`)).map((k) => SFX_SAMPLES[k]);
@@ -154,6 +158,10 @@ export const sfx = {
      токопроводящие — проиграл, автоматика бьёт током). Записи shock-1..5.mp3,
      СЛУЧАЙНАЯ вариация; v0.193: при сбое сэмпла — гарантированный синтез. */
   shock() { if (!playSample('shock', shockSynth)) shockSynth(); },
+  /* v0.195: ТЕЛЕПОРТЫ ФРЕНДИ — записи заказчика (freddy-tp-in-1.mp3 «появление»,
+     freddy-tp-out-1.mp3 «исчезновение»); при сбое сэмпла — гарантированный синтез. */
+  frendyTpIn() { if (!playSample('freddy-tp-in', frendyTpInSynth)) frendyTpInSynth(); },
+  frendyTpOut() { if (!playSample('freddy-tp-out', frendyTpOutSynth)) frendyTpOutSynth(); },
   frendyCatch() { tone(392, 0.16, 'sawtooth', 0.16); tone(311, 0.16, 'sawtooth', 0.16, 0.13); tone(196, 0.55, 'sawtooth', 0.2, 0.26, -50); noise(0.4, 0.16, 0.26, 500); }, // ПОИМКА — дьявольский спад
   frendyBurn() { noise(0.55, 0.2, 0, 640); tone(520, 0.3, 'triangle', 0.1, 0, 240); [784, 988, 1319].forEach((f, i) => tone(f, 0.14, 'square', 0.1, 0.3 + i * 0.09)); }, // сжигание в печи
   frendyPickup() { tone(880, 0.07, 'square', 0.1); tone(1175, 0.12, 'square', 0.1, 0.06); }, // подбор микросхемы
