@@ -3,7 +3,7 @@ import { useApp } from './store';
 import { GhostBtn, Ic, PxBtn } from './ui';
 import { sfx } from './sound';
 import type { SegaApi } from './SegaBox';
-import type { CodeOp, CodeType } from './types';
+import type { CodeOp, CodeType, MemCond } from './types';
 import { addCode } from './bogach'; // v0.122: скопированный код сразу уезжает в базу кодов
 import {
   CODE_TYPE_LABEL, OP_LABEL, SCAN_CAP, formatCond, hex8, parseCond, parseHex, readAt, runScan, typeSize, writeAt,
@@ -76,6 +76,15 @@ export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
   const [condAddr, setCondAddr] = useState<number | null>(null);
   const [condOp, setCondOp] = useState<CodeOp>('eq');
   const [condVal, setCondVal] = useState('');
+  /* v0.196: ДВУХФАЗНОЕ УСЛОВИЕ «БЫЛО → СТАЛО» прямо в CodeSearch (заказчик: «лучше добавить
+     эту кнопку сразу в codesearch, чтобы сохранённое значение сразу было верным») — кнопка
+     как в редакторе заданий; собранный код уезжает в редактор/базу кодов УЖЕ правильным
+     двухфазным «фаза1>фаза2>секунд». Фаза 2 — по ТОМУ ЖЕ адресу и ТЕМУ ЖЕ типу, что нашёл
+     поиск (типичный случай: HP был > 0 → стал 0); оператор/значение/удержание — свои поля. */
+  const [condTwo, setCondTwo] = useState(false);
+  const [condThenOp, setCondThenOp] = useState<CodeOp>('eq');
+  const [condThenVal, setCondThenVal] = useState('0');
+  const [condHold, setCondHold] = useState('0');
   const [wallOpen, setWallOpen] = useState(false);
   const [wallAddr, setWallAddr] = useState(0);
   const [wallIn, setWallIn] = useState('');
@@ -343,8 +352,24 @@ export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
     });
   };
 
-  const condCode = condAddr !== null ? formatCond({ a: condAddr, t, op: condOp, v: Number(condVal) || 0 }) : '';
-  const condValid = condAddr !== null && condVal.trim() !== '' && Number.isFinite(Number(condVal));
+  /* v0.196: condCode собирается сразу двухфазным, когда включён «было → стало»:
+     «RPC1:…:gt:0>RPC1:…:eq:0>N» — копия и база кодов получают верный код без ручной правки. */
+  const condCode = condAddr !== null ? formatCond(condTwo
+    ? {
+        a: condAddr, t, op: condOp, v: Number(condVal) || 0,
+        then: { a: condAddr, t, op: condThenOp, v: Number(condThenVal) || 0 },
+        holdSec: Number.isFinite(Number(condHold)) && Number(condHold) > 0 ? Math.min(60, Math.round(Number(condHold))) : 0,
+      }
+    : { a: condAddr, t, op: condOp, v: Number(condVal) || 0 }) : '';
+  const condValid = condAddr !== null && condVal.trim() !== '' && Number.isFinite(Number(condVal))
+    && (!condTwo || (condThenVal.trim() !== '' && Number.isFinite(Number(condThenVal))));
+  const toggleCondTwo = () => {
+    setCondTwo((v) => {
+      if (!v) { setCondThenOp('eq'); setCondThenVal('0'); setCondHold('0'); } // свежие поля «стало» при включении
+      return !v;
+    });
+    sfx.click();
+  };
 
   const copyCond = async () => {
     if (!condValid) return;
@@ -640,11 +665,42 @@ export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
                 </select>
                 <input className="field-in w-28 px-2 py-1.5 text-[12px]" value={condVal} onChange={(e) => setCondVal(e.target.value)} placeholder="значение" />
               </div>
+              {/* v0.196: ДВУХФАЗНОЕ «БЫЛО → СТАЛО» — кнопка сразу в CodeSearch (как в редакторе заданий):
+                 включил — оператор/значение выше становятся фазой 1 «БЫЛО», фаза 2 «СТАЛО» собирается ниже,
+                 и «Скопировать код условия» отдаёт готовый двухфазный код «фаза1>фаза2>секунд». */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <GhostBtn small onClick={toggleCondTwo} title="Двухфазное условие: сначала «было», затем «стало» (стандарт ретро-ачивок)">
+                  {condTwo ? '− Двухфазное' : '+ Двухфазное (было → стало)'}
+                </GhostBtn>
+                <span className="text-[10px] text-faint">стандарт ретро-ачивок: СНАЧАЛА «было», ПОТОМ «стало»</span>
+              </div>
+              {condTwo && (
+                <div className="space-y-1.5 border-2 border-[rgba(74,88,168,0.45)] px-2 py-2">
+                  <div className="text-[10.5px] text-paper leading-tight">
+                    <span className="font-pixel">БЫЛО:</span> фаза 1 — поля выше (для «было жив» поменяй оператор на «&gt;» и впиши стартовое значение, например 1).
+                    <br /><span className="font-pixel">СТАЛО:</span> фаза 2 по ТОМУ ЖЕ адресу 0x{hex8(condAddr)} и тому же типу ({CODE_TYPE_LABEL[t]}) — засчитается только ПОСЛЕ «было»{Number(condHold) > 0 ? `, продержавшись ${condHold} с` : ''}.
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap text-[12px]">
+                    <span className="text-[10px] text-faint font-pixel">СТАЛО:</span>
+                    <select className="field-in px-2 py-1.5 text-[11px]" value={condThenOp} onChange={(e) => setCondThenOp(e.target.value as CodeOp)}>
+                      {OPS.map((k) => <option key={k} value={k}>{OP_LABEL[k]}</option>)}
+                    </select>
+                    <input className="field-in w-28 px-2 py-1.5 text-[12px]" value={condThenVal} onChange={(e) => setCondThenVal(e.target.value)} placeholder="значение" />
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[10px] text-faint font-pixel">ДЕРЖАТЬ:</span>
+                    <input type="number" min={0} max={60} step={1} className="field-in w-16 px-2 py-1.5 text-[12px]" value={condHold} onChange={(e) => setCondHold(e.target.value)} title="Сколько секунд «стало» должно продержаться подряд (0 = сразу, ~1 с — два опроса по 500 мс)" />
+                    <span className="text-[10px] text-faint">секунд (0 = сразу, ~1 с)</span>
+                  </div>
+                </div>
+              )}
               <p className="text-[10.5px] text-dim leading-tight">
-                Код вставляется в редакторе заданий в поле «Зачёт по коду» — тогда задание зачтётся само,
-                когда значение по адресу станет {OP_LABEL[condOp]} {condVal || '…'}; а в поле «Поражение по коду» —
-                наоборот, задание ПРОВАЛИТСЯ, когда условие выполнится (например, жизни равны 0).
-                Условие привязано к ЭТОМУ файлу рома и встроенному ядру эмулятора — другой дамп той же игры может не совпасть.
+                {condTwo
+                  ? <>Двухфазный код вставляется в редакторе заданий в поле «Зачёт по коду» или «Поражение по коду» — кнопка «Разобрать» распадёт его на «БЫЛО» и «СТАЛО» с полями правки. Задание зачтётся (или провалится), когда СНАЧАЛА выполнится «было» ({OP_LABEL[condOp]} {condVal || '…'}), а ЗАТЕМ «стало» ({OP_LABEL[condThenOp]} {condThenVal || '…'}){Number(condHold) > 0 ? `, продержавшись ${condHold} с` : ''}.</>
+                  : <>Код вставляется в редакторе заданий в поле «Зачёт по коду» — тогда задание зачтётся само,
+                    когда значение по адресу станет {OP_LABEL[condOp]} {condVal || '…'}; а в поле «Поражение по коду» —
+                    наоборот, задание ПРОВАЛИТСЯ, когда условие выполнится (например, жизни равны 0).</>}
+                {' '}Условие привязано к ЭТОМУ файлу рома и встроенному ядру эмулятора — другой дамп той же игры может не совпасть.
               </p>
               <div className="flex items-center gap-2 flex-wrap">
                 <PxBtn color="gold" small disabled={!condValid} onClick={() => void copyCond()}>⧉ Скопировать код условия</PxBtn>
@@ -660,9 +716,12 @@ export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
               <input className="field-in flex-1 min-w-[240px] px-2 py-1.5 text-[11px] font-mono" placeholder="RPC1:001AB2C8:u8:eq:3" value={pasteIn} onChange={(e) => { setPasteIn(e.target.value); setPasteErr(''); }} />
               <GhostBtn small onClick={() => {
                 const c = parseCond(pasteIn);
-                if (!c) { setPasteErr('Не похоже на код условия — формат: RPC1:АДРЕС:ТИП:ОПЕРАТОР:ЗНАЧЕНИЕ'); return; }
+                if (!c) { setPasteErr('Не похоже на код условия — формат: RPC1:АДРЕС:ТИП:ОПЕРАТОР:ЗНАЧЕНИЕ или двухфазный RPC1:…:gt:0>RPC1:…:eq:0>0'); return; }
                 setPasteErr('');
-                toast(`Код верный: ${CODE_TYPE_LABEL[c.t]}, 0x${hex8(c.a)} ${OP_LABEL[c.op]} ${c.v}`, 'ok');
+                /* v0.196: двухфазный код проверяем целиком — обе фазы и удержание */
+                toast(c.then
+                  ? `Код верный (двухфазный): СНАЧАЛА 0x${hex8(c.a)} ${OP_LABEL[c.op]} ${c.v}, ЗАТЕМ 0x${hex8(c.then.a)} ${OP_LABEL[c.then.op]} ${c.then.v}${c.holdSec ? `, держать ${c.holdSec} с` : ''}`
+                  : `Код верный: ${CODE_TYPE_LABEL[c.t]}, 0x${hex8(c.a)} ${OP_LABEL[c.op]} ${c.v}`, 'ok');
               }}>Проверить</GhostBtn>
             </div>
             {pasteErr && <p className="text-[10.5px] text-coral">{pasteErr}</p>}

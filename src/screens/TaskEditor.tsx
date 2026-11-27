@@ -202,6 +202,26 @@ export default function TaskEditor() {
     setCodeFailIn(tdef?.codeFail ? formatCond(tdef.codeFail) : '');
     setCodeFailErr('');
     setFCodeOnly(tdef?.codeOnly ?? false);
+    /* v0.196: ПАНЕЛЬ РОМОВ САМА РАЗВОРАЧИВАЕТСЯ НА НУЖНОМ МЕСТЕ (заказчик: «при выборе ячейки
+       и сохранённого в нём задании сразу разворачивать левую панель с ромами и сохранениями
+       в нужном месте, где расположен ром и сохранение»): папка рома задания раскрывается,
+       спойлер «💾 Сохранения» открывается, панель прокручивается к рому, затем к сейву.
+       Перекрытия (ovr) — только на сессию, стартовый режим спойлеров и localStorage не трогаем. */
+    if (tdef?.romId) {
+      const rom = roms.find((r) => r.id === tdef.romId);
+      if (rom?.folder) setRomFolderOvr((s) => ({ ...s, [rom.folder!]: true }));
+      setRomSavesOvr(true);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const panel = romPanelRef.current;
+        if (!panel) return;
+        const esc = (x: string) => (typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(x) : x);
+        panel.querySelector<HTMLElement>(`[data-rom-row="${esc(tdef.romId!)}"]`)?.scrollIntoView({ block: 'nearest' });
+        if (tdef.saveId) {
+          const saveEl = panel.querySelector<HTMLElement>(`[data-save-row="${esc(tdef.saveId)}"]`);
+          if (saveEl) requestAnimationFrame(() => saveEl.scrollIntoView({ block: 'nearest' }));
+        }
+      }));
+    }
   }, [selCell, map?.id, taskSlot]);
 
   const CELL_COLORS = ['#ffcf3f', '#ff5d73', '#5aa9ff', '#2ee6a8', '#ff8b3f', '#9be84d', '#c07aff', '#e9ecff'];
@@ -297,6 +317,7 @@ export default function TaskEditor() {
      показываются поверх стартового режима, а в «запоминать» ещё и сохраняются. */
   const [romFolderOvr, setRomFolderOvr] = useState<Record<string, boolean>>({}); // v0.71: ручные переключения папок
   const [romSavesOvr, setRomSavesOvr] = useState<boolean | null>(null); // v0.71: ручное переключение спойлера сохранений
+  const romPanelRef = useRef<HTMLDivElement | null>(null); // v0.196: прокрутка панели ромов к рому/сейву задания
   const romFolderOpen = (f: string) => romFolderOvr[f] ?? effSpoilerOpen(spoilerMode, romFoldersOpenRaw[f], false);
   const toggleRomFolder = (f: string, open: boolean) => {
     setRomFolderOvr((s) => ({ ...s, [f]: open }));
@@ -384,7 +405,7 @@ export default function TaskEditor() {
     const inPool = poolRomSet.has(r.id); // v0.112: ром в пуле донатов
     const poolNo = pool.roms.indexOf(r.id) + 1;
     return (
-      <div key={r.id}>
+      <div key={r.id} data-rom-row={r.id}>
         <div className={`relative border-2 px-2.5 py-2 transition-colors ${sel ? 'border-gold bg-gold/10' : 'border-edge bg-panel hover:border-edge2'}`}>
         <button
           onClick={() => pickRom(r)}
@@ -450,7 +471,7 @@ export default function TaskEditor() {
                   const inPool = poolSaveSet.has(sv.id); // v0.112: сейв в пуле донатов
                   const poolNo = pool.saves.indexOf(sv.id) + 1;
                   return (
-                    <div key={sv.id} className="flex items-stretch gap-1">
+                    <div key={sv.id} data-save-row={sv.id} className="flex items-stretch gap-1">
                       <button
                         onClick={() => { setFSave(sv.id); sfx.hover(); }}
                         title={`Выбрать «${sv.name}» для этого задания`}
@@ -808,7 +829,7 @@ export default function TaskEditor() {
       <div className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-y-auto lg:overflow-visible">
         {/* левая панель ромов — только когда редактируется ячейка-задание */}
         {cell?.type === 'task' && (
-          <div className="w-full lg:w-[264px] shrink-0 border-t-[3px] lg:border-t-0 lg:border-r-[3px] border-edge bg-[rgba(11,14,28,0.85)] overflow-y-auto p-3 max-h-[38vh] lg:max-h-none">
+          <div ref={romPanelRef} className="w-full lg:w-[264px] shrink-0 border-t-[3px] lg:border-t-0 lg:border-r-[3px] border-edge bg-[rgba(11,14,28,0.85)] overflow-y-auto p-3 max-h-[38vh] lg:max-h-none">
             <div className="flex items-center justify-between mb-2 gap-1">
               <div className="tick-label">📼 Ромы · {roms.length}</div>
               {/* v0.122: база кодов условий — номера для донатов «… ПАКОСТЬ КОД_ПОБЕДЫ КОД_ПОРАЖЕНИЯ» */}
@@ -1333,6 +1354,40 @@ export default function TaskEditor() {
                               <input className="field-in w-24 px-2 py-1 text-[11px]" value={String(fCondFail.v)} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) setFCondFail({ ...fCondFail, v: n }); }} title="Значение условия" />
                               <input className="field-in w-28 px-2 py-1 text-[11px] font-mono" value={hex8(fCondFail.a)} onChange={(e) => { const n = parseHex(e.target.value); if (n !== null) setFCondFail({ ...fCondFail, a: n }); }} title="Адрес (hex)" />
                             </div>
+                            {/* v0.196: ДВУХФАЗНОЕ ПОРАЖЕНИЕ «БЫЛО → СТАЛО» — та же кнопка, что у зачёта
+                               (заказчик: «двойную проверку было-стало сделал, но только с победой, а с поражением такой кнопки нет»).
+                               Движок поддерживает двухфазные поражения с v0.195 (арминг failArmRef + удержание needF — симметрично
+                               победе), кнопки в UI не было. Пример: «БЫЛО» жизни > 0 (игрок был жив) → «СТАЛО» жизни == 0 — провал. */}
+                            <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                              <GhostBtn small onClick={() => { setFCondFail(fCondFail.then ? { a: fCondFail.a, t: fCondFail.t, op: fCondFail.op, v: fCondFail.v } : { ...fCondFail, then: { a: fCondFail.a, t: fCondFail.t, op: 'eq', v: 0 }, holdSec: 0 }); sfx.hover(); }} title="Двухфазное условие поражения: сначала «было», затем «стало» (стандарт ретро-ачивок)">
+                                {fCondFail.then ? '− Двухфазное' : '+ Двухфазное (было → стало)'}
+                              </GhostBtn>
+                              <span className="text-[10px] text-faint">стандарт ретро-ачивок: СНАЧАЛА «было», ПОТОМ «стало»</span>
+                            </div>
+                            {fCondFail.then && (
+                              <div className="space-y-1.5 border-2 border-[rgba(255,93,115,0.45)] px-2 py-2">
+                                <div className="text-[10.5px] text-paper leading-tight">
+                                  <span className="font-pixel">БЫЛО:</span> пока это не выполнится ни разу, «стало» НЕ засчитывается (арминг).
+                                  <br /><span className="font-pixel">СТАЛО:</span> поражение после «было», когда это выполнится{fCondFail.holdSec ? ` и продержится ${fCondFail.holdSec} с` : ''}.
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-[10px] text-faint font-pixel">СТАЛО:</span>
+                                  <select className="field-in px-2 py-1 text-[10px]" value={fCondFail.then.t} onChange={(e) => setFCondFail({ ...fCondFail, then: { ...fCondFail.then!, t: e.target.value as CodeType } })} title="Тип значения фазы 2">
+                                    {(Object.keys(CODE_TYPE_LABEL) as CodeType[]).map((k) => <option key={k} value={k}>{CODE_TYPE_LABEL[k]}</option>)}
+                                  </select>
+                                  <select className="field-in px-2 py-1 text-[10px]" value={fCondFail.then.op} onChange={(e) => setFCondFail({ ...fCondFail, then: { ...fCondFail.then!, op: e.target.value as CodeOp } })} title="Оператор фазы 2">
+                                    {(Object.keys(OP_LABEL) as CodeOp[]).map((k) => <option key={k} value={k}>{OP_LABEL[k]}</option>)}
+                                  </select>
+                                  <input className="field-in w-24 px-2 py-1 text-[11px]" value={String(fCondFail.then.v)} onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) setFCondFail({ ...fCondFail, then: { ...fCondFail.then!, v: n } }); }} title="Значение фазы 2 «стало»" />
+                                  <input className="field-in w-28 px-2 py-1 text-[11px] font-mono" value={hex8(fCondFail.then.a)} onChange={(e) => { const n = parseHex(e.target.value); if (n !== null) setFCondFail({ ...fCondFail, then: { ...fCondFail.then!, a: n } }); }} title="Адрес фазы 2 (hex) — может совпадать с фазой 1" />
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-[10px] text-faint font-pixel">ДЕРЖАТЬ:</span>
+                                  <input type="number" min={0} max={60} step={0.5} className="field-in w-16 px-2 py-1 text-[11px]" value={String(fCondFail.holdSec ?? 0)} onChange={(e) => { const n = Number(e.target.value); setFCondFail({ ...fCondFail, holdSec: Number.isFinite(n) && n > 0 ? Math.min(60, Math.round(n * 2) / 2) : 0 }); }} title="Сколько секунд «стало» должно продержаться подряд (0 = сразу, ~1 с)" />
+                                  <span className="text-[10px] text-faint">секунд, сколько «стало» должно продержаться (0 = сразу, ~1 с)</span>
+                                </div>
+                              </div>
+                            )}
                             <p className="text-[10px] text-faint leading-tight">Поражение приоритетнее зачёта: если оба условия совпали разом — задание провалено. Адрес привязан к ЭТОМУ файлу рома — другой дамп может не совпасть.</p>
                           </div>
                         )}

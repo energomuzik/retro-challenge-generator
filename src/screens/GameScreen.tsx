@@ -3313,7 +3313,11 @@ export default function GameScreen() {
     lastPhraseTsRef.current = frendyPhrase.ts;
     const text = FRENDY_PHRASES[frendyPhrase.n % FRENDY_PHRASES.length] ?? '';
     setFrendyShout({ text, ts: Date.now() });
-    sfx.frendySpawn();
+    /* v0.196: запись заказчика «появление» вместо старого гула пробуждения (заказчик: «при появлении
+       френди иногда играется старый звук телепорта… не везде выставил звук телепорта»). Пробуждение —
+       это и есть появление: Френди возникает прямо у фишки цели (engine ставит boss на её позицию),
+       поэтому звучит «телепорт появление», как на УЛЬТРА-телепорте и телепорте к копающемуся (v0.195). */
+    sfx.frendyTpIn();
     const url = frendyPhraseVoice(frendyPhrase.n); // v0.124: явное имя файла — frendy-N.mp3 (порядок = FRENDY_PHRASES)
     let noVoice = false;
     try {

@@ -136,7 +136,11 @@ export function FrendyIntroCine({ onDone }: { onDone: () => void }) {
   useEffect(() => {
     const t0 = window.setTimeout(() => {
       setStage(1);
-      sfx.frendySpawn();
+      /* v0.196: ВСЕ появления Френди звучат записью заказчика «телепорт появление» — старый
+         синтез-гул пробуждения звучал как «старый звук телепорта» (заказчик: «не везде выставил
+         звук телепорта»). Кат-сцены, стингер, badend, пробуждение охоты, наказание,
+         УЛЬТРА-телепорт, телепорт к копающемуся — единый звук появления (frendyTpIn). */
+      sfx.frendyTpIn();
       stopRef.current = playSeq(
         [frendyCineVoice('intro', phrase.f)],
         () => setStage(2),
@@ -282,7 +286,7 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
     }
     /* v0.131: ВСЕ ПРОИГРАЛИ (Френди победил) — сначала его глумление (badend), потом титры */
     if (phase === 'lose1') {
-      sfx.frendySpawn();
+      sfx.frendyTpIn(); // v0.196: появление — запись заказчика (см. FrendyIntroCine)
       stopRef.current = playSeq(
         [frendyCineVoice('badend', losePhrase.f)],
         () => setPhase('roll'),
@@ -313,7 +317,7 @@ export function EndCredits({ map, sess, isFrendy, onClose, onEpilogue }: { map: 
   useEffect(() => {
     if (phase !== 'sting') return;
     try { musicRef.current?.pause(); } catch { /* noop */ }
-    sfx.frendySpawn();
+    sfx.frendyTpIn(); // v0.196: появление — запись заказчика (см. FrendyIntroCine)
     stopRef.current = playSeq(
       [frendyCineVoice('sting', stingPhrase.f)],
       () => setPhase('stingEnd'),
@@ -491,7 +495,7 @@ export function XFinale({ map, sess, onDone }: { map: GameMap; sess: GameSession
   useEffect(() => {
     if (phase !== 'sting') return;
     try { musicRef.current?.pause(); } catch { /* noop */ }
-    sfx.frendySpawn();
+    sfx.frendyTpIn(); // v0.196: появление — запись заказчика (см. FrendyIntroCine)
     stopRef.current = playSeq(
       [frendyCineVoice('sting', stingPhrase.f)],
       () => setPhase('stingEnd'),

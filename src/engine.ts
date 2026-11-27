@@ -3911,7 +3911,11 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
           if (frB) avoidB.push({ x: frB.x + frB.w / 2, y: frB.y + frB.h / 2 });
           avoidB.push(ppB);
           const spotB = frendyFreeSpot(avoidB, 420) ?? frendyFreeSpot(avoidB, 280) ?? frendyFreeSpot(avoidB, 160) ?? frendyFreeSpot(avoidB, 90) ?? { x: ppB.x, y: ppB.y };
-          f.boss = { x: Math.round(spotB.x), y: Math.round(spotB.y), targetId: p.id, sinceTs: nowB, lastHitAt: 0, holdMs: 0, fx: 'spawn', fxTs: nowB, punish: true };
+          /* v0.196: fx 'tp' вместо 'spawn' — появление здесь ЭТО телепорт («просыпается в другом конце кошмара»),
+             вотчер GameScreen играет на 'tp' запись заказчика «появление». Раньше стоял 'spawn', который
+             вотчер вообще не обрабатывает — наказание появлялось В ТИШИНЕ. Визуально fx не трогает
+             (drawFrendyBoss рисует только 'attack'/'catch'). */
+          f.boss = { x: Math.round(spotB.x), y: Math.round(spotB.y), targetId: p.id, sinceTs: nowB, lastHitAt: 0, holdMs: 0, fx: 'tp', fxTs: nowB, punish: true };
           log(`😈 ФРЕНДИ ПРОСНУЛСЯ В ДРУГОМ КОНЦЕ КОШМАРА и уже идёт к ${p.name} — месть за сожжённую микросхему! Закрой печь, собери вещи и БЕГИ: догонит — УТАЩИТ НА ПРИСТАВКУ!`);
         }
       }
