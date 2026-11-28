@@ -152,6 +152,14 @@ export default function TaskEditor() {
   useEffect(() => { if (fCondFail) setCodeFailIn(formatCond(fCondFail)); }, [fCondFail]);
   /* v0.70 ТОЛЬКО ПО КОДУ: ручные кнопки для этого задания отключены — всё решают коды */
   const [fCodeOnly, setFCodeOnly] = useState(false);
+  /* v0.197 ДОПОЛНИТЕЛЬНЫЕ УСЛОВИЯ (заказчик: «кнопка, которая бы добавляла еще 1 условие
+     победы или поражения… например игроку запретить брать лечилки, убивать нужных
+     персонажей и т.д. а не только смерть гг»): у ПОБЕДЫ — список ДОПОЛНИТЕЛЬНЫХ обязательных
+     условий (зачёт = основной код И все дополнительные), у ПОРАЖЕНИЯ — список условий,
+     ЛЮБОЕ из которых проваливает задание (ИЛИ). Каждое — код из CodeSearch (можно
+     двухфазный «было → стало»), разбирается «Разобрать» в MemCond. */
+  const [fCondX, setFCondX] = useState<{ cond: MemCond | null; raw: string; err: string }[]>([]);
+  const [fCondFailX, setFCondFailX] = useState<{ cond: MemCond | null; raw: string; err: string }[]>([]);
   /* v0.71: ОДИНАКОВЫЕ УСЛОВИЯ на победу и поражение — противоречие: одно и то же состояние
      памяти не может быть одновременно зачётом и провалом (поражение проверяется первым —
      зачёт по коду тогда недостижим вообще). Предупреждаем и запрещаем сохранение. */
@@ -201,6 +209,9 @@ export default function TaskEditor() {
     setFCondFail(tdef?.codeFail ?? null);
     setCodeFailIn(tdef?.codeFail ? formatCond(tdef.codeFail) : '');
     setCodeFailErr('');
+    /* v0.197: дополнительные условия — загрузка из задания (код-строкой, полями не правятся) */
+    setFCondX((tdef?.codeWinExtra ?? []).map((c) => ({ cond: c, raw: formatCond(c), err: '' })));
+    setFCondFailX((tdef?.codeFailExtra ?? []).map((c) => ({ cond: c, raw: formatCond(c), err: '' })));
     setFCodeOnly(tdef?.codeOnly ?? false);
     /* v0.196: ПАНЕЛЬ РОМОВ САМА РАЗВОРАЧИВАЕТСЯ НА НУЖНОМ МЕСТЕ (заказчик: «при выборе ячейки
        и сохранённого в нём задании сразу разворачивать левую панель с ромами и сохранениями
@@ -565,8 +576,12 @@ export default function TaskEditor() {
       })()),
       /* v0.68: зачёт по коду — условие по памяти эмулятора (CodeSearch) */
       ...(fCond ? { code: fCond } : {}),
+      /* v0.197: дополнительные условия зачёта — победа только при выполнении ВСЕХ (И) */
+      ...(fCondX.some((e) => e.cond) ? { codeWinExtra: fCondX.map((e) => e.cond).filter((c): c is MemCond => !!c) } : {}),
       /* v0.68: поражение по коду — условие провала задания (CodeSearch) */
       ...(fCondFail ? { codeFail: fCondFail } : {}),
+      /* v0.197: дополнительные условия поражения — провал при ЛЮБОМ из них (ИЛИ) */
+      ...(fCondFailX.some((e) => e.cond) ? { codeFailExtra: fCondFailX.map((e) => e.cond).filter((c): c is MemCond => !!c) } : {}),
       /* v0.70: только по коду — ручные кнопки и голосование для ячейки отключены */
       ...(fCodeOnly ? { codeOnly: true } : {}),
       /* v0.104: платформа задания (для иммунитетов БОГАЧА) — по расширению рома */
@@ -1318,6 +1333,33 @@ export default function TaskEditor() {
                             <p className="text-[10px] text-faint leading-tight">Адрес привязан к ЭТОМУ файлу рома. Другой дамп той же игры может не совпасть — тогда пересоберите условие через CodeSearch.</p>
                           </div>
                         )}
+                        {/* v0.197: ДОПОЛНИТЕЛЬНЫЕ УСЛОВИЯ ЗАЧЁТА — кнопка «+ Условие победы».
+                           Работают и БЕЗ основного кода. Зачёт = основной код И ВСЕ дополнительные
+                           (логическое И) — например «HP босса = 0 И ключ = 3». */}
+                        <div className="space-y-1.5 pt-1 border-t border-[rgba(46,230,168,0.25)]">
+                          {fCondX.map((e, i) => (
+                            <div key={i} className="space-y-1 border border-[rgba(46,230,168,0.35)] px-2 py-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-[10px] font-pixel text-teal uppercase shrink-0">условие победы #{i + 1}</span>
+                                <input
+                                  className="field-in flex-1 min-w-[160px] px-2 py-1 text-[11px] font-mono"
+                                  placeholder="RPC1:001AB2C8:u8:eq:3"
+                                  value={e.raw}
+                                  onChange={(ev) => setFCondX(fCondX.map((x, j) => (j === i ? { ...x, raw: ev.target.value, err: '' } : x)))}
+                                  onKeyDown={(ev) => { if (ev.key === 'Enter') { const c = parseCond(e.raw); setFCondX(fCondX.map((x, j) => (j === i ? { ...x, cond: c, err: c ? '' : 'Не разобрать — нужен код вида RPC1:001AB2C8:u8:eq:3' } : x))); } }}
+                                />
+                                <GhostBtn small onClick={() => { const c = parseCond(e.raw); setFCondX(fCondX.map((x, j) => (j === i ? { ...x, cond: c, err: c ? '' : 'Не разобрать — нужен код вида RPC1:001AB2C8:u8:eq:3' } : x))); if (c) sfx.hover(); }} title="Разобрать код условия">Разобрать</GhostBtn>
+                                <GhostBtn small onClick={() => setFCondX(fCondX.filter((_, j) => j !== i))} title="Убрать это условие победы">{Ic.cross(11)}</GhostBtn>
+                              </div>
+                              {e.err && <p className="text-[10.5px] text-coral">{e.err}</p>}
+                              {e.cond && <p className="text-[10.5px] text-teal leading-tight">Обязательное — задание зачтётся ТОЛЬКО когда и это выполнится тоже: {memCondText(e.cond)}.</p>}
+                            </div>
+                          ))}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <GhostBtn small onClick={() => { setFCondX([...fCondX, { cond: null, raw: '', err: '' }]); sfx.hover(); }} title="Добавить ещё одно ОБЯЗАТЕЛЬНОЕ условие победы (логическое И)">+ Условие победы</GhostBtn>
+                            <span className="text-[10px] text-faint">сколько нужно — столько добавляйте; зачёт = основной код И все «условия победы»</span>
+                          </div>
+                        </div>
                       </div>
                     </Field>
                     {/* v0.68: ПОРАЖЕНИЕ ПО КОДУ — условие провала задания из CodeSearch */}
@@ -1391,6 +1433,34 @@ export default function TaskEditor() {
                             <p className="text-[10px] text-faint leading-tight">Поражение приоритетнее зачёта: если оба условия совпали разом — задание провалено. Адрес привязан к ЭТОМУ файлу рома — другой дамп может не совпасть.</p>
                           </div>
                         )}
+                        {/* v0.197: ДОПОЛНИТЕЛЬНЫЕ УСЛОВИЯ ПОРАЖЕНИЯ — кнопка «+ Условие поражения».
+                           Сработает ЛЮБОЕ из них (логическое ИЛИ вместе с основным кодом) — так
+                           ставят запреты: «взял лечилку», «убил нужного персонажа», «вышел за карту» —
+                           каждое отдельным условием поражения. */}
+                        <div className="space-y-1.5 pt-1 border-t border-[rgba(255,93,115,0.25)]">
+                          {fCondFailX.map((e, i) => (
+                            <div key={i} className="space-y-1 border border-[rgba(255,93,115,0.35)] px-2 py-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-[10px] font-pixel text-coral uppercase shrink-0">условие поражения #{i + 1}</span>
+                                <input
+                                  className="field-in flex-1 min-w-[160px] px-2 py-1 text-[11px] font-mono"
+                                  placeholder="RPC1:001AB2C8:u8:gt:0"
+                                  value={e.raw}
+                                  onChange={(ev) => setFCondFailX(fCondFailX.map((x, j) => (j === i ? { ...x, raw: ev.target.value, err: '' } : x)))}
+                                  onKeyDown={(ev) => { if (ev.key === 'Enter') { const c = parseCond(e.raw); setFCondFailX(fCondFailX.map((x, j) => (j === i ? { ...x, cond: c, err: c ? '' : 'Не разобрать — нужен код вида RPC1:001AB2C8:u8:eq:3' } : x))); } }}
+                                />
+                                <GhostBtn small onClick={() => { const c = parseCond(e.raw); setFCondFailX(fCondFailX.map((x, j) => (j === i ? { ...x, cond: c, err: c ? '' : 'Не разобрать — нужен код вида RPC1:001AB2C8:u8:eq:3' } : x))); if (c) sfx.hover(); }} title="Разобрать код условия">Разобрать</GhostBtn>
+                                <GhostBtn small onClick={() => setFCondFailX(fCondFailX.filter((_, j) => j !== i))} title="Убрать это условие поражения">{Ic.cross(11)}</GhostBtn>
+                              </div>
+                              {e.err && <p className="text-[10.5px] text-coral">{e.err}</p>}
+                              {e.cond && <p className="text-[10.5px] text-coral leading-tight">Запрет — задание ПРОВАЛИТСЯ, как только это выполнится: {memCondText(e.cond)}.</p>}
+                            </div>
+                          ))}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <GhostBtn small onClick={() => { setFCondFailX([...fCondFailX, { cond: null, raw: '', err: '' }]); sfx.hover(); }} title="Добавить ещё одно условие поражения (сработает ЛЮБОЕ — ИЛИ)">+ Условие поражения</GhostBtn>
+                            <span className="text-[10px] text-faint">сколько запретов — столько добавляйте; провал = основной код ИЛИ любое «условие поражения»</span>
+                          </div>
+                        </div>
                       </div>
                     </Field>
                     {/* v0.71: предупреждение — одно и то же условие записано и в зачёт, и в поражение */}
@@ -1416,7 +1486,7 @@ export default function TaskEditor() {
                           засчитается само, выполнится код поражения — провалится само. Честно для карт, где игроки не доверяют друг другу.
                           Без галочки (по умолчанию) работают И код, И ручное подтверждение.
                         </p>
-                        {fCodeOnly && !fCond && !fCondFail && (
+                        {fCodeOnly && !fCond && !fCondFail && fCondX.every((e) => !e.cond) && fCondFailX.every((e) => !e.cond) && (
                           <p className="text-[10.5px] text-magma leading-tight">
                             ⚠ Коды не заданы: задание нельзя будет ни выполнить, ни провалить. Вставьте хотя бы один код из CodeSearch — или снимите галочку.
                           </p>

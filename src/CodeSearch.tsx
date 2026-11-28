@@ -71,6 +71,11 @@ export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
   const [res, setRes] = useState<{ count: number; overflow: boolean; unknown: boolean } | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [editAddr, setEditAddr] = useState<number | null>(null);
+  /* v0.197: выбранная ПОЗИЦИЯ в цепочке (0 — первая цифра, 1 — вторая…): клик по цифре
+     в строке результатов выбирает её — ✏ правит, ❄ морозит, 🎯 делает условием задания
+     ИМЕННО её адрес (адрес позиции = адрес начала + позиция × размер типа) */
+  const [editPos, setEditPos] = useState(0);
+  const [posSel, setPosSel] = useState<Record<number, number>>({});
   const [editVal, setEditVal] = useState('');
   const [frozen, setFrozen] = useState<Record<number, number>>({});
   const [condAddr, setCondAddr] = useState<number | null>(null);
@@ -239,6 +244,8 @@ export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
     setRows([]);
     setCondAddr(null);
     setEditAddr(null);
+    setEditPos(0); // v0.197: выбранная позиция цепочки сбрасывается вместе с правкой
+    setPosSel({});
     const heap = getHeap();
     if (r.addrs && heap) {
       const out: Row[] = [];
@@ -294,6 +301,8 @@ export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
     setFrozen({});
     setCondAddr(null);
     setEditAddr(null);
+    setEditPos(0); // v0.197
+    setPosSel({});
   };
 
   /* v0.72 БАГФИКС ПЕРЕВОДЧИКА: раньше клик по кандидату (1) ВСЕГДА запускал первый
@@ -326,25 +335,28 @@ export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
   /* v0.72: идёт ли уже поиск — в этом случае кандидаты переводчика фильтруют среди найденных */
   const trSessionActive = !!stRef.current || !!res;
 
-  const writeRow = (a: number, raw: string) => {
+  const writeRow = (baseA: number, pos: number, raw: string) => {
     const v = Number(raw);
     if (!Number.isFinite(v)) { toast('Введите число', 'err'); return; }
     const heap = getHeap();
     if (!heap) return;
+    /* v0.197: правится ВЫБРАННАЯ позиция цепочки (адрес = начало + позиция × размер типа);
+       для одиночного значения (pos 0) — как раньше */
+    const a = baseA + pos * typeSize(t);
     if (writeAt(heap, a, t, v)) {
-      /* в цепочке правим только ПЕРВОЕ значение (остальные позиции не трогаем) */
-      setRows((rs) => rs.map((r) => (r.a === a ? { ...r, v: r.v.map((x, i) => (i === 0 ? v : x)) } : r)));
+      setRows((rs) => rs.map((r) => (r.a === baseA ? { ...r, v: r.v.map((x, i) => (i === pos ? v : x)) } : r)));
       setFrozen((f) => (a in f ? { ...f, [a]: v } : f));
-      toast(`Записано ${v} в 0x${hex8(a)} — если адрес найден верно, игра отреагирует сразу`, 'ok');
+      toast(`Записано ${v} в 0x${hex8(a)}${pos > 0 ? ` — позиция ${pos + 1} цепочки` : ''} — если адрес найден верно, игра отреагирует сразу`, 'ok');
     } else toast('Запись не удалась — адрес вне памяти', 'err');
   };
 
-  const toggleFreeze = (a: number) => {
+  /* v0.197: адрес заморозки — ВЫБРАННАЯ позиция цепочки (морозится точный адрес позиции) */
+  const toggleFreeze = (a: number, val?: number) => {
     setFrozen((f) => {
       const next = { ...f };
       if (a in next) delete next[a];
       else {
-        const cur = rows.find((r) => r.a === a)?.v[0]; // ❄ морозит ПЕРВОЕ значение цепочки
+        const cur = val ?? rows.find((r) => r.a === a)?.v[0];
         if (cur === undefined) { toast('Сначала перечитайте значения — адрес не в списке', 'err'); return f; }
         next[a] = cur;
       }
@@ -412,7 +424,10 @@ export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
     toast('Стена возвращена в окно CodeSearch', 'ok');
   };
 
-  const condSel = rows.find((r) => r.a === condAddr);
+  const condSel = condAddr !== null
+    ? rows.find((r) => r.a === condAddr) // адрес начала цепочки или одиночное значение
+      ?? rows.find((r) => condAddr > r.a && condAddr < r.a + r.v.length * typeSize(t)) // позиция внутри цепочки
+    : undefined;
 
   /* ---------- v0.72: дамп стены — общий для окна и закреплённой панели ---------- */
   const wallDump = wallView ? (
@@ -596,7 +611,8 @@ export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
               «Неизвестное значение» — когда число не видно: снимок памяти, потом «изменилось / выросло / уменьшилось» после каждого изменения в игре.
               <b className="text-paper"> Последовательность:</b> введите 2–4 числа через пробел — найдутся места, где они лежат в памяти ПОДРЯД
               (например, текущее HP и максимум рядом — так ищут HP юнитов во Front Mission 3); фильтр тоже принимает столько же чисел;
-              в результатах видна вся цепочка, ✏/❄/🎯 работают с первым значением.
+              в результатах видна вся цепочка, и <b className="text-paper">каждая цифра — свой адрес</b>: кликните по нужной цифре
+              (она подсветится) — ✏ правит, ❄ морозит, 🎯 делает условием задания ИМЕННО её позицию.
               <b className="text-paper"> Число не находится совсем?</b> Переведите его в «переводчике цифр» ниже — некоторые игры хранят
               номер тайла цифры (3 жизни в Darkwing Duck = 115) — или ищите через «Неизвестное значение».
               {' '}Чтобы поменять значение в игре — <b className="text-teal">сверните окно кнопкой ▾</b> и разверните обратно: поиск сохранится.
@@ -625,21 +641,43 @@ export default function CodeSearchModal({ getApi, romName, plat, onClose }: {
                     </thead>
                     <tbody>
                       {rows.map((r) => (
-                        <tr key={r.a} className={`border-t border-edge/50 ${condAddr === r.a ? 'bg-gold/10' : ''}`}>
-                          <td className="px-2 py-1 text-sky">0x{hex8(r.a)}</td>
+                        <tr key={r.a} className={`border-t border-edge/50 ${condAddr !== null && condAddr >= r.a && condAddr < r.a + Math.max(1, r.v.length) * typeSize(t) ? 'bg-gold/10' : ''}`}>
+                          <td className="px-2 py-1 text-sky">0x{hex8(r.a)}{r.v.length > 1 ? <span className="text-faint"> +0…{r.v.length - 1}</span> : ''}</td>
                           <td className="px-2 py-1 text-paper">
                             {editAddr === r.a ? (
                               <input autoFocus className="field-in w-24 px-1.5 py-0.5 text-[11px]" value={editVal} onChange={(e) => setEditVal(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') { writeRow(r.a, editVal); setEditAddr(null); } if (e.key === 'Escape') setEditAddr(null); }} />
+                                onKeyDown={(e) => { if (e.key === 'Enter') { writeRow(r.a, editPos, editVal); setEditAddr(null); } if (e.key === 'Escape') setEditAddr(null); }} />
                             ) : (
-                              <button className="cursor-pointer hover:text-gold" title={r.v.length > 1 ? `Цепочка из ${r.v.length} значений подряд — клик: править первое` : 'Клик — править значение'} onClick={() => { setEditAddr(r.a); setEditVal(String(r.v[0])); }}>{r.v.join(' · ')}</button>
+                              /* v0.197: КАЖДАЯ цифра цепочки — отдельная кнопка: клик выбирает
+                                 позицию (подсветка) и открывает правку ИМЕННО её адреса */
+                              <span className="inline-flex flex-wrap items-center">
+                                {r.v.map((x, i) => (
+                                  <button key={i}
+                                    className={`cursor-pointer hover:text-gold ${(posSel[r.a] ?? 0) === i ? 'text-gold underline decoration-dotted' : ''}`}
+                                    title={r.v.length > 1
+                                      ? `Позиция ${i + 1} из ${r.v.length} · адрес 0x${hex8(r.a + i * typeSize(t))} — клик: править это значение, ✏/❄/🎯 ниже действуют на него`
+                                      : 'Клик — править значение'}
+                                    onClick={() => { setPosSel((m) => ({ ...m, [r.a]: i })); setEditAddr(r.a); setEditPos(i); setEditVal(String(x)); }}>
+                                    {x}{i < r.v.length - 1 ? ' ·' : ''}
+                                  </button>
+                                ))}
+                              </span>
                             )}
                           </td>
                           <td className="px-2 py-1 text-right whitespace-nowrap">
-                            <button className={`px-1 cursor-pointer ${editAddr === r.a ? 'text-gold' : 'text-faint hover:text-paper'}`} title={r.v.length > 1 ? 'Изменить ПЕРВОЕ значение цепочки (проверка адреса)' : 'Изменить значение (проверка адреса)'} onClick={() => { setEditAddr(r.a); setEditVal(String(r.v[0])); }}>✏</button>
-                            <button className={`px-1 cursor-pointer ${r.a in frozen ? 'text-sky' : 'text-faint hover:text-sky'}`} title={r.a in frozen ? 'Разморозить' : 'Заморозить: вписывать значение обратно, игра его не изменит'} onClick={() => toggleFreeze(r.a)}>❄</button>
-                            <button className="px-1 text-faint hover:text-gold cursor-pointer" title="Показать это место в стене кода" onClick={() => { setWallAddr(r.a); setWallIn(hex8(r.a)); setWallOpen(true); prevWallRef.current = null; }}>👁</button>
-                            <button className={`px-1 cursor-pointer ${condAddr === r.a ? 'text-gold' : 'text-faint hover:text-gold'}`} title={r.v.length > 1 ? 'Сделать условием задания (по ПЕРВОМУ значению цепочки)' : 'Сделать условием задания'} onClick={() => { setCondAddr(r.a); setCondVal(String(r.v[0])); setCondOp('eq'); }}>🎯</button>
+                            {(() => {
+                              const selP = posSel[r.a] ?? 0;
+                              const selA = r.a + selP * typeSize(t);
+                              const selV = r.v[selP];
+                              return (
+                                <>
+                                  <button className={`px-1 cursor-pointer ${editAddr === r.a ? 'text-gold' : 'text-faint hover:text-paper'}`} title={`Править позицию ${selP + 1} (0x${hex8(selA)})`} onClick={() => { setEditAddr(r.a); setEditPos(selP); setEditVal(String(selV)); }}>✏</button>
+                                  <button className={`px-1 cursor-pointer ${selA in frozen ? 'text-sky' : 'text-faint hover:text-sky'}`} title={selA in frozen ? 'Разморозить' : `Заморозить позицию ${selP + 1} (0x${hex8(selA)}): вписывать значение обратно, игра его не изменит`} onClick={() => toggleFreeze(selA, selV)}>❄</button>
+                                  <button className="px-1 text-faint hover:text-gold cursor-pointer" title="Показать это место в стене кода" onClick={() => { setWallAddr(r.a); setWallIn(hex8(r.a)); setWallOpen(true); prevWallRef.current = null; }}>👁</button>
+                                  <button className={`px-1 cursor-pointer ${condAddr === selA ? 'text-gold' : 'text-faint hover:text-gold'}`} title={`Сделать условием задания по адресу 0x${hex8(selA)} (позиция ${selP + 1} — сейчас там ${selV})`} onClick={() => { setCondAddr(selA); setCondVal(String(selV)); setCondOp('eq'); }}>🎯</button>
+                                </>
+                              );
+                            })()}
                           </td>
                         </tr>
                       ))}

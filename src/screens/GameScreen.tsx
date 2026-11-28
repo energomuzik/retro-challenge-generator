@@ -28,7 +28,7 @@ import { saveSessionSnapshot } from './Lobby';
 import QuizOverlay from './QuizOverlay';
 import { AnimPreview, EmuVolumeChip, Field, GhostBtn, Ic, Modal, PxBtn, Stepper, Coin, CoinRow } from '../ui';
 import { PLAYER_COLORS, SKIP_COST, SKIP_COINS_DEFAULT, SKILL_TURNS, CHAOS_LIST, chaosLabel, JOY_LIST, SAVE_KIND_LABEL, saveKindOf, isJourneyLike, isQuestMode, isBogachMode, isQuizovoMode, isBossCatchMode, isSoloMode, isFrendyMode, FRENDY_PHRASES, FRENDY_FURNACE_NEAR, FRENDY_CONSOLE_NEAR, questGoalText, tileAt, tileRectOf, tileNumOf, tilePlayPorts, tilePlayHidden, coinsStr, normResMode, RUBG_ITEMS, RUBG_ZONE_PHASES, RUBG_STOP_CD, RUBG_STEAL_RANGE, RUBG_HP_MAX, RUBG_WIN_HP, RUBG_LOSE_HP, RUBG_BELT_SLOTS, doorKeyHex, doorKeyName, taskPlatLabel, TASK_PLATS, frameWallsOf, cartRegionOfRom } from '../types';
-import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, SaveDef, TaskDef, TokenDef, TokenDir, RubgItem, RubgItemKind, CartRegion } from '../types';
+import type { AnimClip, CardDef, ChaosKind, CutsceneDef, GameMap, GameSession, MemCond, NpcLibEntry, PlacedNpc, PortalZone, PlayerState, QuestGoal, SaveDef, TaskDef, TokenDef, TokenDir, RubgItem, RubgItemKind, CartRegion } from '../types';
 import Randomizer from './Randomizer';
 import TradeWindow from './TradeWindow';
 /* v0.135: карточка «Лор Френди» убрана из игры (и отсюда, и из обучения) — предысторию
@@ -697,8 +697,18 @@ export default function GameScreen() {
   const rCodeF = rJobOn && myJob ? myRubgTask?.codeFail ?? undefined : undefined;
   const activeCode = chCode ?? qCode ?? rCode;
   const activeFail = chCodeF ?? qCodeF ?? rCodeF;
+  /* v0.197 ДОПОЛНИТЕЛЬНЫЕ УСЛОВИЯ (TaskEditor «+ Условие победы / + Условие поражения»):
+     источник — то же задание, что даёт активный код (классика ch → личное QUEST/Френди q →
+     RUBG r). У ПОБЕДЫ дополнительные условия ОБЯЗАТЕЛЬНЫ (зачёт = основной код И все
+     дополнительные), у ПОРАЖЕНИЯ срабатывает ЛЮБОЕ (основной код ИЛИ доп. условие).
+     Живут в ref — вотчер читает свежий список на каждом опросе, интервал не пересоздаётся. */
+  const xTask = chPlaying ? task : qJobOn ? myQTask : rJobOn ? myRubgTask : undefined;
+  const codeXRef = useRef<{ w: MemCond[]; f: MemCond[] }>({ w: [], f: [] });
+  codeXRef.current = { w: xTask?.codeWinExtra ?? [], f: xTask?.codeFailExtra ?? [] };
+  const extraWinStRef = useRef<{ armed: boolean; streak: number }[]>([]); // арминг/счётчик ПОДРЯД каждого доп. условия победы
+  const extraFailStRef = useRef<{ armed: boolean; streak: number }[]>([]); // то же у доп. условий поражения
   useEffect(() => {
-    if (!activeCode && !activeFail) return;
+    if (!activeCode && !activeFail && !codeXRef.current.w.length && !codeXRef.current.f.length) return;
     /* v0.189 ГРАЖДАНСКАЯ ОБОРОНА ОТ МГНОВЕННОГО ПРОВАЛА НА ЗАГРУЗКЕ СОХРАНЕНИЯ (заказчик:
        «задание с автопроигрышем иногда сразу проигрывается при запуске, а иногда правильно;
        похоже, игра стартует с начала, ещё до загрузки сохранения — HP на заставке 0»):
@@ -718,6 +728,8 @@ export default function GameScreen() {
     failArmRef.current = false;
     winStreakRef.current = 0;
     winArmedRef.current = false;
+    extraWinStRef.current = []; // v0.197: арминг/счётчики доп. условий — с чистого листа
+    extraFailStRef.current = [];
     const key = ch
       ? `c:${ch.cellIdx}:${ch.reloadId}`
       : myQJob
@@ -737,6 +749,8 @@ export default function GameScreen() {
           failArmRef.current = false;
           winStreakRef.current = 0;
           winArmedRef.current = false;
+          extraWinStRef.current = []; // v0.197
+          extraFailStRef.current = [];
         }
         const heap = ejsApiRef.current?.getHeap?.() ?? null;
         if (!heap) return;
@@ -746,36 +760,97 @@ export default function GameScreen() {
         if ((chCode || chCodeF) && task?.saveId && !saveState) return;
         if ((qCode || qCodeF) && myQTask?.saveId && !qSaveState) return;
         if ((rCode || rCodeF) && myRubgTask?.saveId && !rSaveState) return;
-        /* ПОРАЖЕНИЕ проверяем ПЕРВЫМ: если оба условия совпали разом — игрок проиграл */
-        if (activeFail && codeFailFiredRef.current !== key && Date.now() - emuBootStamp.ts >= 2500) {
-          const curF = readAt(heap, activeFail.a, activeFail.t);
-          /* v0.195: ДВУХФАЗНОЕ ПОРАЖЕНИЕ «БЫЛО → СТАЛО» (как у победы): фаза 1 армирует,
-             фаза 2 триггерит ТОЛЬКО после арминга; holdSec — сколько секунд «стало» должно
-             держаться. Однофазные условия работают как раньше. */
-          let failHit = false;
-          if (curF !== null) {
-            if (activeFail.then) {
-              if (opOk(curF, activeFail.op, activeFail.v, isFloatT(activeFail.t))) failArmRef.current = true;
-              const curF2 = readAt(heap, activeFail.then.a, activeFail.then.t);
-              failHit = failArmRef.current && curF2 !== null && opOk(curF2, activeFail.then.op, activeFail.then.v, isFloatT(activeFail.then.t));
-            } else {
-              failHit = opOk(curF, activeFail.op, activeFail.v, isFloatT(activeFail.t));
-            }
+        /* v0.197 ДОПОЛНИТЕЛЬНЫЕ УСЛОВИЯ (TaskEditor «+ Условие победы / + Условие поражения»)
+           — считаем на каждом опросе ПОСЛЕ грейса: у ПОБЕДЫ все «условия победы» должны
+           устояться ОДНОВРЕМЕННО (логическое И вместе с основным кодом), у ПОРАЖЕНИЯ
+           достаточно ЛЮБОГО (ИЛИ). Каждое доп. условие — полный аналог основного кода:
+           двухфазное «было → стало», удержание holdSec, у победы арминг «== 0» от «было > 0». */
+        const xw = codeXRef.current.w;
+        const xf = codeXRef.current.f;
+        if (extraWinStRef.current.length !== xw.length) extraWinStRef.current = xw.map(() => ({ armed: false, streak: 0 }));
+        if (extraFailStRef.current.length !== xf.length) extraFailStRef.current = xf.map(() => ({ armed: false, streak: 0 }));
+        const evalExtra = (c: MemCond, st: { armed: boolean; streak: number }, zeroArm: boolean): boolean => {
+          const curX = readAt(heap, c.a, c.t);
+          if (curX === null) return false;
+          const twoPhaseX = !!c.then;
+          const zeroWinX = zeroArm && !twoPhaseX && c.op === 'eq' && c.v === 0;
+          let hitX = false;
+          if (twoPhaseX) {
+            if (opOk(curX, c.op, c.v, isFloatT(c.t))) st.armed = true; // фаза 1 «БЫЛО»
+            const curX2 = readAt(heap, c.then!.a, c.then!.t);
+            hitX = st.armed && curX2 !== null && opOk(curX2, c.then!.op, c.then!.v, isFloatT(c.then!.t)); // фаза 2 «СТАЛО»
+          } else {
+            if (zeroWinX && curX > 0) st.armed = true;
+            hitX = opOk(curX, c.op, c.v, isFloatT(c.t)) && (!zeroWinX || st.armed);
           }
-          if (failHit) {
-            failStreakRef.current += 1;
-            const needF = activeFail.then && (activeFail.holdSec ?? 0) > 0 ? Math.max(2, Math.ceil(((activeFail.holdSec ?? 0) * 1000) / 500)) : 2;
-            if (failStreakRef.current >= needF) {
-              codeFailFiredRef.current = key;
-              failStreakRef.current = 0;
-              if (chCodeF && ch) dispatch({ t: 'reloadSave', id: me, byCode: true });
-              else if (qCodeF && myQJob) { sfx.shock(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, byCode: true }); } // v0.192: проигрыш = разряд тока
-              else if (rCodeF && myJob) { sfx.shock(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false, byCode: true }); }
-              return;
-            }
-          } else failStreakRef.current = 0;
+          const needX = twoPhaseX && (c.holdSec ?? 0) > 0 ? Math.max(2, Math.ceil(((c.holdSec ?? 0) * 1000) / 500)) : 2;
+          if (hitX) { st.streak += 1; return st.streak >= needX; }
+          st.streak = 0;
+          return false;
+        };
+        let allWinX = true;
+        let anyFailX = false;
+        if (Date.now() - emuBootStamp.ts >= 2500) {
+          allWinX = xw.every((c, i) => evalExtra(c, extraWinStRef.current[i], true));
+          anyFailX = xf.some((c, i) => evalExtra(c, extraFailStRef.current[i], false));
         }
-        if (!activeCode) return;
+        /* ПОРАЖЕНИЕ проверяем ПЕРВЫМ: если оба условия совпали разом — игрок проиграл */
+        if ((activeFail || xf.length) && codeFailFiredRef.current !== key && Date.now() - emuBootStamp.ts >= 2500) {
+          if (activeFail) {
+            const curF = readAt(heap, activeFail.a, activeFail.t);
+            /* v0.195: ДВУХФАЗНОЕ ПОРАЖЕНИЕ «БЫЛО → СТАЛО» (как у победы): фаза 1 армирует,
+               фаза 2 триггерит ТОЛЬКО после арминга; holdSec — сколько секунд «стало» должно
+               держаться. Однофазные условия работают как раньше. */
+            let failHit = false;
+            if (curF !== null) {
+              if (activeFail.then) {
+                if (opOk(curF, activeFail.op, activeFail.v, isFloatT(activeFail.t))) failArmRef.current = true;
+                const curF2 = readAt(heap, activeFail.then.a, activeFail.then.t);
+                failHit = failArmRef.current && curF2 !== null && opOk(curF2, activeFail.then.op, activeFail.then.v, isFloatT(activeFail.then.t));
+              } else {
+                failHit = opOk(curF, activeFail.op, activeFail.v, isFloatT(activeFail.t));
+              }
+            }
+            if (failHit) {
+              failStreakRef.current += 1;
+              const needF = activeFail.then && (activeFail.holdSec ?? 0) > 0 ? Math.max(2, Math.ceil(((activeFail.holdSec ?? 0) * 1000) / 500)) : 2;
+              if (failStreakRef.current >= needF) {
+                codeFailFiredRef.current = key;
+                failStreakRef.current = 0;
+                if (chCodeF && ch) dispatch({ t: 'reloadSave', id: me, byCode: true });
+                else if (qCodeF && myQJob) { sfx.shock(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, byCode: true }); } // v0.192: проигрыш = разряд тока
+                else if (rCodeF && myJob) { sfx.shock(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false, byCode: true }); }
+                else if (qJobOn && myQJob) { sfx.shock(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, byCode: true }); } // v0.197: провал по доп. условию
+                else if (rJobOn && myJob) { sfx.shock(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false, byCode: true }); }
+                else if (chPlaying && ch) dispatch({ t: 'reloadSave', id: me, byCode: true });
+                return;
+              }
+            } else failStreakRef.current = 0;
+          }
+          /* v0.197: ЛЮБОЕ доп. условие поражения устоялось — провал (основной код не нужен) */
+          if (anyFailX) {
+            codeFailFiredRef.current = key;
+            failStreakRef.current = 0;
+            if (chCodeF && ch) dispatch({ t: 'reloadSave', id: me, byCode: true });
+            else if (qCodeF && myQJob) { sfx.shock(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, byCode: true }); }
+            else if (rCodeF && myJob) { sfx.shock(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false, byCode: true }); }
+            else if (qJobOn && myQJob) { sfx.shock(); dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: false, byCode: true }); }
+            else if (rJobOn && myJob) { sfx.shock(); dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: false, byCode: true }); }
+            else if (chPlaying && ch) dispatch({ t: 'reloadSave', id: me, byCode: true });
+            return;
+          }
+        }
+        if (!activeCode) {
+          /* v0.197: зачёт ТОЛЬКО дополнительными условиями (основного кода нет) —
+             победа, когда ВСЕ «условия победы» устоялись одновременно */
+          if (xw.length && allWinX && codeFiredRef.current !== key) {
+            codeFiredRef.current = key;
+            if (qJobOn && myQJob) dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: true, byCode: true });
+            else if (rJobOn && myJob) dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: true, byCode: true });
+            else if (chPlaying && ch) dispatch({ t: 'declareDone', id: me, byCode: true });
+          }
+          return;
+        }
         /* v0.193: победа по коду ждёт ЗАГРУЗКУ СОХРАНЕНИЯ: те же 2.5 с после старта ядра +
            ДВА опроса подряд (по 500 мс). Честную победу задерживает максимум на ~1 с после
            грейса; мусорный байт свежей памяти больше не выигрывает задание. */
@@ -812,12 +887,16 @@ export default function GameScreen() {
         if (winHit && codeFiredRef.current !== key) {
           winStreakRef.current += 1;
           const needW = twoPhase && (activeCode.holdSec ?? 0) > 0 ? Math.max(2, Math.ceil(((activeCode.holdSec ?? 0) * 1000) / 500)) : 2;
-          if (winStreakRef.current >= needW) {
+          /* v0.197: + allWinX — зачёт только когда и ВСЕ доп. условия победы устоялись */
+          if (winStreakRef.current >= needW && allWinX) {
             codeFiredRef.current = key;
             winStreakRef.current = 0;
             if (chCode && ch) dispatch({ t: 'declareDone', id: me, byCode: true });
             else if (qCode && myQJob) dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: true, byCode: true });
             else if (rCode && myJob) dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: true, byCode: true });
+            else if (qJobOn && myQJob) dispatch({ t: 'qJobDone', id: me, cellIdx: myQJob.cellIdx, win: true, byCode: true }); // v0.197: зачёт по доп. условиям
+            else if (rJobOn && myJob) dispatch({ t: 'rubgJobDone', id: me, cellIdx: myJob.cellIdx, win: true, byCode: true });
+            else if (chPlaying && ch) dispatch({ t: 'declareDone', id: me, byCode: true });
           }
         } else winStreakRef.current = 0;
       } catch { /* ядро перезапустилось — попробуем на следующем тике */ }
@@ -2010,6 +2089,10 @@ export default function GameScreen() {
   const lastBossFxTsRef = useRef(0);
   const lastFrendyFxTsRef = useRef(0); // v0.130: fx уровня состояния (поимка/ремонт)
   const frendyTpSnapRef = useRef(0); // v0.143: меня ПОЙМАЛ Френди — фишка обязана снапнуться к ячейке, даже если бежала
+  /* v0.197: FRENDY ТАЩИТ ПОЙМАННОГО — ts fx 'catch', несение которого уже запущено
+     (один раз на поимку), и разворот спрайта Френди-носильщика по ходу движения */
+  const frendyDragTsRef = useRef(0);
+  const frendyDragFlipRef = useRef(false);
   const [frendyShout, setFrendyShout] = useState<{ text: string; ts: number } | null>(null);
   const [frendyFlash, setFrendyFlash] = useState(0);
   const lastCaptureRef = useRef(0);
@@ -2373,6 +2456,43 @@ export default function GameScreen() {
                   carryBarsMaxRef.current = Date.now() + 4400;
                 }
                 /* v0.65: ПОЛОСЫ ЗАХВАТА — «управление у босса» (уйдут с открытием задания) */
+                if (!carryBarsRef.current) {
+                  carryBarsRef.current = true;
+                  setCarryBars(true);
+                  setCarryBarsOut(false);
+                  if (carryBarsTimerRef.current) { window.clearTimeout(carryBarsTimerRef.current); carryBarsTimerRef.current = null; }
+                }
+              }
+              /* v0.197: FRENDY ТАЩИТ ПОЙМАННОГО — то же кино-несение, что у классических
+                 боссов (v0.65): fx 'catch' уровня состояния совпал с НОВОЙ точкой journeyPos
+                 (движок ставит оба в один тик, ts совпадает) — жертва НЕ снапается к приставке
+                 мгновенно: Френди (локальный спрайт — на хосте он уже растворился) плавно идёт
+                 от места поимки к приставке, фишка барахтается рядом, ходьба заблокирована
+                 (bossDragRef в canWalk), полосы захвата — как у боссов. По прибытии +1 с
+                 scheduleBossTaskGo шлёт bossTaskGo — хост (ветка Френди) открывает задание.
+                 Если несение не началось (кат-сцена на экране) — работает прежний снап
+                 по frendyTpSnapRef (ставится вотчером fx ниже). */
+              const frendyCatchFx = sess.frendy?.fx;
+              if (frendyCatchFx?.kind === 'catch' && frendyCatchFx.who === me && jp && frendyCatchFx.ts === jp.ts && frendyDragTsRef.current !== frendyCatchFx.ts && !cutActiveRef.current) {
+                frendyDragTsRef.current = frendyCatchFx.ts;
+                lastCapTsRef.current = jp.ts;
+                frendyTpSnapRef.current = 0; // несение вместо телепорта
+                const distF = Math.hypot(jp.x - self.x, jp.y - self.y);
+                if (distF > 4) {
+                  const spdF = cps * CELL; // px/с — скорость карты
+                  const dragMsF = Math.max(700, Math.min(2400, (distF / spdF) * 1000));
+                  /* фишка едет СБОКУ от Френди (перпендикуляр хода, отступ от габарита — как у боссов) */
+                  const angF = Math.atan2(jp.y - self.y, jp.x - self.x) + Math.PI / 2;
+                  const offF = Math.max(20, CELL * 0.45);
+                  bossDragRef.current = { bossId: 'frendy', bx0: self.x, by0: self.y, dx: Math.cos(angF) * offF, dy: Math.sin(angF) * offF, tx: jp.x, ty: jp.y, t0: Date.now(), ms: dragMsF };
+                  frendyDragFlipRef.current = jp.x < self.x; // спрайт Френди смотрит по ходу несения
+                  carryBarsMaxRef.current = Date.now() + dragMsF + 4200; // несение + 1с паузы + запас
+                } else {
+                  /* тащить было НЕКУДА (жертва уже у приставки) — задание через 1.7 с */
+                  scheduleBossTaskGo(jp.ts, 1700);
+                  carryBarsMaxRef.current = Date.now() + 4400;
+                }
+                /* ПОЛОСЫ ЗАХВАТА — «управление у Френди» (уйдут с открытием задания) */
                 if (!carryBarsRef.current) {
                   carryBarsRef.current = true;
                   setCarryBars(true);
@@ -3121,6 +3241,7 @@ export default function GameScreen() {
           npcs: npcDrawList,
           currentCell: sess.phase === 'playing' && act && !(journeyMode && journeyFree) ? act.pos : null,
           showNumbers: options.showCellNumbers,
+          shadows: options.entityShadows ?? false, // v0.197: тени под Френди/фишками/агентами/приставками — ВЫКЛ по умолчанию (переключатель в Опциях)
           tokens, time: t, hoverCell: null,
           mystery: mysteryRef.current,
           hush: hushRef.current,
@@ -3191,6 +3312,17 @@ export default function GameScreen() {
                 walking: frendyBossWalkingRef.current, // v0.136: спрайт ходьбы/стойки
                 flip: frendyBossFlipRef.current,       // v0.136: разворот по направлению движения
               }
+            /* v0.197: ФРЕНДИ-НОСИЛЬЩИК — пока идёт несение пойманного (bossCarryFxRef['frendy'],
+               заполняется в rAF той же математикой, что у боссов), рисуем ЛОКАЛЬНЫЙ спрайт
+               Френди в текущей точке пути (на хосте он уже растворился, sess.frendy.boss = null):
+               идёт циклом ходьбы, разворот — по ходу несения */
+            : bossCarryFxRef.current['frendy']
+              ? {
+                  x: bossCarryFxRef.current['frendy'].x,
+                  y: bossCarryFxRef.current['frendy'].y,
+                  walking: true,
+                  flip: frendyDragFlipRef.current,
+                }
             : null,
         });
 

@@ -398,6 +398,11 @@ export interface BoardDrawOpts {
   colorById: Record<string, string>;
   currentCell: number | null;
   showNumbers: boolean;
+  /* v0.197 ТЕНИ ПОД ПЕРСОНАЖАМИ И ПРИСТАВКАМИ: true — рисуются овальные тени под Френди,
+     фишками игроков, микросхемами, агентами (Молдер/Салли) и приставками; false/нет поля —
+     НЕ рисуются (дефолт v0.197, заказчик; переключатель «Тени под персонажами и приставками»
+     в Опциях; в drawBoard передаётся только из игры — options.entityShadows) */
+  shadows?: boolean;
   tokens: TokenDraw[];
   time: number;
   hoverCell: number | null;
@@ -568,6 +573,7 @@ const drawFrendyConsole = (
   consoles: Record<string, number | null> | undefined, cartImgs: Record<string, string | null> | undefined,
   titles: Record<string, string | null> | undefined, isHush: boolean,
   consoleImgs?: Record<string, string | null>,
+  withShadow = false, // v0.197: тени ВЫКЛ по умолчанию (переключатель в Опциях)
 ) => {
   /* v0.145: фото приставки — ПО РЕГИОНУ её родного рома (Dendy/Famicom/NES);
      нет региона (старые карты) — прежняя детерминированная по индексу */
@@ -578,10 +584,12 @@ const drawFrendyConsole = (
     const sc = Math.min((W * 0.88) / iw, (H * 0.82) / ih);
     const dw = iw * sc, dh = ih * sc;
     /* мягкая тень под корпусом + фото */
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    ctx.beginPath();
-    ctx.ellipse(0, dh / 2 + H * 0.055, dw * 0.42, dh * 0.07, 0, 0, Math.PI * 2);
-    ctx.fill();
+    if (withShadow) {
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.beginPath();
+      ctx.ellipse(0, dh / 2 + H * 0.055, dw * 0.42, dh * 0.07, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.drawImage(img, -dw / 2, -dh / 2 - H * 0.04, dw, dh);
   }
   /* какой картридж вставлен (ленивое «свой», если таблицы/ключа нет) */
@@ -601,10 +609,12 @@ const drawFrendyConsole = (
       const chC = Math.min(ch0, sz * 0.3);
       const cwC = chC * ((cart.naturalWidth || 1) / (cart.naturalHeight || 1));
       /* подставка-тень, чтобы картридж «лежал» на приставке */
-      ctx.fillStyle = 'rgba(0,0,0,0.28)';
-      ctx.beginPath();
-      ctx.ellipse(0, H * 0.1 + 2, cwC * 0.55, chC * 0.14, 0, 0, Math.PI * 2);
-      ctx.fill();
+      if (withShadow) {
+        ctx.fillStyle = 'rgba(0,0,0,0.28)';
+        ctx.beginPath();
+        ctx.ellipse(0, H * 0.1 + 2, cwC * 0.55, chC * 0.14, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.drawImage(cart, -cwC / 2, H * 0.1 - chC / 2, cwC, chC);
       /* мигающий светодиод питания */
       const led = 0.5 + 0.5 * Math.sin(time / 300);
@@ -628,7 +638,7 @@ const drawFrendyConsole = (
 
 /* v0.123 FRENDY: МИКРОСХЕМА на поле — зелёная плата с ножками и мигающим светодиодом.
    Чужой предмет (kind, кроме 'frendyChip' — v0.154) — рисуем эмодзи вещи. */
-const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, time: number, kind?: string, cartImg?: string | null) => {
+const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, time: number, kind?: string, cartImg?: string | null, withShadow = false) => {
   ctx.save();
   ctx.translate(cx, cy);
   /* v0.154: выброшенная МИКРОСХЕМА (kind === 'frendyChip') рисуется ТОЙ ЖЕ ЗЕЛЁНОЙ
@@ -663,10 +673,14 @@ const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, t
     ctx.restore();
     return;
   }
-  ctx.fillStyle = 'rgba(0,0,0,0.4)';
-  ctx.beginPath();
-  ctx.ellipse(0, 9, 10, 4, 0, 0, Math.PI * 2);
-  ctx.fill();
+  /* тень под МИКРОСХЕМОЙ (v0.197: рисуется только при включённых тенях —
+     «Тени под персонажами и приставками» в Опциях, по умолчанию ВЫКЛ) */
+  if (withShadow) {
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath();
+    ctx.ellipse(0, 9, 10, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
   /* ножки */
   ctx.fillStyle = '#c9a13c';
   for (let i = -2; i <= 2; i++) { ctx.fillRect(i * 5 - 1, 4, 2, 6); ctx.fillRect(i * 5 - 1, -10, 2, 6); }
@@ -704,14 +718,16 @@ const drawFrendyChip = (ctx: CanvasRenderingContext2D, cx: number, cy: number, t
    смотрит ВПРАВО — сырые кадры заказчика; v0.137: в v0.136 было наоборот). Разовые
    эффекты fx: 'attack' — красные росчерки лапы; 'catch' — фиолетовое
    кольцо захвата — поверх спрайта, как раньше. */
-const drawFrendyBoss = (ctx: CanvasRenderingContext2D, cx: number, cy: number, time: number, fx?: string | null, fxTs?: number, walking?: boolean, flip?: boolean) => {
+const drawFrendyBoss = (ctx: CanvasRenderingContext2D, cx: number, cy: number, time: number, fx?: string | null, fxTs?: number, walking?: boolean, flip?: boolean, withShadow = false) => {
   ctx.save();
   ctx.translate(cx, cy);
-  /* тень под ногами */
-  ctx.fillStyle = 'rgba(0,0,0,0.45)';
-  ctx.beginPath();
-  ctx.ellipse(0, 22, 17, 6, 0, 0, Math.PI * 2);
-  ctx.fill();
+  /* тень под ногами (v0.197: только при включённых тенях в Опциях — по умолчанию ВЫКЛ) */
+  if (withShadow) {
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.beginPath();
+    ctx.ellipse(0, 22, 17, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
   const im = frendyFrame(!!walking, time);
   if (im) {
     const h = CELL * 1.55; // рост на поле — как у агентов
@@ -884,6 +900,9 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
   ctx.translate(-view.x, -view.y);
 
   const b = mapSize(map);
+  /* v0.197: тени под персонажами и приставками — ВЫКЛ по умолчанию (переключатель в Опциях,
+     options.entityShadows → o.shadows; редактор карт поле не передаёт — тоже без теней) */
+  const shadows = o.shadows ?? false;
   /* v0.194: ОТСЕЧЕНИЕ v0.193 СНЯТО (заказчик: «ограничение отрисовки рушит отображение
      полной карты при нажатии на select — верни как было»). Видимая область считалась от
      камеры мира, а на карте мира по SELECT нужен весь план — отсечение резало фоны
@@ -1352,7 +1371,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       } else if (cell.type === 'task') {
         /* v0.144 FRENDY: ячейка задания — ПРИСТАВКА (фото консоли + картридж в слоте) */
         if (o.frendyMode) {
-          drawFrendyConsole(ctx, W, H, i, o.time, o.frendyConsoles, o.taskCartImgs, o.taskTitles, isHush, o.consoleImgs);
+          drawFrendyConsole(ctx, W, H, i, o.time, o.frendyConsoles, o.taskCartImgs, o.taskTitles, isHush, o.consoleImgs, shadows);
         } else {
         const imgSrc = isHush ? null : (cell.task?.imageId || cell.imageId); // скрыто — картинку не рисуем (выдала бы задание)
         const img = imgSrc ? getImage(imgSrc) : null;
@@ -1448,7 +1467,7 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       const cellImg = !isHush && cell.imageId ? getImage(cell.imageId) : null; // v0.99: скрыто — картинку не рисуем
       if (o.frendyMode && cell.type === 'task') {
         /* v0.144 FRENDY: приставка в малой ячейке — фото + картридж (без подписи) */
-        drawFrendyConsole(ctx, W, H, i, o.time, o.frendyConsoles, o.taskCartImgs, o.taskTitles, isHush, o.consoleImgs);
+        drawFrendyConsole(ctx, W, H, i, o.time, o.frendyConsoles, o.taskCartImgs, o.taskTitles, isHush, o.consoleImgs, shadows);
       } else if (isStart) {
         flagIcon(ctx, 4, '#ffcf3f');
       } else if (cellImg) {
@@ -1848,10 +1867,14 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
     /* размер фишки задаётся автором фишки (px по большей стороне);
        старые фишки без размера — 34, анимированные без размера — 64 (как тайл на карте) */
     const sz = Math.max(10, Math.min(320, t.size ?? (t.anim ? 64 : 34)));
-    ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    ctx.beginPath();
-    ctx.ellipse(0, sz * 0.47, sz * 0.32, sz * 0.13, 0, 0, Math.PI * 2);
-    ctx.fill();
+    /* тень под фишкой (v0.197: только при включённых тенях в Опциях — по умолчанию ВЫКЛ;
+       постоянный сдвиг -6 остаётся — фишка чуть приподнята над полем) */
+    if (shadows) {
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.beginPath();
+      ctx.ellipse(0, sz * 0.47, sz * 0.32, sz * 0.13, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     /* картинка фишки: большая сторона = sz, пропорции сохранены, чуть приподнята над тенью.
        v0.100: с базой+якорем клипа — масштаб по БАЗЕ (исходному тайлу) и якорь на точке фишки:
@@ -1940,11 +1963,11 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
         else if (bncAge < 700) by = -Math.sin(((bncAge - 450) / 250) * Math.PI) * 26;
         else by = -Math.sin(((bncAge - 700) / 200) * Math.PI) * 10;
       }
-      drawFrendyChip(ctx, c.x, c.y + by, o.time, c.kind, cartArt);
+      drawFrendyChip(ctx, c.x, c.y + by, o.time, c.kind, cartArt, shadows);
     }
   }
   if (o.frendyBoss) {
-    drawFrendyBoss(ctx, o.frendyBoss.x, o.frendyBoss.y, o.time, o.frendyBoss.fx, o.frendyBoss.fxTs, o.frendyBoss.walking, o.frendyBoss.flip);
+    drawFrendyBoss(ctx, o.frendyBoss.x, o.frendyBoss.y, o.time, o.frendyBoss.fx, o.frendyBoss.fxTs, o.frendyBoss.walking, o.frendyBoss.flip, shadows);
   }
   /* v0.132 ЭПИЛОГ: агенты АЛЬДЕР и СКАЛЛЕР — живые спрайты поверх мира.
      Кадры выровнены по низу — рисуем с якорем «ноги» в точке (x,y). */
@@ -1955,11 +1978,13 @@ export function drawBoard(ctx: CanvasRenderingContext2D, map: GameMap, o: BoardD
       const w = h * (ag.img.naturalWidth / Math.max(1, ag.img.naturalHeight));
       ctx.save();
       ctx.translate(ag.x, ag.y);
-      /* тень под ногами */
-      ctx.fillStyle = 'rgba(0,0,0,0.4)';
-      ctx.beginPath();
-      ctx.ellipse(0, 3, w * 0.22, h * 0.035, 0, 0, Math.PI * 2);
-      ctx.fill();
+      /* тень под ногами (v0.197: только при включённых тенях в Опциях — по умолчанию ВЫКЛ) */
+      if (shadows) {
+        ctx.fillStyle = 'rgba(0,0,0,0.4)';
+        ctx.beginPath();
+        ctx.ellipse(0, 3, w * 0.22, h * 0.035, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
       if (ag.flip) ctx.scale(-1, 1);
       ctx.drawImage(ag.img, -w / 2, -h, w, h);
       ctx.restore();

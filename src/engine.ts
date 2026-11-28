@@ -170,6 +170,7 @@ function remapPlayerRefs(base: GameSession, getNew: (id: string) => string | nul
   base.qCaptureCd = rk(base.qCaptureCd);
   base.qCaptureAt = rk(base.qCaptureAt);
   base.qTaskAt = rk(base.qTaskAt);
+  base.frendyCatch = rk(base.frendyCatch); // v0.197: маркеры тощения Френди (ключи — id игроков)
   base.qImmunes = rk(base.qImmunes);
   base.qEntries = rk(base.qEntries);
   base.qWait = rk(base.qWait);
@@ -532,6 +533,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     /* v0.56: отложенный запуск задания босса + кат-сцены — хвосты старых сейвов */
     base.qCaptureBoss = base.qCaptureBoss ?? {};
     base.qTaskAt = base.qTaskAt ?? {};
+    base.frendyCatch = base.frendyCatch ?? {}; // v0.197: отложенный запуск задания после тощения Френди
     base.cutsceneDone = base.cutsceneDone ?? {};
     /* v0.104: БОГАЧ — выборы вариантов/победители ячеек/иммунитеты/счётчик заходов */
     base.qChosen = base.qChosen ?? {};
@@ -606,6 +608,7 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
   /* v0.56: отложенный запуск задания босса + кат-сцены — старые сейвы */
   if (!s.qCaptureBoss) s.qCaptureBoss = {};
   if (!s.qTaskAt) s.qTaskAt = {};
+  if (!s.frendyCatch) s.frendyCatch = {}; // v0.197: тощение Френди — старые сейвы
   if (!s.cutsceneDone) s.cutsceneDone = {};
   /* v0.104: БОГАЧ — выборы вариантов/победители ячеек/иммунитеты/счётчик заходов */
   if (!s.qChosen) s.qChosen = {};
@@ -839,6 +842,24 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
     }
     s.notice = { text: `👹 Босс${bossNameOf(b.bid)} ПОЙМАЛ вас и оттащил на свою первую точку патруля! Патруль босса остановлен.${taskWillStart ? ' Задание босса начнётся через секунду…' : ''}`, ts: now };
     log(`👹 Босс${bossNameOf(b.bid)} ПОЙМАЛ игрока ${p.name} и оттащил фишку на ПЕРВУЮ ТОЧКУ ПАТРУЛЯ — патруль остановлен!${wasJob ? ' Незаконченное задание брошено.' : ''}${taskWillStart ? ' Задание босса стартует, когда фишку доволокут (+1 с).' : ''}`);
+    return true;
+  };
+
+  /* ---------- v0.197 FRENDY: ОТКРЫТИЕ ЗАДАНИЯ ПОСЛЕ ТОЩЕНИЯ ----------
+     Общий код для ветки Френди в case 'bossTaskGo' (клиент жертвы доложил «дотащили») и
+     страховки в frendyTickDo (клиент молчит — хост открывает сам через 3 с после срока).
+     Маркер s.frendyCatch[pid] = { cell, at }: cell — приставка, к которой тащили;
+     at — плановый момент запуска (захват + несение + 1 с), допуск 450 мс на дрожь таймеров. */
+  const frendyCatchOpen = (pid: string): boolean => {
+    const mc = s.frendyCatch?.[pid];
+    if (!mc || Date.now() < mc.at - 450) return false;
+    if (s.frendyCatch) delete s.frendyCatch[pid];
+    const p = s.players.find((x) => x.id === pid);
+    if (!p || !p.alive || p.spect) return false;
+    if (!cellTaskOf(s, map, mc.cell)) return false; // задание с приставки исчезло — открывать нечего
+    s.qJobs = s.qJobs ?? {};
+    if (s.qJobs[pid]) return false; // задание уже идёт
+    s.qJobs[pid] = { cellIdx: mc.cell, startedAt: Date.now() };
     return true;
   };
 
@@ -1806,6 +1827,15 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
        задание снимается в момент нажатия POWER ON (см. frendyPowerOn), а поимка больше
        не создаёт заданий на приставках без решаемого задания (фильтр armed) — новые
        зависания невозможны, и фоновый насос не нужен. */
+    /* v0.197 СТРАХОВКА ТОЩЕНИЯ: клиент жертвы не доложил bossTaskGo (кат-сцена на экране,
+       лаги, выход из партии) — через 3 с после планового момента задание открывается
+       САМО (хост не доверяет сети; маркер после открытия снимается в frendyCatchOpen) */
+    if (s.frendyCatch) {
+      for (const pid of Object.keys(s.frendyCatch)) {
+        const mc = s.frendyCatch[pid];
+        if (Date.now() > mc.at + 3000) frendyCatchOpen(pid);
+      }
+    }
     /* v0.130: СИЛЬНЫЙ ОГОНЬ ПОГАС — печь снова слабая (таймер СКРЫТ от игроков —
        никаких цифр, только факт в логе один раз по истечении) */
     if (f.strongUntil && now >= f.strongUntil) {
@@ -2036,17 +2066,29 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
          (слот считается заряженным, а задания нет) — задание создано, окно НЕ открылось,
          и игрок навсегда оставался с невидимым заданием, которое молча блокировало POWER ON. */
       const armed = map.cells.map((c, i) => ({ c, i })).filter(({ i }) => map.cells[i].type === 'task' && frendyCartTaskIdx(s, map, i) !== null && cellTaskOf(s, map, i) !== null && !consolesBusy(i));
+      /* v0.197 ФРЕНДИ ТАЩИТ ПОЙМАННОГО КАК ОБЫЧНЫЕ БОССЫ (заказчик: «когда Френди тебя поймал,
+         вместо телепортации к нужной приставке надо, чтобы как остальные боссы Френди тащил
+         пойманного к приставке»): мгновенного телепорта больше НЕТ — в journeyPos пишется
+         ТОЛЬКО точка назначения (без tp:true), задание НЕ открывается сразу. Клиент жертвы
+         по fx 'catch' запускает кино-несение (bossDragRef, как у боссов v0.65: Френди идёт
+         от места поимки к приставке, фишка барахтается рядом, ходьба заблокирована), после
+         доставки +1 с шлёт bossTaskGo — ветка Френди в case 'bossTaskGo' сверяет маркер
+         s.frendyCatch и открывает задание. Страховка — frendyTickDo: если bossTaskGo не пришёл
+         за 3 с после планового момента, хост открывает задание сам. */
+      const oldPos = s.journeyPos?.[tgt.id]; // где жертва стояла в момент поимки (длина пути)
+      const cpsNow = clampMoveSpeed(map.moveSpeed ?? DEF_MOVE_SPEED);
       if (armed.length) {
         const pick = armed[Math.floor(Math.random() * armed.length)].i;
         const r = cellRectOf(map, pick);
         s.journeyPos = s.journeyPos ?? {};
-        /* v0.143: tp:true — ПРИНУДИТЕЛЬНЫЙ телепорт: клиент обязан снапнуться к приставке,
-           а хост отбрасывает устаревшие точки жертвы (иначе «иногда не телепортирует») */
-        if (r) s.journeyPos[tgt.id] = { x: Math.round(r.x + r.w / 2), y: Math.round(r.y + r.h / 2), ts: now, mv: false, tp: true };
-        s.qJobs = s.qJobs ?? {};
-        s.qJobs[tgt.id] = { cellIdx: pick, startedAt: now };
+        if (r) s.journeyPos[tgt.id] = { x: Math.round(r.x + r.w / 2), y: Math.round(r.y + r.h / 2), ts: now, mv: false };
+        /* отложенный запуск задания: захват + длительность несения (та же формула, что у
+           клиента и у классических боссов: путь / скорость карты, 0.7–2.4 с) + 1 с задержки */
+        s.frendyCatch = s.frendyCatch ?? {};
+        const dragMs = Math.max(700, Math.min(2400, (Math.hypot((r ? r.x + r.w / 2 : (oldPos?.x ?? 0)) - (oldPos?.x ?? 0), (r ? r.y + r.h / 2 : (oldPos?.y ?? 0)) - (oldPos?.y ?? 0)) / (cpsNow * CELL)) * 1000));
+        s.frendyCatch[tgt.id] = { cell: pick, at: now + dragMs + 1000 };
         const armedTitle = cellTaskOf(s, map, pick)?.title ?? '';
-        log(`😈 ФРЕНДИ ПОЙМАЛ ${tgt.name}! Оттащил к ПРИСТАВКЕ №${pick + 1} и включил КАРТРИДЖ «${armedTitle}» — пройди задание, чтобы вырваться!`);
+        log(`😈 ФРЕНДИ ПОЙМАЛ ${tgt.name}! СХВАТИЛ и ТАЩИТ к ПРИСТАВКЕ №${pick + 1}, вставит КАРТРИДЖ «${armedTitle}» — не вырваться!`);
         if (tookCart) f.nextSpawnAt = now + 4000; // с картриджем в лапах не спит — скоро снова озорует
       } else {
         const anyConsole = map.cells.map((c, i) => ({ c, i })).filter(({ c }) => c.type === 'task');
@@ -2054,12 +2096,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
         if (anyConsole.length) {
           const pick = anyConsole[Math.floor(Math.random() * anyConsole.length)].i;
           const r = cellRectOf(map, pick);
-          if (r) s.journeyPos[tgt.id] = { x: Math.round(r.x + r.w / 2), y: Math.round(r.y + r.h / 2), ts: now, mv: false, tp: true };
-          log(`😈 ФРЕНДИ ПОЙМАЛ ${tgt.name} и швырнул на ПРИСТАВКУ №${pick + 1} — картриджа в ней нет, сиди и думай!`);
+          if (r) s.journeyPos[tgt.id] = { x: Math.round(r.x + r.w / 2), y: Math.round(r.y + r.h / 2), ts: now, mv: false };
+          log(`😈 ФРЕНДИ ПОЙМАЛ ${tgt.name} и ТАЩИТ его на ПРИСТАВКУ №${pick + 1} — картриджа в ней нет, сиди и думай!`);
         } else {
           const spot = frendyFreeSpot([]) ?? { x: W / 2, y: H / 2 };
-          s.journeyPos[tgt.id] = { x: Math.round(spot.x), y: Math.round(spot.y), ts: now, mv: false, tp: true };
-          log(`😈 ФРЕНДИ ПОЙМАЛ ${tgt.name} и вышвырнул в другой конец кошмара!`);
+          s.journeyPos[tgt.id] = { x: Math.round(spot.x), y: Math.round(spot.y), ts: now, mv: false };
+          log(`😈 ФРЕНДИ ПОЙМАЛ ${tgt.name} и ТАЩИТ в другой конец кошмара!`);
         }
       }
       f.boss = null;
@@ -4575,6 +4617,12 @@ export function applyAction(s0: GameSession, a: Action, map: GameMap, opts: Game
        пришло (qTaskAt), и открывает задание на ячейке босса (если там есть задание).
        v0.76: в QUEST — личное задание (qJobs); в JOURNEY/JOURNEY SOLO — ОБЩЕЕ задание
        партии (тот же объект challenge, что при проходе ячейки ходьбой). */
+      /* v0.197 FRENDY: клиент жертвы доложил «Френди ДОТАЩИЛ к приставке (+1 с)» —
+         открываем задание на приставке из маркера s.frendyCatch (время сверяется там же) */
+      if (isFrendyMode(map.mode)) {
+        if (s.phase === 'playing') frendyCatchOpen(a.id);
+        break;
+      }
       if (s.phase !== 'playing' || !isBossCatchMode(map.mode)) break;
       const p = s.players.find((x) => x.id === a.id);
       if (!p || !p.alive || p.spect) break;

@@ -55,7 +55,7 @@ const saveEmptyRomFolders = (arr: string[]) => {
 export default function EmulatorLauncher() {
   const { roms, saves, setScreen, refresh, toast } = useApp(); // v0.180: options из деструктуризации убраны (ник из базы удалён)
   const spoilerMode = useApp((st) => st.options.spoilerMode); // v0.70: режим спойлеров из Опций
-  const pauseOnSaveLoad = useApp((st) => st.options.pauseOnSaveLoad ?? true); // v0.187: загрузка сохранения ставит эмулятор на паузу (опция)
+  const pauseOnSaveLoad = useApp((st) => st.options.pauseOnSaveLoad ?? false); // v0.197: ВЫКЛ по умолчанию (заказчик); v0.187: загрузка сохранения может ставить эмулятор на паузу (опция)
   const [romId, setRomId] = useState<string | null>(null);
   const [romBuf, setRomBuf] = useState<ArrayBuffer | null>(null);
   const [runKey, setRunKey] = useState(0);
